@@ -1,0 +1,10 @@
+# Наложение для локальной разработки: собирает образ из исходников вместо того,
+# чтобы тянуть его из реестра.
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+#
+# На сервере этот файл не нужен.
+services:
+  hltv-notify:
+    build: .
+    image: hltv-notificator:local

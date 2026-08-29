@@ -1,11 +1,14 @@
 services:
   hltv-notify:
-    # На сервере образ ТЯНЕТСЯ из реестра: `docker compose pull && up -d`.
-    # Локально его можно собрать: `docker compose up -d --build`.
-    # Имя переопределяется переменной IMAGE в .env, если публикуете в другое
-    # пространство или хотите прибиться к конкретной версии вместо latest.
-    image: ${IMAGE:-v1p3rrr/hltv-notificator:latest}
-    build: .
+    # Образ ТЯНЕТСЯ из реестра — этого файла достаточно на сервере, где нет
+    # исходников. Ключа build здесь нет намеренно: с ним docker compose up
+    # полез бы собирать образ и упал без Dockerfile под рукой.
+    #
+    # Имя образа задаётся переменной IMAGE в .env: оно зависит от вашего
+    # логина Docker Hub. Точное имя печатает CI в сводке прогона.
+    # Локальная сборка — отдельным файлом:
+    #   docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+    image: ${IMAGE:?укажите IMAGE в .env, например ваш-логин/hltv-notificator:latest}
     container_name: hltv-notify
     restart: unless-stopped
     env_file: .env
