@@ -1,4 +1,4 @@
 curl_cffi==0.16.2
 beautifulsoup4==4.15.0
 lxml==6.1.2
-tzdata==2025.2
+tzdata==2025.3
