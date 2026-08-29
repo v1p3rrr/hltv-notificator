@@ -1,0 +1,211 @@
+"""Напоминания перед матчем, пауза и личный часовой пояс."""
+
+from datetime import timedelta
+
+import pytest
+
+from hltv_notify.config import Config
+from hltv_notify.models import Event
+from hltv_notify.notify.outbox import Notifier
+from hltv_notify.reminders import ReminderScheduler
+from hltv_notify.state.db import Storage, utcnow
+
+ILYA = "111"
+FRIEND = "222"
+TEAM = 12857
+MATCH = 800
+
+
+@pytest.fixture()
+def config():
+    return Config(chat_id=ILYA, allowed_chats="222", bot_token="t")
+
+
+@pytest.fixture()
+def store(tmp_path):
+    storage = Storage(tmp_path / "prefs.db")
+    storage.add_subscriber(ILYA)
+    storage.add_subscriber(FRIEND)
+    storage.add_team(ILYA, TEAM, "forze-reload", "FORZE Reload")
+    storage.add_team(FRIEND, TEAM, "forze-reload", "FORZE Reload")
+    yield storage
+    storage.close()
+
+
+def add_match(storage, *, minutes_ahead=60, match_id=MATCH):
+    storage.upsert_match(
+        match_id=match_id, team_id=TEAM, opponent_id=1, opponent_name="Color",
+        event_name="GLuck", start_utc=utcnow() + timedelta(minutes=minutes_ahead),
+        url="https://www.hltv.org/matches/800/x", snapshot={}, snapshot_hash="h")
+    storage.link_match_team(match_id, TEAM)
+
+
+# ---------------------------------------------------------------- напоминания
+
+
+def test_no_reminders_configured_means_silence(store, config):
+    add_match(store, minutes_ahead=10)
+    assert ReminderScheduler(store, config).due() == []
+
+
+def test_reminder_fires_inside_its_window(store, config):
+    store.add_reminder(ILYA, 15)
+    add_match(store, minutes_ahead=10)
+    events = ReminderScheduler(store, config).due()
+    assert [e.type for e in events] == ["E10"]
+    assert events[0].payload["only_chat"] == ILYA
+    assert events[0].payload["minutes_before"] == 15
+
+
+def test_reminder_does_not_fire_too_early(store, config):
+    store.add_reminder(ILYA, 15)
+    add_match(store, minutes_ahead=40)
+    assert ReminderScheduler(store, config).due() == []
+
+
+def test_reminder_does_not_fire_after_the_start(store, config):
+    """Матч уже идёт — напоминать поздно, для этого есть E4."""
+    store.add_reminder(ILYA, 15)
+    add_match(store, minutes_ahead=-5)
+    assert ReminderScheduler(store, config).due() == []
+
+
+def test_several_offsets_are_separate_events(store, config):
+    store.add_reminder(ILYA, 60)
+    store.add_reminder(ILYA, 15)
+    add_match(store, minutes_ahead=10)
+    events = ReminderScheduler(store, config).due()
+    assert sorted(e.payload["minutes_before"] for e in events) == [15, 60]
+    assert len({e.idempotency_key for e in events}) == 2
+
+
+def test_reminder_is_sent_once(store, config):
+    store.add_reminder(ILYA, 15)
+    add_match(store, minutes_ahead=10)
+    scheduler = ReminderScheduler(store, config)
+    notifier = Notifier(store, config, telegram=None)
+
+    for _ in range(5):                       # тик планировщика идёт часто
+        for event in scheduler.due():
+            notifier.enqueue(event)
+    assert store.pending_count() == 1
+
+
+def test_reminder_is_addressed_not_broadcast(store, config):
+    """Интервалы у подписчиков разные, поэтому напоминание идёт конкретному
+    чату, а не всем, кто следит за этой командой."""
+    store.add_reminder(ILYA, 15)
+    add_match(store, minutes_ahead=10)
+
+    notifier = Notifier(store, config, telegram=None)
+    for event in ReminderScheduler(store, config).due():
+        notifier.enqueue(event)
+
+    chats = {row["chat_id"] for row in store.due_outbox(limit=50)}
+    assert chats == {ILYA}
+
+
+def test_reminder_only_for_own_teams(store, config):
+    """Чужая команда — не мой матч, даже если напоминания настроены."""
+    store.add_reminder(FRIEND, 15)
+    store.set_team_enabled(FRIEND, TEAM, False)
+    add_match(store, minutes_ahead=10)
+    assert [e.payload["only_chat"] for e in ReminderScheduler(store, config).due()] == []
+
+
+# ---------------------------------------------------------------- пауза
+
+
+def test_paused_subscriber_gets_nothing(store, config):
+    add_match(store)
+    store.set_subscriber_paused(FRIEND, True)
+
+    event = Event(type="E4", idempotency_key="E4:800:started", match_id=MATCH,
+                  payload={"team_id": TEAM, "opponent": "Color", "event_name": "GLuck",
+                           "url": "u"})
+    Notifier(store, config, telegram=None).enqueue(event)
+    assert {row["chat_id"] for row in store.due_outbox(limit=50)} == {ILYA}
+
+
+def test_pause_does_not_defer_notifications(store, config):
+    """Пауза — это тишина, а не отложенная доставка: пропущенное не копится."""
+    add_match(store)
+    store.set_subscriber_paused(ILYA, True)
+    store.set_subscriber_paused(FRIEND, True)
+
+    event = Event(type="E4", idempotency_key="E4:800:started", match_id=MATCH,
+                  payload={"team_id": TEAM, "opponent": "Color", "event_name": "GLuck",
+                           "url": "u"})
+    assert Notifier(store, config, telegram=None).enqueue(event) is False
+
+    store.set_subscriber_paused(ILYA, False)
+    assert store.pending_count() == 0        # ничего не накопилось
+
+
+def test_pause_covers_service_alerts_too(store, config):
+    store.set_subscriber_paused(FRIEND, True)
+    event = Event(type="E8", idempotency_key="E8:schedule:down:x", match_id=None,
+                  payload={"reason": "Расписание не читается", "detail": "таймаут"})
+    Notifier(store, config, telegram=None).enqueue(event)
+    assert {row["chat_id"] for row in store.due_outbox(limit=50)} == {ILYA}
+
+
+# ---------------------------------------------------------------- часовой пояс
+
+
+def test_each_subscriber_sees_their_own_timezone(store, config):
+    add_match(store)
+    store.set_subscriber_timezone(ILYA, "Europe/Moscow")
+    store.set_subscriber_timezone(FRIEND, "Asia/Tokyo")
+
+    event = Event(type="E1", idempotency_key="E1:800:new", match_id=MATCH,
+                  payload={"team_id": TEAM, "opponent": "Color", "event_name": "GLuck",
+                           "start_utc": "2026-08-29T09:05:00+00:00", "url": "u"})
+    Notifier(store, config, telegram=None).enqueue(event)
+
+    bodies = {row["chat_id"]: row["body"] for row in store.due_outbox(limit=50)}
+    assert "12:05" in bodies[ILYA]        # +3
+    assert "18:05" in bodies[FRIEND]      # +9
+
+
+def test_timezone_falls_back_to_config(store, config):
+    assert store.subscriber_timezone(ILYA, config.timezone) == config.timezone
+
+
+# ---------------------------------------------------------------- пики карт
+
+
+def test_picks_are_parsed_with_their_owner():
+    from conftest import FIXTURES
+    from hltv_notify.sources import match_page
+
+    observation = match_page.parse(
+        (FIXTURES / "match-2397053-live.html").read_text(encoding="utf-8"), 2397053)
+    picks = observation.picks(12857)
+    assert [(item["name"], item["pick"]) for item in picks] == [
+        ("Mirage", "team"), ("Dust2", "opponent"), ("Ancient", "decider")]
+
+
+def test_picks_flip_for_the_opponent_follower():
+    """Вето на странице одно, но «наш пик» у каждого свой."""
+    from conftest import FIXTURES
+    from hltv_notify.sources import match_page
+
+    observation = match_page.parse(
+        (FIXTURES / "match-2397053-live.html").read_text(encoding="utf-8"), 2397053)
+    assert [item["pick"] for item in observation.picks(13973)] == [
+        "opponent", "team", "decider"]
+
+
+def test_match_start_message_carries_a_copyable_block():
+    from hltv_notify.notify import format as fmt
+
+    event = Event(type="E4", idempotency_key="k", match_id=1, payload={
+        "team_name": "FORZE Reload", "opponent": "Color", "event_name": "GLuck",
+        "best_of": 3, "url": "u",
+        "picks": [{"number": 1, "name": "Mirage", "pick": "team"},
+                  {"number": 2, "name": "Dust2", "pick": "opponent"},
+                  {"number": 3, "name": "Ancient", "pick": "decider"}]})
+    text = fmt.render(event, team_name="FORZE Reload", tz_name="Europe/Moscow")
+    assert "<pre>" in text and "</pre>" in text
+    assert "Mirage" in text and "наш пик" in text and "решающая" in text

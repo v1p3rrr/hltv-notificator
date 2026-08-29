@@ -20,7 +20,18 @@ CREATE TABLE IF NOT EXISTS subscribers (
     chat_id   TEXT PRIMARY KEY,
     added_utc TEXT NOT NULL,
     enabled   INTEGER NOT NULL DEFAULT 1,
-    note      TEXT
+    note      TEXT,
+    -- Пояс отображения у каждого свой: подписчики могут жить в разных.
+    timezone  TEXT,
+    -- Общий тумблер «молчи»: перекрывает глушение отдельных типов.
+    paused    INTEGER NOT NULL DEFAULT 0
+);
+
+-- За сколько до матча напоминать. Список свой у каждого подписчика.
+CREATE TABLE IF NOT EXISTS reminders (
+    chat_id        TEXT NOT NULL,
+    minutes_before INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, minutes_before)
 );
 
 -- Команды — СВОИ у каждого подписчика: один и тот же матч может быть интересен
@@ -196,6 +207,10 @@ class Storage:
             "outbox": {
                 "chat_id": "TEXT NOT NULL DEFAULT ''",
             },
+            "subscribers": {
+                "timezone": "TEXT",
+                "paused": "INTEGER NOT NULL DEFAULT 0",
+            },
         }
         for table, columns in added.items():
             existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
@@ -247,6 +262,47 @@ class Storage:
 
     def subscriber_ids(self) -> List[str]:
         return [row["chat_id"] for row in self.subscribers()]
+
+    def set_subscriber_timezone(self, chat_id: str, timezone: Optional[str]) -> None:
+        self.conn.execute("UPDATE subscribers SET timezone = ? WHERE chat_id = ?",
+                          (timezone, str(chat_id)))
+
+    def subscriber_timezone(self, chat_id: str, fallback: str) -> str:
+        row = self.get_subscriber(chat_id)
+        return (row["timezone"] if row and row["timezone"] else fallback)
+
+    def set_subscriber_paused(self, chat_id: str, paused: bool) -> None:
+        """Общий тумблер «молчи».
+
+        Пока он включён, уведомления НЕ КОПЯТСЯ, а просто не создаются: смысл
+        паузы в тишине, а не в том, чтобы вывалить всё разом при снятии.
+        """
+        self.conn.execute("UPDATE subscribers SET paused = ? WHERE chat_id = ?",
+                          (1 if paused else 0, str(chat_id)))
+
+    def subscriber_paused(self, chat_id: str) -> bool:
+        row = self.get_subscriber(chat_id)
+        return bool(row and row["paused"])
+
+    # ---------- напоминания перед матчем ----------
+
+    def add_reminder(self, chat_id: str, minutes_before: int) -> bool:
+        """False — такое напоминание уже было."""
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO reminders (chat_id, minutes_before) VALUES (?, ?)",
+            (str(chat_id), int(minutes_before)))
+        return cur.rowcount > 0
+
+    def remove_reminder(self, chat_id: str, minutes_before: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM reminders WHERE chat_id = ? AND minutes_before = ?",
+            (str(chat_id), int(minutes_before)))
+        return cur.rowcount > 0
+
+    def reminders(self, chat_id: str) -> List[int]:
+        return [row["minutes_before"] for row in self.conn.execute(
+            "SELECT minutes_before FROM reminders WHERE chat_id = ? "
+            "ORDER BY minutes_before DESC", (str(chat_id),))]
 
     def set_subscriber_enabled(self, chat_id: str, enabled: bool) -> bool:
         cur = self.conn.execute("UPDATE subscribers SET enabled = ? WHERE chat_id = ?",
@@ -690,6 +746,46 @@ class Storage:
             return []
 
     # ---------- meta ----------
+
+    def adopt_legacy_event_keys(self, chat_id: str) -> int:
+        """Приписать адресата ключам, записанным до появления подписчиков.
+
+        Ключ журнала стал включать чат (`<chat>|<ключ>`). Старые записи без
+        префикса перестали бы совпадать, и при первом же запуске после
+        обновления сервис счёл бы новым всё, что уже отправлял, — то есть
+        разослал бы историю заново. Делается один раз, под флагом в meta.
+        """
+        if not chat_id or self.get_meta("legacy_keys_adopted"):
+            return 0
+        cur = self.conn.execute(
+            "UPDATE sent_events SET idempotency_key = ? || '|' || idempotency_key "
+            "WHERE instr(idempotency_key, '|') = 0", (str(chat_id),))
+        self.conn.execute(
+            "UPDATE outbox SET idempotency_key = ? || '|' || idempotency_key, "
+            "chat_id = ? WHERE instr(idempotency_key, '|') = 0 AND chat_id = ''",
+            (str(chat_id), str(chat_id)))
+        self.set_meta("legacy_keys_adopted", iso(utcnow()))
+        return cur.rowcount
+
+    def prune(self, *, sent_days: int = 90, events_days: int = 365) -> None:
+        """Убрать то, что уже никому не нужно.
+
+        Отправленные строки очереди — просто мусор. Журнал событий трогаем
+        осторожнее и только по давним матчам: он и есть защита от повторной
+        рассылки, и удалить его слишком рано значит разослать всё заново.
+        """
+        self.conn.execute(
+            "DELETE FROM outbox WHERE status = 'sent' AND sent_utc < ?",
+            (iso(utcnow() - timedelta(days=sent_days)),))
+        self.conn.execute(
+            "DELETE FROM sent_events WHERE created_utc < ? AND (match_id IS NULL OR "
+            "match_id IN (SELECT match_id FROM matches WHERE start_utc < ?))",
+            (iso(utcnow() - timedelta(days=events_days)),
+             iso(utcnow() - timedelta(days=events_days))))
+        self.conn.execute(
+            "DELETE FROM live_messages WHERE match_id IN "
+            "(SELECT match_id FROM matches WHERE start_utc < ?)",
+            (iso(utcnow() - timedelta(days=sent_days)),))
 
     def get_meta(self, key: str) -> Optional[str]:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()

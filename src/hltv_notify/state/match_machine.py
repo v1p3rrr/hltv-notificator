@@ -246,6 +246,7 @@ class MatchMachine:
                 "opponent_id": opponent_id,
                 "event_name": observation.event_name or (row["event_name"] if row else ""),
                 "best_of": observation.best_of,
+                "picks": observation.picks(team_id),
                 "url": row["url"] if row else "",
             },
         )

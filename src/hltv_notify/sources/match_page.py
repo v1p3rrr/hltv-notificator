@@ -13,6 +13,7 @@
         .won / .lost               счёт СЕРИИ, но только у завершённого матча
     .mapholder
         .mapname                   имя карты, "TBA" до вето
+        .results-left.pick         сторона, выбравшая карту (у решающей нет)
         .results-team-score x2     счёт карты — но у ИДУЩЕЙ карты это
                                    текущий счёт, а не финальный
         .results-center-half-score "( 5 : 7 ; 8 : 3 )"
@@ -69,6 +70,9 @@ class MapLine:
     score_right: Optional[int]
     halves: Optional[str]
     has_stats: bool = False
+    # Чей это пик: "left"/"right" по сторонам страницы, None — решающая карта,
+    # которая осталась после вето и никем не выбиралась.
+    picked_by: Optional[str] = None
 
     @property
     def has_score(self) -> bool:
@@ -130,6 +134,26 @@ class MatchObservation:
 
     def final_maps(self) -> List[MapLine]:
         return [m for m in self.maps if self.is_final(m)]
+
+    def picks(self, team_id: int) -> List[dict]:
+        """Состав карт с указанием, чей это выбор.
+
+        Решающая карта — та, что осталась после вето: её никто не выбирал,
+        поэтому у неё нет класса `pick` ни на одной стороне.
+        """
+        side = self.our_side(team_id)
+        result = []
+        for line in self.maps:
+            if not line.name or line.name.upper() == "TBA":
+                continue
+            if line.picked_by is None:
+                owner = "decider"
+            elif line.picked_by == side:
+                owner = "team"
+            else:
+                owner = "opponent"
+            result.append({"number": line.number, "name": line.name, "pick": owner})
+        return result
 
     def live_map(self) -> Optional[MapLine]:
         """Карта, которая идёт прямо сейчас: со счётом, но ещё без статистики."""
@@ -256,6 +280,14 @@ def parse(html: str, match_id: int) -> MatchObservation:
         left_el = holder.select_one(".results-left .results-team-score")
         right_el = holder.select_one(".results-right .results-team-score")
         halves_el = holder.select_one(".results-center-half-score")
+        left_side = holder.select_one(".results-left")
+        right_side = holder.select_one(".results-right")
+        picked_by = None
+        if left_side is not None and "pick" in (left_side.get("class") or []):
+            picked_by = "left"
+        elif right_side is not None and "pick" in (right_side.get("class") or []):
+            picked_by = "right"
+
         maps.append(MapLine(
             number=number,
             name=name_el.get_text(strip=True) if name_el else "TBA",
@@ -263,6 +295,7 @@ def parse(html: str, match_id: int) -> MatchObservation:
             score_right=_int_or_none(right_el.get_text(strip=True)) if right_el else None,
             halves=halves_el.get_text(" ", strip=True) if halves_el else None,
             has_stats=holder.select_one(".results-stats") is not None,
+            picked_by=picked_by,
         ))
 
     scoreboard = soup.select_one("#scoreboardElement")

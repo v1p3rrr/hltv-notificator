@@ -81,6 +81,15 @@ class Config:
     multikill_alerts: bool = field(default_factory=lambda: _bool("MULTIKILL_ALERTS", True))
     multikill_threshold: int = field(default_factory=lambda: _int("MULTIKILL_THRESHOLD", 4))
 
+    # Напоминания перед матчем: значения по умолчанию для нового подписчика,
+    # дальше он правит их сам через /remind.
+    default_reminders: str = field(default_factory=lambda: _str("REMINDERS", "15"))
+
+    # Сколько хранить историю. Журнал событий — это защита от повторной
+    # рассылки, поэтому чистится куда осторожнее очереди.
+    outbox_keep_days: int = field(default_factory=lambda: _int("OUTBOX_KEEP_DAYS", 90))
+    events_keep_days: int = field(default_factory=lambda: _int("EVENTS_KEEP_DAYS", 365))
+
     # пороги событий
     e2_min_shift_minutes: int = field(default_factory=lambda: _int("E2_MIN_SHIFT_MINUTES", 5))
     e2_debounce_minutes: int = field(default_factory=lambda: _int("E2_DEBOUNCE_MINUTES", 10))
@@ -109,6 +118,14 @@ class Config:
 
     def telegram_enabled(self) -> bool:
         return bool(self.bot_token and (self.chat_id or self.allowed_chat_ids()))
+
+    def reminder_minutes(self) -> List[int]:
+        values = []
+        for part in self.default_reminders.replace(";", ",").split(","):
+            part = part.strip()
+            if part.isdigit():
+                values.append(int(part))
+        return sorted(set(values), reverse=True)
 
     def allowed_chat_ids(self) -> List[str]:
         """Белый список из .env плюс основной чат: он разрешён всегда."""

@@ -20,4 +20,8 @@ VOLUME ["/app/data"]
 RUN useradd --create-home --uid 1000 app && mkdir -p /app/data && chown -R app /app
 USER app
 
+# Проверяем не «процесс жив», а «опрос идёт»: зависший процесс для докера
+# выглядит здоровым, и restart-policy его бы не тронула.
+HEALTHCHECK --interval=5m --timeout=30s --start-period=2m --retries=3     CMD python -m hltv_notify --health || exit 1
+
 CMD ["python", "-m", "hltv_notify"]

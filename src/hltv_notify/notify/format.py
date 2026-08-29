@@ -72,6 +72,11 @@ def orient(payload: dict, for_team_id: Optional[int]) -> dict:
             flipped[left], flipped[right] = payload.get(right), payload.get(left)
     if "won" in payload and payload["won"] is not None:
         flipped["won"] = not payload["won"]
+    if payload.get("picks"):
+        # Пик тоже разворачивается: «наш» и «соперника» меняются местами.
+        swap = {"team": "opponent", "opponent": "team", "decider": "decider"}
+        flipped["picks"] = [{**item, "pick": swap.get(item.get("pick"), item.get("pick"))}
+                            for item in payload["picks"]]
     if payload.get("maps"):
         flipped["maps"] = [
             {**item,
@@ -80,6 +85,18 @@ def orient(payload: dict, for_team_id: Optional[int]) -> dict:
             for item in payload["maps"]
         ]
     return flipped
+
+
+def _minutes(value) -> str:
+    """15 → «15 минут», 60 → «час»."""
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if minutes < 60:
+        return f"{minutes} мин"
+    hours, rest = divmod(minutes, 60)
+    return f"{hours} ч" if rest == 0 else f"{hours} ч {rest} мин"
 
 
 def render(event: Event, *, team_name: str, tz_name: str,
@@ -123,15 +140,36 @@ def render(event: Event, *, team_name: str, tz_name: str,
             _link(url, "Страница матча"),
         ])
 
+    if event.type == "E10":
+        when = human_time(payload["start_utc"], tz_name)
+        left = payload.get("minutes_left") or payload.get("minutes_before")
+        return "\n".join([
+            f"⏰ <b>Матч через {_esc(_minutes(left))}</b>",
+            f"{team} — {opponent}",
+            event_name,
+            f"🕒 {when}",
+            _link(url, "Страница матча"),
+        ])
+
     if event.type == "E4":
         best_of = payload.get("best_of")
         suffix = f" · BO{best_of}" if best_of else ""
-        return "\n".join([
+        lines = [
             "🔴 <b>Матч начался</b>",
             f"{team} — {opponent}",
             f"{event_name}{suffix}",
-            _link(url, "Страница матча"),
-        ])
+        ]
+        picks = payload.get("picks") or []
+        if picks:
+            # Блок кода: Telegram показывает у него кнопку копирования, и
+            # состав карт забирается одним нажатием.
+            width = max(len(item["name"]) for item in picks)
+            rows = "\n".join(
+                f"{item['name']:<{width}}  {PICK_LABELS.get(item['pick'], '')}"
+                for item in picks)
+            lines.append(f"<pre>{_esc(rows)}</pre>")
+        lines.append(_link(url, "Страница матча"))
+        return "\n".join(lines)
 
     if event.type == "E5":
         return "\n".join([
@@ -206,6 +244,12 @@ def render(event: Event, *, team_name: str, tz_name: str,
 
     return f"{_esc(event.type)}: {_esc(str(payload))}"
 
+
+PICK_LABELS = {
+    "team": "наш пик",
+    "opponent": "пик соперника",
+    "decider": "решающая",
+}
 
 ROUND_STATE_LABELS = {
     "warmup": "разминка",

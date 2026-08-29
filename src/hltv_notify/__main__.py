@@ -23,6 +23,7 @@ from .match_poller import MatchPoller
 from .notify.live_message import LiveMessenger
 from .notify.outbox import Notifier
 from .notify.telegram import Telegram
+from .reminders import ReminderScheduler
 from .scheduler import SchedulePoller
 from .watchdog import Watchdog
 from .state.db import Storage
@@ -70,8 +71,18 @@ async def run() -> int:
     # Первый посев: команда из .env становится первой отслеживаемой. Дальше
     # список живёт в базе и правится через бота, а переменные окружения
     # остаются только запасным значением.
+    # Разово: ключи журнала, записанные до появления подписчиков, получают
+    # адресата. Иначе первое же обновление разослало бы историю заново.
+    adopted = storage.adopt_legacy_event_keys(config.chat_id)
+    if adopted:
+        log.info("журнал событий приведён к новому формату: %d записей", adopted)
+
     for chat in config.allowed_chat_ids():
-        storage.add_subscriber(chat, note="из TELEGRAM_ALLOWED_CHATS")
+        if storage.add_subscriber(chat, note="из TELEGRAM_ALLOWED_CHATS"):
+            # Новому подписчику раскладываем напоминания по умолчанию, дальше
+            # он правит их сам.
+            for minutes in config.reminder_minutes():
+                storage.add_reminder(chat, minutes)
     if not storage.teams(enabled_only=False) and config.team_id and config.chat_id:
         storage.add_team(config.chat_id, config.team_id, config.team_slug, config.team_name)
         log.info("первая отслеживаемая команда взята из конфига: %s (id %s) для чата %s",
@@ -98,7 +109,9 @@ async def run() -> int:
     _install_signal_handlers(stop)
 
     watchdog = Watchdog(storage, config)
+    reminders = ReminderScheduler(storage, config)
     tasks: List[asyncio.Task] = [
+        asyncio.create_task(reminders.run(stop, notifier), name="reminders"),
         asyncio.create_task(poller.run(stop), name="schedule-poller"),
         asyncio.create_task(watchdog.run(stop, notifier), name="watchdog"),
         asyncio.create_task(matches.run(stop), name="match-poller"),
@@ -127,6 +140,7 @@ async def run() -> int:
     await http.close()
     if telegram is not None:
         await telegram.close()
+    storage.prune(sent_days=config.outbox_keep_days, events_days=config.events_keep_days)
     storage.close()
     return 0
 
@@ -144,7 +158,45 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
             pass
 
 
+def health(config_module_=None) -> int:
+    """Проверка живости для Docker HEALTHCHECK.
+
+    Смотрит не «процесс запущен», а «сервис делает свою работу»: база
+    открывается и расписание опрашивалось не слишком давно. Зависший процесс
+    выглядит для докера живым, и без этой проверки restart-policy его не
+    перезапустит.
+    """
+    load_dotenv(Path(".env"))
+    config = config_module.load()
+    setup_logging(config.log_level)
+    try:
+        storage = Storage(config.db_path)
+    except Exception as exc:  # noqa: BLE001 - причину надо показать
+        print(f"нездоров: база не открывается: {exc}")
+        return 1
+
+    try:
+        last_poll = storage.get_meta("last_schedule_poll_utc")
+        if not last_poll:
+            # Сервис только что стартовал и ещё не успел опросить — это не
+            # повод его убивать.
+            print("здоров: опросов ещё не было")
+            return 0
+        from .state.db import parse_iso, utcnow
+        age = (utcnow() - parse_iso(last_poll)).total_seconds()
+        limit = config.interval_for("idle") * 2 + 300
+        if age > limit:
+            print(f"нездоров: расписание не опрашивалось {int(age)} с (порог {int(limit)})")
+            return 1
+        print(f"здоров: последний опрос {int(age)} с назад")
+        return 0
+    finally:
+        storage.close()
+
+
 def main() -> int:
+    if "--health" in sys.argv:
+        return health()
     try:
         return asyncio.run(run())
     except KeyboardInterrupt:

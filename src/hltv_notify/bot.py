@@ -12,6 +12,8 @@ import logging
 import re
 from typing import Optional
 
+from zoneinfo import ZoneInfo
+
 from .config import HLTV_BASE, Config
 from .notify import format as fmt
 from .sources import team_page
@@ -24,6 +26,27 @@ from .watchdog import Watchdog
 log = logging.getLogger(__name__)
 
 TEAM_URL_RE = re.compile(r"/team/(\d+)(?:/([^/?#\s]+))?")
+
+
+DURATION_RE = re.compile(r"^(\d+)\s*([мmчh]?)", re.IGNORECASE)
+
+
+def _parse_minutes(argument: str):
+    """«15», «15m», «90», «2h» → минуты. None — не разобрали."""
+    found = DURATION_RE.match((argument or "").strip())
+    if not found:
+        return None
+    value = int(found.group(1))
+    if found.group(2).lower() in ("ч", "h"):
+        value *= 60
+    return value if 1 <= value <= 24 * 60 else None
+
+
+def _human(minutes: int) -> str:
+    if minutes < 60:
+        return f"{minutes} мин"
+    hours, rest = divmod(minutes, 60)
+    return f"{hours} ч" if rest == 0 else f"{hours} ч {rest} мин"
 
 
 def _parse_team_ref(argument: str):
@@ -45,6 +68,9 @@ HELP = (
     "/untrack &lt;id&gt; — перестать отслеживать\n"
     "/mute &lt;id&gt; &lt;E5,E9&gt; — заглушить типы событий по команде\n"
     "/unmute &lt;id&gt; — снять все глушения по команде\n"
+    "/remind [15m|1h] — напоминания перед матчем, /remind rm 15m — убрать\n"
+    "/tz &lt;Europe/Berlin&gt; — ваш часовой пояс\n"
+    "/pause — молчать, /resume — снова слать\n"
     "/whoami — ваш chat_id\n"
     "/status — состояние сервиса и источников\n"
     "/next — ближайшие матчи по данным сервиса\n"
@@ -141,6 +167,14 @@ class CommandBot:
                 reply = self._mute(chat_id, argument)
             elif command == "/unmute":
                 reply = self._unmute(chat_id, argument)
+            elif command == "/remind":
+                reply = self._remind(chat_id, argument)
+            elif command == "/tz":
+                reply = self._timezone(chat_id, argument)
+            elif command == "/pause":
+                reply = self._pause(chat_id, True)
+            elif command == "/resume":
+                reply = self._pause(chat_id, False)
             elif command in handlers:
                 result = handlers[command]()
                 reply = await result if asyncio.iscoroutine(result) else result
@@ -284,6 +318,56 @@ class CommandBot:
             return f"Вы не отслеживаете команду {team_id}."
         self.storage.set_team_mutes(chat_id, team_id, [])
         return f"По команде <b>{fmt.escape(row['name'])}</b> глушения сняты."
+
+    def _remind(self, chat_id: str, argument: str) -> str:
+        """Список интервалов, за сколько до матча напоминать."""
+        parts = argument.split()
+        if not parts:
+            return self._remind_list(chat_id)
+
+        removing = parts[0].lower() in ("rm", "del", "-", "убрать", "удалить")
+        value = _parse_minutes(parts[1] if removing and len(parts) > 1 else parts[0])
+        if value is None:
+            return ("Использование: /remind 15m — добавить, /remind rm 15m — убрать.\n"
+                    "Принимаю минуты и часы: 15, 30m, 1h, 2h.")
+
+        if removing:
+            if not self.storage.remove_reminder(chat_id, value):
+                return f"Напоминания за {fmt.escape(_human(value))} и не было."
+            return f"Убрал напоминание за {fmt.escape(_human(value))}.\n\n" + \
+                   self._remind_list(chat_id)
+        if not self.storage.add_reminder(chat_id, value):
+            return f"Напоминание за {fmt.escape(_human(value))} уже стоит."
+        return f"Буду напоминать за {fmt.escape(_human(value))}.\n\n" + \
+               self._remind_list(chat_id)
+
+    def _remind_list(self, chat_id: str) -> str:
+        values = self.storage.reminders(chat_id)
+        if not values:
+            return "Напоминаний нет. Добавить: /remind 15m"
+        listed = ", ".join(_human(value) for value in values)
+        return f"<b>Напоминаю за:</b> {fmt.escape(listed)}"
+
+    def _timezone(self, chat_id: str, argument: str) -> str:
+        """Свой пояс у каждого: подписчики могут жить в разных."""
+        current = self.storage.subscriber_timezone(chat_id, self.config.timezone)
+        if not argument:
+            return (f"Ваш пояс: <b>{fmt.escape(current)}</b>\n"
+                    "Сменить: /tz Europe/Berlin")
+        try:
+            ZoneInfo(argument)
+        except Exception:  # noqa: BLE001 - имя пояса приходит от человека
+            return (f"Не знаю пояс «{fmt.escape(argument)}».\n"
+                    "Нужно имя из базы IANA, например Europe/Moscow или Asia/Tbilisi.")
+        self.storage.set_subscriber_timezone(chat_id, argument)
+        return f"Время буду показывать в <b>{fmt.escape(argument)}</b>."
+
+    def _pause(self, chat_id: str, paused: bool) -> str:
+        self.storage.set_subscriber_paused(chat_id, paused)
+        if paused:
+            return ("Молчу. Уведомления не будут ни приходить, ни копиться — "
+                    "пропущенное потом не досылается.\nВключить обратно: /resume")
+        return "Снова на связи."
 
     def _feed_line(self) -> str:
         """Состояние живого фида: от него зависят E5, мультикиллы и скорость E6."""

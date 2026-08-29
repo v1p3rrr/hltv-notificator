@@ -39,8 +39,11 @@ class Notifier:
         """
         created = 0
         for chat_id, for_team_id in self._recipients(event):
-            body = fmt.render(event, team_name=self.config.team_name,
-                              tz_name=self.config.timezone, for_team_id=for_team_id)
+            body = fmt.render(
+                event, team_name=self.config.team_name,
+                # Пояс у каждого свой: подписчики могут жить в разных.
+                tz_name=self.storage.subscriber_timezone(chat_id, self.config.timezone),
+                for_team_id=for_team_id)
             if self.storage.record_event(
                     idempotency_key=event.idempotency_key,
                     event_type=event.type,
@@ -64,9 +67,21 @@ class Notifier:
         подписчику, если ХОТЯ БЫ ОДНА из его команд в этом матче не заглушила
         такой тип. Иначе одна команда молча глушила бы уведомления про другую.
         """
-        subscribers = self.storage.subscriber_ids()
+        subscribers = [chat for chat in self.storage.subscriber_ids()
+                       if not self.storage.subscriber_paused(chat)]
+        only_chat = event.payload.get("only_chat")
+        if only_chat is not None:
+            # Адресное событие (напоминание): интервалы у подписчиков разные,
+            # и рассылать его всем участникам матча нельзя.
+            if only_chat not in subscribers:
+                return []
+            subscribers = [only_chat]
+
         if not subscribers:
-            # Одиночный режим: подписчиков нет, шлём в чат из конфига.
+            # Одиночный режим: подписчиков нет — шлём в чат из конфига. Если
+            # же все на паузе, молчим: это и есть смысл паузы.
+            if self.storage.subscribers():
+                return []
             return [(self.config.chat_id, None)]
 
         if event.match_id is None:
@@ -82,10 +97,23 @@ class Notifier:
         if not teams:
             return [(self.config.chat_id, None)]
 
+        # ВАЖНО: сверяемся с уже отфильтрованным списком. subscribers_tracking
+        # ходит в базу отдельным запросом и про паузу ничего не знает — без
+        # этой проверки поставленный на паузу получал бы все матчевые события.
+        allowed = set(subscribers)
         by_chat = {}
         for team_id in teams:
             for chat in self.storage.subscribers_tracking(team_id):
+                if chat not in allowed:
+                    continue
                 by_chat.setdefault(chat, []).append(team_id)
+
+        if only_chat is not None:
+            by_chat = {chat: teams for chat, teams in by_chat.items() if chat == only_chat}
+            if not by_chat:
+                # Матч ещё не связан с командами — напоминание всё равно
+                # адресное, показываем его от лица матча.
+                return [(only_chat, None)]
 
         recipients = []
         for chat, their_teams in by_chat.items():

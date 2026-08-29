@@ -22,3 +22,13 @@ def test_version_is_readable_the_way_ci_reads_it():
 
 def test_version_looks_like_a_release_number():
     assert re.fullmatch(r"\d+\.\d+\.\d+", hltv_notify.__version__)
+
+
+def test_pyproject_version_matches_the_code():
+    """Версия теперь в двух местах: в коде её читает CI, в pyproject — pip.
+    Разъехавшись, они дадут пакет с одним номером и образ с другим."""
+    project = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    found = re.search(r'^version = "([^"]+)"', project.read_text(encoding="utf-8"),
+                      re.MULTILINE)
+    assert found is not None
+    assert found.group(1) == hltv_notify.__version__
