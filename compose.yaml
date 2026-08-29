@@ -21,6 +21,17 @@ services:
       # Любая зона из базы IANA: Europe/Moscow, Europe/Riga, Asia/Tbilisi...
       TZ_DISPLAY: ${TZ_DISPLAY:-Europe/Moscow}
 
+      # Прокси, если из этой сети HLTV или Telegram напрямую не достать.
+      # Имена стандартные, верхний регистр работает (сервис читает переменные
+      # сам — libcurl под ним HTTP_PROXY в верхнем регистре игнорирует).
+      # Схемы: http://, https://, socks5://, socks5h:// (у socks5h имя
+      # резолвит прокси, а не мы). Подробности — docs/operations.md.
+      #
+      # HTTP_PROXY: http://${LAN_IP}:20171
+      # HTTPS_PROXY: http://${LAN_IP}:20171
+      # ALL_PROXY: socks5h://${LAN_IP}:20170
+      # NO_PROXY: localhost,127.0.0.1,192.168.1.0/24,10.0.0.0/24
+
     volumes:
       # ⚠️ В этом каталоге лежит не только состояние, но и ЖУРНАЛ отправленных
       # уведомлений. Потеря тома означает, что сервис сочтёт новым всё, что

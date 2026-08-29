@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from curl_cffi.requests import AsyncSession
 
 log = logging.getLogger(__name__)
 
-API = "https://api.telegram.org/bot{token}/{method}"
+API_BASE = "https://api.telegram.org"
+API = API_BASE + "/bot{token}/{method}"
 
 
 class TelegramError(RuntimeError):
@@ -25,13 +26,16 @@ class TelegramError(RuntimeError):
 
 
 class Telegram:
-    def __init__(self, token: str):
+    def __init__(self, token: str, proxies: Optional[Mapping[str, str]] = None):
         self._token = token
+        # Прокси у Telegram свой на случай, если api.telegram.org попал в
+        # NO_PROXY, а HLTV — нет (или наоборот).
+        self._proxies = dict(proxies or {})
         self._session: Optional[AsyncSession] = None
 
     async def _ensure(self) -> AsyncSession:
         if self._session is None:
-            self._session = AsyncSession()
+            self._session = AsyncSession(proxies=self._proxies)
         return self._session
 
     async def close(self) -> None:

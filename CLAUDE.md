@@ -52,6 +52,7 @@ src/hltv_notify/
   __main__.py          точка входа, поднимает задачи, гасит по сигналу
   config.py            переменные окружения + ПОТОЛОК частоты
   http.py              единственная точка выхода в сеть (curl_cffi)
+  proxy.py             HTTP_PROXY/ALL_PROXY/NO_PROXY для всех трёх сессий
   scoring.py           закончена ли карта по счёту (пороги от формата)
   scheduler.py         опрос страницы команды, режимы частот
   match_poller.py      опрос страниц матчей, поднимает живые воркеры
@@ -179,6 +180,12 @@ Telegram крутит индикатор до таймаута, и челове�
 **Обычные HTTP-клиенты получают 403.** Отсев по TLS-фингерпринту, а не по
 заголовкам. Их перебор бесполезен — только `curl_cffi` с impersonation.
 
+**`HTTP_PROXY` в верхнем регистре libcurl игнорирует.** Намеренно, наследие
+CGI. А в `compose.yaml` пишут именно так, поэтому переменные читает сам сервис
+(`proxy.py`) и передаёт в сессию явно. Там же неочевидное: при попадании в
+`NO_PROXY` прокси выставляется в ПУСТУЮ СТРОКУ, а не «не выставляется» — иначе
+libcurl подхватит переменную окружения сам и обход не сработает.
+
 **Логи на русском под Windows роняют обработчик.** Консоль в cp1252.
 `setup_logging` принудительно переводит потоки в UTF-8; в скриптах —
 `PYTHONIOENCODING=utf-8`.
@@ -190,7 +197,7 @@ Telegram крутит индикатор до таймаута, и челове�
 ## Команды
 
 ```bash
-python -m pytest                                    # 270 тестов
+python -m pytest                                    # 295 тестов
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <дамп.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # пересобрать HTML-фикстуры

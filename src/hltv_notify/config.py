@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import List
+from typing import Dict, List
 from pathlib import Path
+
+from .proxy import ProxySettings
 
 # Потолок частоты, зашитый в код. Конфигом не поднимается — см. docs/operations.md.
 HARD_MIN_REQUEST_INTERVAL_SECONDS = 30.0
@@ -96,6 +98,9 @@ class Config:
     stale_minutes: int = field(default_factory=lambda: _int("STALE_MINUTES", 15))
 
     # HTTP
+    # Прокси берётся из стандартных HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY —
+    # своих переменных для этого не заводим, см. hltv_notify.proxy.
+    proxy: ProxySettings = field(default_factory=ProxySettings.from_env)
     impersonate: str = field(default_factory=lambda: _str("HTTP_IMPERSONATE", "chrome"))
     http_retries: int = field(default_factory=lambda: _int("HTTP_RETRIES", 3))
     failures_before_alert: int = field(
@@ -105,6 +110,10 @@ class Config:
     @property
     def team_url(self) -> str:
         return f"{HLTV_BASE}/team/{self.team_id}/{self.team_slug}"
+
+    def proxies_for(self, url: str) -> Dict[str, str]:
+        """Прокси для конкретного адреса — в том виде, в каком его ждёт curl_cffi."""
+        return self.proxy.for_url(url)
 
     def interval_for(self, mode: str) -> int:
         """Интервал опроса с учётом потолка: конфиг не может его пробить."""

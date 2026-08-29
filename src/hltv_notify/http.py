@@ -15,7 +15,7 @@ from typing import Optional
 
 from curl_cffi.requests import AsyncSession
 
-from .config import HARD_MIN_REQUEST_INTERVAL_SECONDS, Config
+from .config import HARD_MIN_REQUEST_INTERVAL_SECONDS, HLTV_BASE, Config
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +44,11 @@ class HltvHttp:
 
     async def _ensure_session(self) -> AsyncSession:
         if self._session is None:
-            self._session = AsyncSession(impersonate=self._config.impersonate)
+            # Сессия ходит только на HLTV, поэтому прокси выбирается один раз
+            # по базовому адресу — вместе с обходом из NO_PROXY.
+            self._session = AsyncSession(
+                impersonate=self._config.impersonate,
+                proxies=self._config.proxies_for(HLTV_BASE))
         return self._session
 
     async def close(self) -> None:

@@ -7,7 +7,9 @@ Telegram.
 ## Что нужно на сервере
 
 * Docker с плагином compose (`docker compose version`);
-* исходящий доступ к `hltv.org`, `scorebot-lb.hltv.org` и `api.telegram.org`;
+* исходящий доступ к `hltv.org`, `scorebot-lb.hltv.org` и `api.telegram.org` —
+  напрямую или через прокси (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`,
+  см. «Прокси» в [operations.md](operations.md));
 * каталог под данные — несколько мегабайт.
 
 Входящие порты открывать не нужно: бот работает через long-polling

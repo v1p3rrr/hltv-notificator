@@ -22,7 +22,7 @@ from .live_worker import LiveSupervisor
 from .match_poller import MatchPoller
 from .notify.live_message import LiveMessenger
 from .notify.outbox import Notifier
-from .notify.telegram import Telegram
+from .notify.telegram import API_BASE as TELEGRAM_API_BASE, Telegram
 from .reminders import ReminderScheduler
 from .scheduler import SchedulePoller
 from .watchdog import Watchdog
@@ -88,7 +88,9 @@ async def run() -> int:
         log.info("первая отслеживаемая команда взята из конфига: %s (id %s) для чата %s",
                  config.team_name, config.team_id, config.chat_id)
     http = HltvHttp(config)
-    telegram: Optional[Telegram] = Telegram(config.bot_token) if config.telegram_enabled() else None
+    telegram: Optional[Telegram] = (
+        Telegram(config.bot_token, config.proxies_for(TELEGRAM_API_BASE))
+        if config.telegram_enabled() else None)
     notifier = Notifier(storage, config, telegram)
     poller = SchedulePoller(storage, config, http, notifier)
     messenger = LiveMessenger(storage, config, telegram)
@@ -97,6 +99,10 @@ async def run() -> int:
 
     if config.dry_run:
         log.warning("DRY_RUN включён: уведомления пишутся в лог, в Telegram не уходят")
+    if config.proxy.configured:
+        # Печатаем всегда, когда прокси есть: молчаливый прокси — это полчаса
+        # разглядывания таймаутов на ровном месте.
+        log.info("%s", config.proxy.describe())
     if telegram is None:
         missing = []
         if not config.bot_token:

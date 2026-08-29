@@ -207,10 +207,13 @@ class ScorebotClient:
     """Одно соединение на матч. Реконнект — забота вызывающего."""
 
     def __init__(self, match_id: int, *, referer: Optional[str] = None,
-                 impersonate: str = "chrome"):
+                 impersonate: str = "chrome",
+                 proxies: Optional[dict] = None):
         self.match_id = str(match_id)
         self.referer = referer
         self._impersonate = impersonate
+        # Тот же прокси, что и у опроса страниц: фид живёт на поддомене hltv.org.
+        self._proxies = dict(proxies or {})
         self._session: Optional[AsyncSession] = None
         self.sid: Optional[str] = None
         self.ping_interval = 25.0
@@ -241,7 +244,8 @@ class ScorebotClient:
             raise FeedUnavailable(f"HTTP {response.status_code}")
 
     async def connect(self) -> None:
-        self._session = AsyncSession(impersonate=self._impersonate)
+        self._session = AsyncSession(impersonate=self._impersonate,
+                                     proxies=self._proxies)
         # Прогрев: страница матча ставит куки Cloudflare на .hltv.org.
         if self.referer:
             try:
