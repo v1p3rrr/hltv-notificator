@@ -18,6 +18,7 @@ from .config import HLTV_BASE, Config
 from .notify import format as fmt
 from .sources import team_page
 from .notify.telegram import Telegram, TelegramError
+from . import menu
 from .models import MatchState
 from .scheduler import LAST_ERROR_KEY, LAST_POLL_KEY, SchedulePoller
 from .state.db import Storage, parse_iso, utcnow
@@ -59,7 +60,9 @@ def _parse_team_ref(argument: str):
         return int(argument), None
     return None, None
 
-MUTABLE_EVENTS = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E9")
+# Единый список: и для текстовой /mute, и для кнопок. Двух копий быть не
+# должно — разойдутся, и кнопка начнёт глушить то, чего команда не умеет.
+MUTABLE_EVENTS = tuple(code for code, _ in menu.MUTABLE)
 
 HELP = (
     "Команды:\n"
@@ -71,6 +74,7 @@ HELP = (
     "/remind [15m|1h] — напоминания перед матчем, /remind rm 15m — убрать\n"
     "/tz &lt;Europe/Berlin&gt; — ваш часовой пояс\n"
     "/pause — молчать, /resume — снова слать\n"
+    "/menu — то же самое кнопками\n"
     "/whoami — ваш chat_id\n"
     "/status — состояние сервиса и источников\n"
     "/next — ближайшие матчи по данным сервиса\n"
@@ -114,7 +118,10 @@ class CommandBot:
 
             for update in updates:
                 self._offset = update["update_id"] + 1
-                await self._handle(update)
+                if "callback_query" in update:
+                    await self._handle_callback(update["callback_query"])
+                else:
+                    await self._handle(update)
 
     async def _handle(self, update: dict) -> None:
         message = update.get("message") or {}
@@ -155,6 +162,7 @@ class CommandBot:
             "/check": self._check,
             "/start": lambda: HELP,
             "/help": lambda: HELP,
+            "/menu": lambda: self._menu_text(chat_id),
         }
         try:
             if command == "/verbose":
@@ -184,13 +192,164 @@ class CommandBot:
             log.exception("ошибка обработки команды %s", command)
             reply = "Команда упала, подробности в логах."
 
-        await self._reply(chat_id, reply)
+        await self._reply(chat_id, reply, self._markup_for(chat_id, command))
 
-    async def _reply(self, chat_id: str, text: str) -> None:
+    def _markup_for(self, chat_id: str, command: str):
+        """Кнопки к ответу там, где они помогают: меню, список команд, интервалы."""
+        if command in ("/start", "/help", "/menu"):
+            return menu.main(self.storage.subscriber_paused(chat_id))
+        if command == "/teams":
+            return menu.teams(self.storage.teams(chat_id, enabled_only=False))
+        if command == "/remind":
+            return menu.reminders(self.storage.reminders(chat_id))
+        return None
+
+    async def _reply(self, chat_id: str, text: str, markup=None) -> None:
         try:
-            await self.telegram.send_message(chat_id, text)
+            await self.telegram.send_message(chat_id, text, reply_markup=markup)
         except TelegramError as exc:
             log.error("не удалось ответить в чат %s: %s", chat_id, exc)
+
+    # ------------------------------------------------------------------
+
+    async def _handle_callback(self, query: dict) -> None:
+        """Нажатие кнопки.
+
+        Отвечаем ВСЕГДА, даже если делать нечего: иначе Telegram крутит
+        индикатор у кнопки, пока не отвалится по таймауту, и человек думает,
+        что бот завис.
+        """
+        callback_id = query.get("id", "")
+        message = query.get("message") or {}
+        chat_id = str((message.get("chat") or {}).get("id", ""))
+        message_id = message.get("message_id")
+
+        if not self.config.chat_allowed(chat_id):
+            log.warning("нажатие из чата %s отклонено: его нет в белом списке", chat_id)
+            await self._answer(callback_id, "Нет доступа")
+            return
+        if self.storage.get_subscriber(chat_id) is None:
+            self.storage.add_subscriber(chat_id)
+
+        try:
+            text, markup, toast = self._dispatch_callback(chat_id, query.get("data", ""))
+        except Exception:  # noqa: BLE001 - кнопка не должна вешать бота
+            log.exception("ошибка обработки кнопки %s", query.get("data"))
+            text, markup, toast = "Кнопка упала, подробности в логах.", None, ""
+
+        await self._answer(callback_id, toast)
+        if text is None:
+            return
+        try:
+            await self.telegram.edit_message_text(chat_id, message_id, text,
+                                                  reply_markup=markup)
+        except TelegramError as exc:
+            # Например, текст не изменился — тогда просто ничего не делаем.
+            log.debug("сообщение %s не перерисовано: %s", message_id, exc)
+
+    async def _answer(self, callback_id: str, toast: str = "") -> None:
+        try:
+            await self.telegram.answer_callback_query(callback_id, toast)
+        except TelegramError as exc:
+            log.debug("не удалось подтвердить нажатие: %s", exc)
+
+    def _dispatch_callback(self, chat_id: str, data: str):
+        """Действие по кнопке → (текст, клавиатура, всплывашка)."""
+        parsed = menu.parse(data)
+        if parsed is None:
+            return None, None, ""
+        kind, args = parsed
+
+        if kind == "m":
+            section = args[0] if args else "main"
+            if section == "status":
+                return self._status(), menu.keyboard([menu.back()]), ""
+            if section == "live":
+                return self._live(), menu.keyboard([menu.back()]), ""
+            if section == "next":
+                return self._next(), menu.keyboard([menu.back()]), ""
+            if section == "teams":
+                return self._teams(chat_id), menu.teams(
+                    self.storage.teams(chat_id, enabled_only=False)), ""
+            if section == "rem":
+                return (self._remind_list(chat_id),
+                        menu.reminders(self.storage.reminders(chat_id)), "")
+            return self._menu_text(chat_id), menu.main(
+                self.storage.subscriber_paused(chat_id)), ""
+
+        if kind == "p":
+            paused = args and args[0] == "on"
+            self.storage.set_subscriber_paused(chat_id, bool(paused))
+            return (self._menu_text(chat_id), menu.main(bool(paused)),
+                    "Молчу" if paused else "Снова на связи")
+
+        if kind == "r" and args:
+            minutes = int(args[0])
+            if self.storage.remove_reminder(chat_id, minutes):
+                toast = "Убрано"
+            else:
+                self.storage.add_reminder(chat_id, minutes)
+                toast = "Добавлено"
+            return (self._remind_list(chat_id),
+                    menu.reminders(self.storage.reminders(chat_id)), toast)
+
+        if kind == "t" and args:
+            return self._team_callback(chat_id, args)
+
+        return None, None, ""
+
+    def _team_callback(self, chat_id: str, args):
+        team_id = int(args[0])
+        row = self.storage.get_team(chat_id, team_id)
+        if row is None:
+            return ("Такой команды у вас нет.",
+                    menu.teams(self.storage.teams(chat_id, enabled_only=False)), "")
+
+        action = args[1] if len(args) > 1 else ""
+        toast = ""
+        if action == "rm":
+            self.storage.set_team_enabled(chat_id, team_id, False)
+            toast = "Больше не отслеживаю"
+        elif action == "on":
+            self.storage.set_team_enabled(chat_id, team_id, True)
+            toast = "Снова отслеживаю"
+        elif action == "x" and len(args) > 2:
+            code = args[2]
+            muted = self.storage.team_mutes(chat_id, team_id)
+            if code in muted:
+                muted.remove(code)
+                toast = f"{code} снова приходит"
+            else:
+                muted.append(code)
+                toast = f"{code} заглушено"
+            self.storage.set_team_mutes(chat_id, team_id, muted)
+
+        row = self.storage.get_team(chat_id, team_id)
+        return (self._team_text(row),
+                menu.team(team_id, row["name"], self.storage.team_mutes(chat_id, team_id),
+                          bool(row["enabled"])),
+                toast)
+
+    def _team_text(self, row) -> str:
+        muted = [code for code in (row["muted_events"] or "").split(",") if code]
+        lines = [f"<b>{fmt.escape(row['name'])}</b>  ·  id {row['team_id']}"]
+        if not row["enabled"]:
+            lines.append("Отслеживание выключено.")
+        lines.append("Заглушено: " + (", ".join(muted) if muted else "ничего"))
+        lines.append("")
+        lines.append("🔔 — приходит, 🔕 — заглушено. Нажатие переключает.")
+        return "\n".join(lines)
+
+    def _menu_text(self, chat_id: str) -> str:
+        teams = self.storage.teams(chat_id)
+        paused = self.storage.subscriber_paused(chat_id)
+        lines = ["<b>Меню</b>",
+                 f"Команд у вас: {len(teams)}"]
+        if paused:
+            lines.append("⚠️ Уведомления сейчас выключены.")
+        lines.append("")
+        lines.append("Всё то же есть командами — /help.")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
 

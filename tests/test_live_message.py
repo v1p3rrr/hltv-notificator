@@ -16,14 +16,15 @@ CHAT = "1"   # chat_id из live_config()
 class FakeTelegram:
     def __init__(self, fail_edit=False):
         self.sent = []
+        self.answered = []
         self.edited = []
         self.fail_edit = fail_edit
 
-    async def send_message(self, chat_id, text):
+    async def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append(text)
         return 1000 + len(self.sent)
 
-    async def edit_message_text(self, chat_id, message_id, text):
+    async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
         if self.fail_edit:
             raise TelegramError("Telegram 429: Too Many Requests", retry_after=5)
         self.edited.append((message_id, text))

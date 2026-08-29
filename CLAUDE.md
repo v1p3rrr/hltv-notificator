@@ -81,6 +81,15 @@ scripts/               сбор фикстур: fetch_fixtures, record_scorebot,
 
 Каждая стоила времени. Не наступать повторно.
 
+**На нажатие кнопки надо ответить ВСЕГДА.** Без `answerCallbackQuery`
+Telegram крутит индикатор до таймаута, и человек считает, что бот завис.
+Отвечаем даже когда делать нечего.
+
+**Список глушимых типов один** — `menu.MUTABLE`, из него же берётся
+`MUTABLE_EVENTS` для текстовой `/mute`. Две копии разойдутся, и кнопка начнёт
+глушить то, чего команда не умеет. E8 в список не входит намеренно: заглушив
+тревогу, можно не узнать, что сервис ослеп.
+
 **Обновление старой базы обязано сохранять журнал.** Ключи, записанные до
 появления подписчиков, разово получают префикс чата
 (`adopt_legacy_event_keys`). Без этого первый же запуск новой версии счёл бы
@@ -181,7 +190,7 @@ scripts/               сбор фикстур: fetch_fixtures, record_scorebot,
 ## Команды
 
 ```bash
-python -m pytest                                    # 255 тестов
+python -m pytest                                    # 270 тестов
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <дамп.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # пересобрать HTML-фикстуры

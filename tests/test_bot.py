@@ -21,10 +21,14 @@ MATCH_ID = 900
 class FakeTelegram:
     def __init__(self):
         self.sent = []
+        self.answered = []
 
-    async def send_message(self, chat_id, text):
+    async def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append((chat_id, text))
         return len(self.sent)
+
+    async def answer_callback_query(self, callback_id, text=""):
+        self.answered.append((callback_id, text))
 
     async def get_updates(self, offset, timeout=25):
         return []
