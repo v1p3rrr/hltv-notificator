@@ -55,9 +55,14 @@ class LiveMachine:
         team_id = self.config.team_id
         ours, theirs = frame.our_score(team_id)
         if ours is None or theirs is None:
-            # Фид отдал не тот матч, либо команда сменила id. Записывать чужой
-            # счёт опаснее, чем промолчать.
-            log.warning("в кадре матча %s нет команды %s — кадр отброшен", match_id, team_id)
+            # Записывать чужой счёт опаснее, чем промолчать. Но шуметь стоит
+            # только когда id команд проставлены и просто не наши: пока фид их
+            # не заполнил, это обычные переходные кадры между картами.
+            if frame.ct_team_id or frame.t_team_id:
+                log.warning("в кадре матча %s нет команды %s — кадр отброшен",
+                            match_id, team_id)
+            else:
+                log.debug("переходный кадр матча %s без команд — пропущен", match_id)
             return []
 
         map_name = normalize_map_name(frame.map_name)

@@ -121,7 +121,9 @@ class MatchPoller:
             log.error("разбор страницы матча %s не удался: %s", match_id, exc)
             return self._degraded(f"Страница матча {match_id} не разобралась: {exc}")
 
-        events = self.machine.apply(observation)
+        feed_connected = bool(
+            self.supervisor and self.supervisor.connected_matches().get(match_id))
+        events = self.machine.apply(observation, feed_connected=feed_connected)
         for event in events:
             self.notifier.enqueue(event)
         if events:

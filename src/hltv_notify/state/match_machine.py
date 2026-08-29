@@ -28,6 +28,11 @@ STATUS_TO_STATE = {
 
 TERMINAL = {MatchState.FINISHED, MatchState.CANCELLED}
 
+# Перерыв между картами — это нормальная пауза, и она бывает долгой: на LAN
+# между картами проходит и двадцать минут. Порог «матч завис» на это время
+# растягивается, иначе каждый перерыв давал бы ложную тревогу.
+BREAK_THRESHOLD_MULTIPLIER = 3
+
 
 def _overtime(line: MapLine) -> bool:
     """Овертайм — по числу половин, а не по арифметике счёта.
@@ -48,7 +53,8 @@ class MatchMachine:
 
     # ------------------------------------------------------------------
 
-    def apply(self, observation: MatchObservation, now: Optional[datetime] = None) -> List[Event]:
+    def apply(self, observation: MatchObservation, now: Optional[datetime] = None,
+              *, feed_connected: bool = False) -> List[Event]:
         now = now or utcnow()
         team_id = self.config.team_id
         match_id = observation.match_id
@@ -107,7 +113,8 @@ class MatchMachine:
                 log.info("матч %s обнаружен уже завершённым, E4 и E6 пропущены", match_id)
             events.append(self._event_e7(observation, row, team_id, ours, theirs))
 
-        events.extend(self._check_stall(observation, team_id, target, now))
+        events.extend(self._check_stall(observation, team_id, target, now,
+                                        feed_connected=feed_connected))
         return events
 
     # ------------------------------------------------------------------
@@ -157,15 +164,24 @@ class MatchMachine:
     # ------------------------------------------------------------------
 
     def _check_stall(self, observation: MatchObservation, team_id: int,
-                     state: str, now: datetime) -> List[Event]:
+                     state: str, now: datetime, *, feed_connected: bool = False) -> List[Event]:
         """«Матч завис»: идёт, но ничего не меняется дольше порога.
 
-        Технические паузы бывают долгими, поэтому порог, а не мгновенная
-        тревога. Ключ включает отпечаток застывшего состояния: одно
-        уведомление на одно зависание, но повторное зависание в другой точке
-        матча сообщится снова.
+        Смысл события — «я ослеп», а не «игроки долго не стреляют». Поэтому:
+
+        * пока живой фид на связи, тревоги нет вообще. Мы видим матч по фиду,
+          а его молчание в паузе — это не слепота. Здоровье самого фида
+          отслеживается отдельно;
+        * между картами порог растягивается: на LAN перерыв спокойно длится
+          двадцать минут, и на реальном матче это уже дало ложную тревогу.
         """
         if state != MatchState.LIVE:
+            return []
+        if feed_connected:
+            # Таймер не копится, иначе после отключения фида тревога прилетела
+            # бы мгновенно за всё время, что он работал.
+            self.storage.set_progress(
+                observation.match_id, observation.progress_signature(team_id), now)
             return []
 
         signature = observation.progress_signature(team_id)
@@ -177,8 +193,13 @@ class MatchMachine:
             self.storage.set_progress(observation.match_id, signature, now)
             return []
 
+        between_maps = observation.live_map() is None
+        threshold = timedelta(minutes=self.config.stale_minutes)
+        if between_maps:
+            threshold *= BREAK_THRESHOLD_MULTIPLIER
+
         stalled_for = now - parse_iso(since_raw)
-        if stalled_for < timedelta(minutes=self.config.stale_minutes):
+        if stalled_for < threshold:
             return []
 
         digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:12]
@@ -190,7 +211,8 @@ class MatchMachine:
             payload={
                 "reason": "Матч завис",
                 "detail": (f"Счёт и состояние не меняются {minutes} мин, "
-                           f"страница матча всё ещё показывает LIVE."),
+                           f"страница матча всё ещё показывает LIVE, "
+                           f"живого фида нет."),
             },
         )]
 

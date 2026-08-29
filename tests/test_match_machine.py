@@ -128,9 +128,10 @@ def test_overtime_detected_by_halves_not_by_score(storage, config):
 
 
 def test_stall_reported_only_after_threshold(storage, config):
+    """Зависание ПОСРЕДИ карты: карта идёт, но счёт не двигается."""
     add_match(storage)
     m = MatchMachine(storage, config)
-    frozen = observe("live", maps((5, 7, None), None, None))
+    frozen = observe("live", [live_map_line(1, 5, 7)] + maps(None, None)[1:])
     now = utcnow()
 
     assert [e.type for e in m.apply(frozen, now=now)] == ["E4"]
@@ -147,12 +148,55 @@ def test_progress_resets_the_stall_timer(storage, config):
     add_match(storage)
     m = MatchMachine(storage, config)
     now = utcnow()
-    m.apply(observe("live", maps((5, 7, None), None, None)), now=now)
+    m.apply(observe("live", [live_map_line(1, 5, 7)] + maps(None, None)[1:]), now=now)
     moved = now + timedelta(minutes=config.stale_minutes - 1)
-    m.apply(observe("live", maps((6, 7, None), None, None)), now=moved)
-    events = m.apply(observe("live", maps((6, 7, None), None, None)),
+    m.apply(observe("live", [live_map_line(1, 6, 7)] + maps(None, None)[1:]), now=moved)
+    events = m.apply(observe("live", [live_map_line(1, 6, 7)] + maps(None, None)[1:]),
                      now=moved + timedelta(minutes=config.stale_minutes - 1))
     assert events == []
+
+
+def test_break_between_maps_is_not_a_stall(storage, config):
+    """Реальный случай с матча BLAST: карта закончилась, следующая ещё не
+    началась, и через 20 минут прилетело ложное «матч завис». Между картами
+    порог растягивается."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    between = observe("live", maps((13, 4, "( 8 : 4 ; 5 : 0 )"), None, None))
+    now = utcnow()
+    m.apply(between, now=now)
+
+    normal = now + timedelta(minutes=config.stale_minutes + 1)
+    assert m.apply(between, now=normal) == []
+
+    very_long = now + timedelta(minutes=config.stale_minutes * 3 + 1)
+    assert [e.type for e in m.apply(between, now=very_long)] == ["E8"]
+
+
+def test_no_stall_alert_while_the_live_feed_is_connected(storage, config):
+    """Смысл события — «я ослеп». Пока фид на связи, мы видим матч, и его
+    молчание в паузе слепотой не является."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    frozen = observe("live", [live_map_line(1, 5, 7)] + maps(None, None)[1:])
+    now = utcnow()
+    m.apply(frozen, now=now, feed_connected=True)
+    late = now + timedelta(minutes=config.stale_minutes * 5)
+    assert m.apply(frozen, now=late, feed_connected=True) == []
+
+
+def test_stall_timer_does_not_accumulate_under_a_working_feed(storage, config):
+    """После отключения фида тревога не должна прилететь мгновенно за всё
+    время, что он работал."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    frozen = observe("live", [live_map_line(1, 5, 7)] + maps(None, None)[1:])
+    now = utcnow()
+    m.apply(frozen, now=now, feed_connected=True)
+    later = now + timedelta(hours=2)
+    assert m.apply(frozen, now=later, feed_connected=True) == []
+    # фид отвалился — отсчёт начинается заново, а не задним числом
+    assert m.apply(frozen, now=later, feed_connected=False) == []
 
 
 def test_observation_without_our_team_is_dropped(storage, config):
