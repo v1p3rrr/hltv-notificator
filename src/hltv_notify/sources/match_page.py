@@ -13,11 +13,26 @@
         .won / .lost               счёт СЕРИИ, но только у завершённого матча
     .mapholder
         .mapname                   имя карты, "TBA" до вето
-        .results-team-score x2     счёт карты, "-" у несыгранной
+        .results-team-score x2     счёт карты — но у ИДУЩЕЙ карты это
+                                   текущий счёт, а не финальный
         .results-center-half-score "( 5 : 7 ; 8 : 3 )"
+        .results-stats             ссылка на статистику карты. Появляется
+                                   ровно в момент её завершения
 
-Счёт серии во время игры на странице не выводится, поэтому считается по
-числу решённых карт — это же и есть правило конца карты из решения D7.
+Правило конца карты (D7). Наивное «есть числовой счёт» неверно: у идущей
+карты счёт тоже числовой. Наблюдение на живом матче 2397091: пока Mirage
+шла, в счёте стояло 5:7 и ссылки на статистику не было; как только карта
+закончилась, счёт стал 11:13 и появилась `.results-stats`. Классы
+`won`/`lost` не помогают — на идущей карте HLTV помечает ими текущего
+лидера. Арифметика по раундам тоже не годится: она ломается на овертаймах,
+форфейтах и нестандартных регламентах.
+
+Признаком служит появление записи статистики карты — HLTV заводит её, когда
+карта сыграна. Для завершённого матча признак дополняется статусом страницы:
+у форфейта статистики может не быть вовсе.
+
+Счёт серии во время игры на странице не выводится и считается по
+завершённым картам.
 """
 
 from __future__ import annotations
@@ -53,13 +68,15 @@ class MapLine:
     score_left: Optional[int]
     score_right: Optional[int]
     halves: Optional[str]
+    has_stats: bool = False
 
     @property
-    def decided(self) -> bool:
-        """Карта считается сыгранной, когда у неё появился числовой счёт.
+    def has_score(self) -> bool:
+        """У карты есть числовой счёт.
 
-        Не «13 раундов»: правило не должно ломаться на овертайме, на форматах
-        с другим числом раундов и на технических поражениях.
+        ВНИМАНИЕ: этого мало, чтобы считать карту сыгранной. У идущей карты
+        счёт тоже числовой — он просто текущий. Признак завершённости — см.
+        MatchObservation.is_final().
         """
         return self.score_left is not None and self.score_right is not None
 
@@ -96,8 +113,28 @@ class MatchObservation:
             return self.team1_id, self.team1_name
         return None, ""
 
-    def decided_maps(self) -> List[MapLine]:
-        return [m for m in self.maps if m.decided]
+    def is_final(self, line: MapLine) -> bool:
+        """Карта сыграна: есть счёт И есть запись статистики.
+
+        Статус `over` служит запасным признаком: если матч завершён, всё, у
+        чего есть счёт, доиграно — включая карты, отданные форфейтом, у
+        которых статистики может не быть.
+        """
+        if not line.has_score:
+            return False
+        return line.has_stats or self.status == STATUS_OVER
+
+    def final_maps(self) -> List[MapLine]:
+        return [m for m in self.maps if self.is_final(m)]
+
+    def live_map(self) -> Optional[MapLine]:
+        """Карта, которая идёт прямо сейчас: со счётом, но ещё без статистики."""
+        if self.status != STATUS_LIVE:
+            return None
+        for line in self.maps:
+            if line.has_score and not line.has_stats:
+                return line
+        return None
 
     def map_score(self, line: MapLine, team_id: int) -> Tuple[Optional[int], Optional[int]]:
         """Счёт карты, ориентированный на нашу команду."""
@@ -109,7 +146,7 @@ class MatchObservation:
         """Счёт серии по картам. Считается по решённым картам, потому что
         готовый счёт серии страница показывает только у завершённого матча."""
         ours = theirs = 0
-        for line in self.decided_maps():
+        for line in self.final_maps():
             our_score, their_score = self.map_score(line, team_id)
             if our_score is None or their_score is None:
                 continue
@@ -127,7 +164,7 @@ class MatchObservation:
         соврать в сообщении о более ранней карте.
         """
         ours = theirs = 0
-        for line in self.decided_maps():
+        for line in self.final_maps():
             if line.number > map_number:
                 continue
             our_score, their_score = self.map_score(line, team_id)
@@ -210,15 +247,18 @@ def parse(html: str, match_id: int) -> MatchObservation:
     maps: List[MapLine] = []
     for number, holder in enumerate(soup.select(".mapholder"), start=1):
         name_el = holder.select_one(".mapname")
-        scores = [_int_or_none(e.get_text(strip=True))
-                  for e in holder.select(".results-team-score")]
+        # Скоуп по сторонам, а не holder.select(".results-team-score"): половины
+        # лежат отдельно, и смешивать их со счётом карты нельзя.
+        left_el = holder.select_one(".results-left .results-team-score")
+        right_el = holder.select_one(".results-right .results-team-score")
         halves_el = holder.select_one(".results-center-half-score")
         maps.append(MapLine(
             number=number,
             name=name_el.get_text(strip=True) if name_el else "TBA",
-            score_left=scores[0] if len(scores) > 0 else None,
-            score_right=scores[1] if len(scores) > 1 else None,
+            score_left=_int_or_none(left_el.get_text(strip=True)) if left_el else None,
+            score_right=_int_or_none(right_el.get_text(strip=True)) if right_el else None,
             halves=halves_el.get_text(" ", strip=True) if halves_el else None,
+            has_stats=holder.select_one(".results-stats") is not None,
         ))
 
     scoreboard = soup.select_one("#scoreboardElement")

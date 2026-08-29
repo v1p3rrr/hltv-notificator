@@ -63,7 +63,11 @@ class MatchMachine:
         row = self.storage.get_match(match_id)
         state_row = self.storage.get_state(match_id)
         previous = state_row["state"] if state_row else MatchState.SCHEDULED
-        first_observation = state_row is None
+        # Именно первое наблюдение СО СТРАНИЦЫ МАТЧА, а не первое вообще:
+        # строку состояния заводит опрос расписания, поэтому проверка
+        # «state_row is None» здесь почти всегда ложна и карты, доигранные до
+        # начала наблюдения, получали бы E6 задним числом.
+        first_observation = state_row is None or state_row["last_source"] != "match_page"
         target = STATUS_TO_STATE.get(observation.status, previous)
 
         # Снимок ДО записи результатов: по нему видно, какие карты решились
@@ -105,11 +109,14 @@ class MatchMachine:
 
     def _current_map(self, observation: MatchObservation) -> Optional[MapLine]:
         """Текущая карта — первая нерешённая с известным названием."""
+        live = observation.live_map()
+        if live is not None:
+            return live
         for line in observation.maps:
-            if not line.decided and line.name and line.name.upper() != "TBA":
+            if not observation.is_final(line) and line.name and line.name.upper() != "TBA":
                 return line
-        decided = observation.decided_maps()
-        return decided[-1] if decided else None
+        final = observation.final_maps()
+        return final[-1] if final else None
 
     def _map_events(self, observation: MatchObservation, row, team_id: int,
                     known_maps: set, *, silent: bool) -> List[Event]:
@@ -120,7 +127,7 @@ class MatchMachine:
         даже исправление счёта на стороне HLTV не приведёт к молчанию.
         """
         events: List[Event] = []
-        for line in observation.decided_maps():
+        for line in observation.final_maps():
             if line.number in known_maps:
                 continue
             if silent:
@@ -133,7 +140,7 @@ class MatchMachine:
         return events
 
     def _store_map_results(self, observation: MatchObservation, team_id: int) -> None:
-        for line in observation.decided_maps():
+        for line in observation.final_maps():
             ours, theirs = observation.map_score(line, team_id)
             if ours is None or theirs is None:
                 continue
@@ -232,7 +239,7 @@ class MatchMachine:
                   ours: int, theirs: int) -> Event:
         opponent_id, opponent_name = observation.opponent(team_id)
         maps = []
-        for line in observation.decided_maps():
+        for line in observation.final_maps():
             our_score, their_score = observation.map_score(line, team_id)
             maps.append({
                 "number": line.number,

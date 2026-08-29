@@ -67,13 +67,13 @@ def test_undecided_maps_are_not_counted(finished):
     """Решающая карта не игралась и должна остаться нерешённой, а не 0:0."""
     decider = finished.maps[2]
     assert decider.name == "Nuke"
-    assert decider.decided is False
-    assert len(finished.decided_maps()) == 2
+    assert decider.has_score is False
+    assert len(finished.final_maps()) == 2
 
 
 def test_maps_are_tba_before_veto(upcoming):
     assert [m.name for m in upcoming.maps] == ["TBA", "TBA", "TBA"]
-    assert upcoming.decided_maps() == []
+    assert upcoming.final_maps() == []
 
 
 def test_best_of_and_event(live):
@@ -99,3 +99,40 @@ def test_progress_signature_changes_with_score(live):
 def test_redesign_is_an_error_not_empty_data():
     with pytest.raises(ParseError):
         match_page.parse("<html><body>redesigned</body></html>", 1)
+
+
+# ----------------------------------------------------------------------
+# Регрессия: у ИДУЩЕЙ карты счёт тоже числовой
+# ----------------------------------------------------------------------
+
+
+def test_live_map_is_not_counted_as_played():
+    """Фикстура снята с матча 2397091, пока шла вторая карта.
+
+    Наивное правило «есть числовой счёт — карта сыграна» посчитало бы её
+    завершённой со счётом 5:7 (это был текущий счёт по ходу игры) и прислало
+    бы неверный E6. Отличает завершённую карту наличие записи статистики.
+    """
+    o = load("match-2397091-live-midmap.html", 2397091)
+    assert o.status == match_page.STATUS_LIVE
+
+    played, live, untouched = o.maps
+    assert (played.name, played.score_left, played.score_right) == ("Nuke", 13, 9)
+    assert played.has_stats is True
+    assert o.is_final(played) is True
+
+    assert (live.name, live.score_left, live.score_right) == ("Mirage", 5, 7)
+    assert live.has_score is True          # счёт есть...
+    assert live.has_stats is False         # ...но карта ещё идёт
+    assert o.is_final(live) is False
+
+    assert untouched.has_score is False
+    assert o.live_map() is live
+    assert [m.number for m in o.final_maps()] == [1]
+
+
+def test_series_score_ignores_the_running_map():
+    """Счёт серии во время идущей карты не должен её засчитывать."""
+    o = load("match-2397091-live-midmap.html", 2397091)
+    assert o.series_score(12363) == (1, 0)      # Arcade выиграл только Nuke
+    assert o.series_score(11668) == (0, 1)

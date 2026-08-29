@@ -34,13 +34,25 @@ def observe(status, maps, *, match_id=MATCH_ID):
 
 
 def maps(*scores):
-    """scores — пары (левый, правый) или None для несыгранной карты."""
+    """scores — тройки (левый, правый, половины) или None для несыгранной карты.
+
+    Счёт означает СЫГРАННУЮ карту, поэтому has_stats=True: у HLTV запись
+    статистики появляется в момент её завершения. Для карты, которая идёт
+    прямо сейчас, есть отдельный хелпер live_map_line().
+    """
     lines = []
     for number, score in enumerate(scores, start=1):
         left, right, halves = (None, None, None) if score is None else score
         lines.append(MapLine(number=number, name=f"Map{number}",
-                             score_left=left, score_right=right, halves=halves))
+                             score_left=left, score_right=right, halves=halves,
+                             has_stats=left is not None))
     return lines
+
+
+def live_map_line(number, left, right):
+    """Карта, которая идёт: счёт есть, записи статистики ещё нет."""
+    return MapLine(number=number, name=f"Map{number}", score_left=left,
+                   score_right=right, halves=None, has_stats=False)
 
 
 def test_e4_on_transition_to_live(storage, config):
@@ -277,3 +289,29 @@ def test_replaying_the_same_timeline_twice_sends_nothing_new(storage, config):
 
     assert storage.sent_event_count() == 4       # E4, E6, E6, E7
     assert storage.pending_count() == 4
+
+
+def test_running_map_does_not_produce_e6(storage, config):
+    """Главная ловушка, найденная на живом матче: у идущей карты счёт тоже
+    числовой, и наивное правило прислало бы E6 с промежуточным счётом."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    m.apply(observe("live", maps(None, None, None)))
+
+    running = [live_map_line(1, 5, 7)] + maps(None, None)[1:]
+    assert m.apply(observe("live", running)) == []
+    assert storage.map_results(MATCH_ID) == []
+
+    # ...а когда карта закончилась, событие приходит один раз и с финальным счётом
+    events = m.apply(observe("live", maps((11, 13, "( 5 : 7 ; 6 : 6 )"), None, None)))
+    assert [e.type for e in events] == ["E6"]
+    assert (events[0].payload["score_team"], events[0].payload["score_opponent"]) == (13, 11)
+
+
+def test_series_score_stored_during_running_map_excludes_it(storage, config):
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    m.apply(observe("live", maps(None, None, None)))
+    m.apply(observe("live", maps((11, 13, None), None, None) [:1]
+                    + [live_map_line(2, 3, 4)] + maps(None, None, None)[2:]))
+    assert storage.get_state(MATCH_ID)["series_score"] == "1-0"
