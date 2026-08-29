@@ -63,6 +63,11 @@ class MatchPoller:
                     await self.poll_once(rows)
                 except Exception:  # noqa: BLE001 - опрос не имеет права уронить процесс
                     log.exception("непредвиденный сбой опроса матчей")
+                # Ещё раз, уже по свежим состояниям: матч мог только что стать
+                # LIVE, и ждать целый круг, чтобы поднять фид, значит потерять
+                # минуту там, где вся затея ради скорости.
+                self._reconcile_live_feed(self.active())
+                self.mode = self._mode_for(self.active())
                 delay = jittered(self.config.interval_for(self.mode))
             else:
                 # Матчей рядом нет — ни одного запроса, только дешёвая проверка базы.

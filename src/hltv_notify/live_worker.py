@@ -19,8 +19,8 @@ from typing import Dict, Optional
 from .config import Config
 from .models import Event
 from .notify.outbox import Notifier
-from .sources.scorebot import (FeedRejected, FeedUnavailable, ScorebotClient,
-                               frames_from_packets)
+from .sources.scorebot import (FeedIdle, FeedRejected, FeedUnavailable,
+                               ScorebotClient, frames_from_packets)
 from .state.db import Storage, utcnow
 from .state.live_machine import LiveMachine
 
@@ -82,7 +82,13 @@ class LiveWorker:
 
     async def _consume(self, client: ScorebotClient, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            packets = await client.poll()
+            try:
+                packets = await client.poll()
+            except FeedIdle:
+                # Фид молчит — на карте пауза или идёт перерыв между картами.
+                # Соединение живо, переподключаться не нужно.
+                log.debug("живой фид матча %s молчит, опрашиваем снова", self.match_id)
+                continue
             for frame in frames_from_packets(packets):
                 for event in self.machine.apply(self.match_id, frame):
                     self.notifier.enqueue(event)

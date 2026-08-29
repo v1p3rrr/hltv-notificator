@@ -48,7 +48,18 @@ class FeedRejected(RuntimeError):
 
 
 class FeedUnavailable(RuntimeError):
-    """Таймаут или сетевой сбой. Обычный повод переподключиться."""
+    """Сетевой сбой или отвергнутая сессия. Повод переподключиться."""
+
+
+class FeedIdle(FeedUnavailable):
+    """Long-poll вернулся по таймауту без данных.
+
+    Это НЕ обрыв. Фид молчит, когда на карте ничего не происходит — в
+    перерыве между картами так проходит вся пауза. Соединение живо, sid
+    действителен, надо просто опросить снова. Считать это обрывом значит
+    переподключаться каждые 45 секунд и зря дёргать источник ровно тогда,
+    когда мы ждём начала следующей карты.
+    """
 
 
 @dataclass(frozen=True)
@@ -253,7 +264,9 @@ class ScorebotClient:
         try:
             response = await self._session.get(self._url(), headers=self._headers,
                                                timeout=timeout)
-        except Exception as exc:  # noqa: BLE001 - таймаут long-poll это норма
+        except Exception as exc:  # noqa: BLE001 - сеть
+            if "timed out" in str(exc).lower() or type(exc).__name__ == "Timeout":
+                raise FeedIdle("long-poll без данных") from exc
             raise FeedUnavailable(f"{type(exc).__name__}: {exc}") from exc
         self._check(response)
         return decode_payload(response.content)
