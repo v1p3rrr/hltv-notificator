@@ -1,0 +1,154 @@
+"""Live Worker: держит соединение с фидом на время матча.
+
+Живёт только пока матч идёт. Обрыв соединения — норма, а не авария: на записи
+реального матча за час случилось 15 подключений и 14 обрывов. Поэтому
+переподключение с backoff, а вся защита от повторов — в машине состояний.
+
+Отдельно обрабатывается 403: это не сетевой сбой, а «отойди». Реконнекты с
+обычным backoff в такой ситуации только долбят источник, поэтому пауза
+минутами, а опрос страницы матча остаётся работать как был.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+from typing import Dict, Optional
+
+from .config import Config
+from .models import Event
+from .notify.outbox import Notifier
+from .sources.scorebot import (FeedRejected, FeedUnavailable, ScorebotClient,
+                               frames_from_packets)
+from .state.db import Storage, utcnow
+from .state.live_machine import LiveMachine
+
+log = logging.getLogger(__name__)
+
+# Пауза после 403. Источник явно попросил отойти — секунды тут не помогут.
+REJECTED_COOLDOWN_SECONDS = 600.0
+MAX_BACKOFF_SECONDS = 60.0
+
+
+class LiveWorker:
+    """Одно соединение на один матч."""
+
+    def __init__(self, storage: Storage, config: Config, notifier: Notifier,
+                 match_id: int, url: str):
+        self.storage = storage
+        self.config = config
+        self.notifier = notifier
+        self.match_id = match_id
+        self.url = url
+        self.machine = LiveMachine(storage, config)
+        self.connected = False
+        self.rejected_until: float = 0.0
+
+    async def run(self, stop: asyncio.Event) -> None:
+        attempt = 0
+        while not stop.is_set():
+            client = ScorebotClient(self.match_id, referer=self.url,
+                                    impersonate=self.config.impersonate)
+            try:
+                await client.connect()
+                await client.subscribe()
+                self.connected = True
+                attempt = 0
+                log.info("живой фид матча %s подключён (sid %s)", self.match_id, client.sid)
+                await self._consume(client, stop)
+            except FeedRejected as exc:
+                self.connected = False
+                log.error("живой фид матча %s отклонён (%s) — пауза %.0f мин, "
+                          "работаем по странице матча",
+                          self.match_id, exc, REJECTED_COOLDOWN_SECONDS / 60)
+                await self._sleep(REJECTED_COOLDOWN_SECONDS, stop)
+            except FeedUnavailable as exc:
+                self.connected = False
+                attempt += 1
+                delay = min(2 ** attempt, MAX_BACKOFF_SECONDS) * random.uniform(0.8, 1.2)
+                log.warning("живой фид матча %s оборвался (%s), переподключение через %.0fs",
+                            self.match_id, exc, delay)
+                await self._sleep(delay, stop)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - воркер не имеет права уронить процесс
+                self.connected = False
+                log.exception("непредвиденный сбой живого фида матча %s", self.match_id)
+                await self._sleep(30, stop)
+            finally:
+                self.connected = False
+                await client.close()
+
+    async def _consume(self, client: ScorebotClient, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            packets = await client.poll()
+            for frame in frames_from_packets(packets):
+                for event in self.machine.apply(self.match_id, frame):
+                    self.notifier.enqueue(event)
+
+    @staticmethod
+    async def _sleep(seconds: float, stop: asyncio.Event) -> None:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
+
+
+class LiveSupervisor:
+    """Поднимает и гасит воркеры под идущие матчи.
+
+    Матчей может идти несколько одновременно — у этой команды такое бывает,
+    поэтому один воркер на матч, а не один на сервис.
+    """
+
+    def __init__(self, storage: Storage, config: Config, notifier: Notifier):
+        self.storage = storage
+        self.config = config
+        self.notifier = notifier
+        self._workers: Dict[int, LiveWorker] = {}
+        self._tasks: Dict[int, asyncio.Task] = {}
+        self._stops: Dict[int, asyncio.Event] = {}
+
+    @property
+    def any_connected(self) -> bool:
+        return any(worker.connected for worker in self._workers.values())
+
+    def connected_matches(self) -> Dict[int, bool]:
+        return {match_id: worker.connected for match_id, worker in self._workers.items()}
+
+    def ensure(self, match_id: int, url: str) -> None:
+        if match_id in self._tasks and not self._tasks[match_id].done():
+            return
+        stop = asyncio.Event()
+        worker = LiveWorker(self.storage, self.config, self.notifier, match_id, url)
+        self._workers[match_id] = worker
+        self._stops[match_id] = stop
+        self._tasks[match_id] = asyncio.create_task(
+            worker.run(stop), name=f"live-{match_id}")
+        log.info("поднят живой фид для матча %s", match_id)
+
+    def release(self, match_id: int) -> None:
+        stop = self._stops.pop(match_id, None)
+        if stop is not None:
+            stop.set()
+        task = self._tasks.pop(match_id, None)
+        if task is not None:
+            task.cancel()
+        self._workers.pop(match_id, None)
+        log.info("живой фид для матча %s остановлен", match_id)
+
+    def reconcile(self, live_match_ids: Dict[int, str]) -> None:
+        """Привести набор воркеров в соответствие с идущими матчами."""
+        for match_id, url in live_match_ids.items():
+            self.ensure(match_id, url)
+        for match_id in list(self._tasks):
+            if match_id not in live_match_ids:
+                self.release(match_id)
+
+    async def shutdown(self) -> None:
+        for match_id in list(self._tasks):
+            self.release(match_id)
+        tasks = [task for task in self._tasks.values()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)

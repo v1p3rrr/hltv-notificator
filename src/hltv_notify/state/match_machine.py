@@ -86,6 +86,11 @@ class MatchMachine:
             series_score=f"{ours}-{theirs}",
         )
         self._store_map_results(observation, team_id)
+        # Состав карт нужен живому фиду: он знает название карты, но не её
+        # номер в серии. Записываем, как только вето сыграно.
+        lineup = [line.name for line in observation.maps]
+        if any(name and name.upper() != "TBA" for name in lineup):
+            self.storage.set_map_lineup(match_id, lineup)
 
         if target == MatchState.LIVE and previous not in (MatchState.LIVE, *TERMINAL):
             events.append(self._event_e4(observation, row, team_id))

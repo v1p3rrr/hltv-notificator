@@ -28,11 +28,13 @@ LAST_MATCH_POLL_KEY = "last_match_poll_utc"
 
 
 class MatchPoller:
-    def __init__(self, storage: Storage, config: Config, http: HltvHttp, notifier: Notifier):
+    def __init__(self, storage: Storage, config: Config, http: HltvHttp, notifier: Notifier,
+                 supervisor=None):
         self.storage = storage
         self.config = config
         self.http = http
         self.notifier = notifier
+        self.supervisor = supervisor
         self.machine = MatchMachine(storage, config)
         self.mode = "idle"
         self.live_feed_active = False
@@ -53,6 +55,7 @@ class MatchPoller:
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
             rows = self.active()
+            self._reconcile_live_feed(rows)
             self.mode = self._mode_for(rows)
 
             if rows:
@@ -73,6 +76,19 @@ class MatchPoller:
                 continue
 
     # ------------------------------------------------------------------
+
+    def _reconcile_live_feed(self, rows) -> None:
+        """Живой фид поднимается только под идущие матчи.
+
+        Он же определяет режим опроса страницы: пока фид на связи, страница
+        нужна лишь для сверки и опрашивается заметно реже.
+        """
+        if self.supervisor is None:
+            return
+        live = {row["match_id"]: row["url"]
+                for row in rows if row["state"] == MatchState.LIVE}
+        self.supervisor.reconcile(live)
+        self.live_feed_active = self.supervisor.any_connected
 
     async def poll_once(self, rows=None) -> List[Event]:
         rows = self.active() if rows is None else rows

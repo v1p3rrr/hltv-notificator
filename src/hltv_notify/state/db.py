@@ -347,6 +347,22 @@ class Storage:
             (iso(utcnow() - timedelta(days=keep_days)),),
         )
 
+    # ---------- состав карт ----------
+
+    def set_map_lineup(self, match_id: int, names: List[str]) -> None:
+        """Порядок карт со страницы матча: по нему живой фид узнаёт НОМЕР
+        карты в серии. Сам фид присылает только её название."""
+        self.set_meta(f"maps:{match_id}", json.dumps(names, ensure_ascii=False))
+
+    def map_lineup(self, match_id: int) -> List[str]:
+        raw = self.get_meta(f"maps:{match_id}")
+        if not raw:
+            return []
+        try:
+            return list(json.loads(raw))
+        except (ValueError, TypeError):
+            return []
+
     # ---------- meta ----------
 
     def get_meta(self, key: str) -> Optional[str]:

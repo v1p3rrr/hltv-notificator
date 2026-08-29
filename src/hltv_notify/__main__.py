@@ -18,6 +18,7 @@ from typing import List, Optional
 from . import config as config_module
 from .bot import CommandBot
 from .http import HltvHttp
+from .live_worker import LiveSupervisor
 from .match_poller import MatchPoller
 from .notify.outbox import Notifier
 from .notify.telegram import Telegram
@@ -68,7 +69,8 @@ async def run() -> int:
     telegram: Optional[Telegram] = Telegram(config.bot_token) if config.telegram_enabled() else None
     notifier = Notifier(storage, config, telegram)
     poller = SchedulePoller(storage, config, http, notifier)
-    matches = MatchPoller(storage, config, http, notifier)
+    supervisor = LiveSupervisor(storage, config, notifier)
+    matches = MatchPoller(storage, config, http, notifier, supervisor)
 
     if config.dry_run:
         log.warning("DRY_RUN включён: уведомления пишутся в лог, в Telegram не уходят")
@@ -99,6 +101,7 @@ async def run() -> int:
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
+    await supervisor.shutdown()
     await http.close()
     if telegram is not None:
         await telegram.close()
