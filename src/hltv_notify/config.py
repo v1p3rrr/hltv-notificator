@@ -59,6 +59,10 @@ class Config:
     live_message: bool = field(default_factory=lambda: _bool("LIVE_MESSAGE", True))
     live_edit_seconds: int = field(default_factory=lambda: _int("LIVE_EDIT_SECONDS", 10))
 
+    # алерт о мультикилле игрока НАШЕЙ команды, чтобы успеть клипануть
+    multikill_alerts: bool = field(default_factory=lambda: _bool("MULTIKILL_ALERTS", True))
+    multikill_threshold: int = field(default_factory=lambda: _int("MULTIKILL_THRESHOLD", 4))
+
     # пороги событий
     e2_min_shift_minutes: int = field(default_factory=lambda: _int("E2_MIN_SHIFT_MINUTES", 5))
     e2_debounce_minutes: int = field(default_factory=lambda: _int("E2_DEBOUNCE_MINUTES", 10))

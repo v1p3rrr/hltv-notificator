@@ -21,8 +21,9 @@ from typing import List, Optional, Tuple
 from ..config import Config
 from ..models import Event, MatchState
 from ..scoring import map_completed
-from ..sources.scorebot import LiveFrame
+from ..sources.scorebot import LiveFrame, PlayerLine
 from .db import Storage
+from .multikill import MultikillTracker
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,9 @@ class LiveMachine:
     def __init__(self, storage: Storage, config: Config):
         self.storage = storage
         self.config = config
+        # Трекер на матч: он живёт в памяти воркера и переживает реконнекты
+        # внутри него, поэтому база отсчёта раунда не сбрасывается зря.
+        self.multikill = MultikillTracker(config.multikill_threshold)
 
     # ------------------------------------------------------------------
 
@@ -81,6 +85,8 @@ class LiveMachine:
         map_number = self._map_number(match_id, map_name, len(recorded))
 
         events: List[Event] = []
+        events.extend(self._multikill_events(match_id, frame, map_number, map_name,
+                                             ours, theirs))
         if self._is_new_map(previous_map, map_name, frame):
             events.append(self._event_e5(match_id, frame, map_number, map_name, len(recorded)))
 
@@ -137,6 +143,36 @@ class LiveMachine:
             "event_name": row["event_name"] if row else "",
             "url": row["url"] if row else "",
         }
+
+    def _multikill_events(self, match_id: int, frame: LiveFrame, map_number: int,
+                          map_name: str, ours: int, theirs: int) -> List[Event]:
+        """Мультикилл игрока НАШЕЙ команды — чтобы успеть клипануть хайлайт."""
+        if not self.config.multikill_alerts:
+            return []
+        taken = self.multikill.observe(
+            map_name, frame.current_round, frame.round_state,
+            frame.our_players(self.config.team_id))
+        events: List[Event] = []
+        for player, kills in taken:
+            log.info("матч %s: %s взял %d фрагов в раунде %d на карте %s",
+                     match_id, player.nick, kills, frame.current_round, map_name)
+            events.append(Event(
+                type="E9",
+                idempotency_key=(f"E9:{match_id}:map:{map_number}"
+                                 f":round:{frame.current_round}:{player.steam_id}:{kills}"),
+                match_id=match_id,
+                payload={
+                    **self._context(match_id, frame),
+                    "nick": player.nick,
+                    "kills": kills,
+                    "map_number": map_number,
+                    "map_name": map_name,
+                    "round": frame.current_round,
+                    "score_team": ours,
+                    "score_opponent": theirs,
+                },
+            ))
+        return events
 
     def _map_number(self, match_id: int, map_name: str, recorded_count: int) -> int:
         """Номер карты в серии.

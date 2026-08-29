@@ -133,6 +133,18 @@ def render(event: Event, *, team_name: str, tz_name: str) -> str:
         lines.append(_link(url, "Страница матча"))
         return "\n".join(lines)
 
+    if event.type == "E9":
+        kills = payload.get("kills", 0)
+        icon = "🔥" if kills < 5 else "💥"
+        headline = "ЭЙС" if kills >= 5 else f"{kills} фрага в раунде"
+        return "\n".join([
+            f"{icon} <b>{_esc(payload.get('nick'))} — {headline}</b>",
+            f"{_esc(payload.get('map_name'))}, раунд {payload.get('round')} · "
+            f"счёт {payload.get('score_team')}:{payload.get('score_opponent')}",
+            f"{team} — {opponent}",
+            _link(url, "Смотреть матч"),
+        ])
+
     if event.type == "E8":
         return "\n".join([
             "⚠️ <b>Сервис деградировал</b>",

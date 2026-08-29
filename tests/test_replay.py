@@ -103,3 +103,52 @@ def test_map_result_is_recorded_once(prepared, config):
     assert len(rows) == 1
     assert (rows[0]["map_number"], rows[0]["map_name"]) == (2, "Dust2")
     assert (rows[0]["score_team"], rows[0]["score_opponent"]) == (10, 13)
+
+
+# ----------------------------------------------------------------------
+# Второй дамп: живой матч с границей карты и настоящим мультикиллом
+# ----------------------------------------------------------------------
+
+BOUNDARY = FIXTURES / "scorebot-2396936-map-boundary.jsonl.gz"
+MOUZ_MATCH = 2396936
+MOUZ_ID = 4494
+
+
+@pytest.fixture()
+def mouz(storage):
+    _prepare(storage, MOUZ_MATCH)
+    storage.set_map_lineup(MOUZ_MATCH, ["Ancient", "Mirage", "Nuke"])
+    return storage
+
+
+@pytest.fixture()
+def mouz_config():
+    from hltv_notify.config import Config
+    return Config(team_id=MOUZ_ID, team_name="MOUZ")
+
+
+def test_boundary_dump_gives_map_start_multikill_and_map_end(mouz, mouz_config):
+    """Запись сделана с живого матча BLAST: карта Ancient от начала до конца."""
+    events = replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH)
+    assert [e.type for e in events] == ["E5", "E9", "E6"]
+
+
+def test_real_multikill_is_detected(mouz, mouz_config):
+    """xertioN взял 4 фрага в 15-м раунде — событие рождено по приросту
+    фрагов в кадрах табло, без единого обращения к логу."""
+    e9 = [e for e in replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH) if e.type == "E9"][0]
+    assert e9.payload["nick"] == "xertioN"
+    assert e9.payload["kills"] == 4
+    assert e9.payload["round"] == 15
+    assert e9.payload["map_name"] == "Ancient"
+
+
+def test_real_map_end_score(mouz, mouz_config):
+    e6 = [e for e in replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH) if e.type == "E6"][0]
+    assert (e6.payload["score_team"], e6.payload["score_opponent"]) == (13, 4)
+    assert e6.payload["map_number"] == 1
+
+
+def test_boundary_dump_is_idempotent(mouz, mouz_config):
+    replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH)
+    assert replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH) == []

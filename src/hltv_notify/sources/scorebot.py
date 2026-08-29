@@ -63,6 +63,15 @@ class FeedIdle(FeedUnavailable):
 
 
 @dataclass(frozen=True)
+class PlayerLine:
+    """Игрок в кадре табло. `kills` — накопленные фраги ЗА КАРТУ."""
+
+    steam_id: str
+    nick: str
+    kills: int
+
+
+@dataclass(frozen=True)
 class LiveFrame:
     """Состояние табло на момент кадра."""
 
@@ -78,6 +87,17 @@ class LiveFrame:
     t_score: int
     regulation: int
     overtime: int
+    ct_players: Tuple["PlayerLine", ...] = ()
+    t_players: Tuple["PlayerLine", ...] = ()
+
+    def our_players(self, team_id: int) -> Tuple["PlayerLine", ...]:
+        """Состав нашей команды. Стороны меняются после перерыва, поэтому
+        определяем по id, а не по стороне."""
+        if self.ct_team_id == team_id:
+            return self.ct_players
+        if self.t_team_id == team_id:
+            return self.t_players
+        return ()
 
     def our_score(self, team_id: int) -> Tuple[Optional[int], Optional[int]]:
         """Счёт карты, ориентированный на нашу команду.
@@ -104,6 +124,23 @@ class LiveFrame:
         return self.live and self.round_state != ROUND_WARMUP
 
 
+def _players(raw) -> Tuple[PlayerLine, ...]:
+    """Игроки стороны. `score` в кадре — это фраги за карту."""
+    if not isinstance(raw, list):
+        return ()
+    lines = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        nick = str(item.get("nick") or item.get("name") or "").strip()
+        steam_id = str(item.get("steamId") or item.get("dbId") or nick)
+        if not nick:
+            continue
+        lines.append(PlayerLine(steam_id=steam_id, nick=nick,
+                                kills=int(item.get("score") or 0)))
+    return tuple(lines)
+
+
 def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
     """Кадр scoreboard в наблюдение. None — кадр непригоден.
 
@@ -127,6 +164,8 @@ def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
         t_score=int(payload.get("tTeamScore") or 0),
         regulation=int(payload.get("regulationHalfLength") or 12),
         overtime=int(payload.get("overtimeHalfLength") or 3),
+        ct_players=_players(payload.get("CT")),
+        t_players=_players(payload.get("TERRORIST")),
     )
 
 
