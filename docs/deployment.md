@@ -111,17 +111,13 @@ docker compose up -d
 
 Том с данными при этом не трогается — это важно, см. ниже.
 
-Собрать из исходников вместо готового образа:
-
-```bash
-docker compose up -d --build
-```
-
 Прибиться к конкретной версии вместо `latest` — переменная `IMAGE` в `.env`:
 
 ```
-IMAGE=v1p3rrr/hltv-notificator:0.1.0-build.42
+IMAGE=ваш-логин/hltv-notificator:0.1.0-build.42
 ```
+
+Собрать из исходников — см. «Локальная сборка вместо реестра» выше.
 
 ## Данные и бэкап
 
@@ -185,7 +181,7 @@ cosign verify <образ>@<digest> --certificate-identity-regexp '.*' --certifi
 ## Откат
 
 ```bash
-IMAGE=v1p3rrr/hltv-notificator:sha-<предыдущий коммит> docker compose up -d
+IMAGE=ваш-логин/hltv-notificator:sha-<предыдущий коммит> docker compose up -d
 ```
 
 Схема базы обратно совместима: новые колонки добавляются миграцией при старте,
