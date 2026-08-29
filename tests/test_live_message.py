@@ -10,6 +10,7 @@ from hltv_notify.notify.telegram import TelegramError
 from hltv_notify.state.db import Storage
 
 MATCH_ID = 42
+CHAT = "1"   # chat_id из live_config()
 
 
 class FakeTelegram:
@@ -60,7 +61,7 @@ def test_first_update_creates_a_message(messenger):
     m, telegram, storage = messenger
     asyncio.run(m.update(MATCH_ID, snapshot()))
     assert len(telegram.sent) == 1
-    row = storage.live_message(MATCH_ID, 1)
+    row = storage.live_message(CHAT, MATCH_ID, 1)
     assert row["telegram_message_id"] == 1001
 
 
@@ -97,7 +98,7 @@ def test_finalize_freezes_the_message(messenger):
     m, telegram, storage = messenger
     asyncio.run(m.update(MATCH_ID, snapshot(score=(12, 9))))
     asyncio.run(m.finalize(MATCH_ID, snapshot(score=(13, 9))))
-    assert storage.live_message(MATCH_ID, 1)["finalized"] == 1
+    assert storage.live_message(CHAT, MATCH_ID, 1)["finalized"] == 1
 
     asyncio.run(m.update(MATCH_ID, snapshot(score=(99, 0)), force=True))
     assert len(telegram.edited) == 1      # после заморозки правок больше нет
@@ -150,7 +151,7 @@ def test_dry_run_touches_no_telegram(tmp_path):
     m = LiveMessenger(storage, live_config(dry_run=True), telegram)
     asyncio.run(m.update(MATCH_ID, snapshot()))
     assert telegram.sent == [] and telegram.edited == []
-    assert storage.live_message(MATCH_ID, 1) is not None
+    assert storage.live_message(CHAT, MATCH_ID, 1) is not None
     storage.close()
 
 
@@ -165,5 +166,5 @@ def test_disabled_by_config(tmp_path):
     m = LiveMessenger(storage, live_config(live_message=False), telegram)
     asyncio.run(m.update(MATCH_ID, snapshot()))
     assert telegram.sent == []
-    assert storage.live_message(MATCH_ID, 1) is None
+    assert storage.live_message(CHAT, MATCH_ID, 1) is None
     storage.close()

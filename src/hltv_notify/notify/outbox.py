@@ -32,19 +32,70 @@ class Notifier:
         self.telegram = telegram
 
     def enqueue(self, event: Event) -> bool:
-        """False — событие с таким ключом уже отправлялось, тихо пропускаем."""
-        body = fmt.render(event, team_name=self.config.team_name, tz_name=self.config.timezone)
-        created = self.storage.record_event(
-            idempotency_key=event.idempotency_key,
-            event_type=event.type,
-            match_id=event.match_id,
-            body=body,
-        )
+        """Поставить событие в очередь КАЖДОМУ, кого оно касается.
+
+        False — никому не поставлено: либо всем уже отправлялось, либо событие
+        заглушено у всех подходящих подписчиков.
+        """
+        created = 0
+        for chat_id, for_team_id in self._recipients(event):
+            body = fmt.render(event, team_name=self.config.team_name,
+                              tz_name=self.config.timezone, for_team_id=for_team_id)
+            if self.storage.record_event(
+                    idempotency_key=event.idempotency_key,
+                    event_type=event.type,
+                    match_id=event.match_id,
+                    body=body,
+                    chat_id=chat_id):
+                created += 1
+
         if created:
-            log.info("событие %s поставлено в очередь: %s", event.type, event.idempotency_key)
+            log.info("событие %s поставлено в очередь %d адресату(ам): %s",
+                     event.type, created, event.idempotency_key)
         else:
-            log.debug("событие уже отправлялось, пропуск: %s", event.idempotency_key)
-        return created
+            log.debug("событие никому не ушло (дубль или заглушено): %s",
+                      event.idempotency_key)
+        return bool(created)
+
+    def _recipients(self, event: Event):
+        """Кому это событие адресовано и от лица какой команды показывать.
+
+        Правило для матча двух отслеживаемых команд: событие уходит
+        подписчику, если ХОТЯ БЫ ОДНА из его команд в этом матче не заглушила
+        такой тип. Иначе одна команда молча глушила бы уведомления про другую.
+        """
+        subscribers = self.storage.subscriber_ids()
+        if not subscribers:
+            # Одиночный режим: подписчиков нет, шлём в чат из конфига.
+            return [(self.config.chat_id, None)]
+
+        if event.match_id is None:
+            # Служебное (деградация, восстановление) — всем: их касается
+            # то, что сервис ослеп, независимо от команд.
+            return [(chat, None) for chat in subscribers]
+
+        teams = self.storage.match_team_ids(event.match_id)
+        player_team = event.payload.get("team_id")
+        if event.type == "E9" and player_team:
+            # Мультикилл адресован тем, кто следит за командой ЭТОГО игрока.
+            teams = [player_team]
+        if not teams:
+            return [(self.config.chat_id, None)]
+
+        by_chat = {}
+        for team_id in teams:
+            for chat in self.storage.subscribers_tracking(team_id):
+                by_chat.setdefault(chat, []).append(team_id)
+
+        recipients = []
+        for chat, their_teams in by_chat.items():
+            wanted = [team_id for team_id in their_teams
+                      if event.type not in self.storage.team_mutes(chat, team_id)]
+            if not wanted:
+                log.debug("событие %s заглушено у %s", event.type, chat)
+                continue
+            recipients.append((chat, wanted[0]))
+        return recipients
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -70,8 +121,9 @@ class Notifier:
             return
 
         attempts = row["attempts"] + 1
+        chat_id = row["chat_id"] or self.config.chat_id
         try:
-            message_id = await self.telegram.send_message(self.config.chat_id, row["body"])
+            message_id = await self.telegram.send_message(chat_id, row["body"])
         except TelegramError as exc:
             if exc.fatal:
                 log.error("сообщение %s отброшено, повтор не поможет: %s", row["id"], exc)

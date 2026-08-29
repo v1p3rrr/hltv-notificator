@@ -155,6 +155,8 @@ class LiveMachine:
             "opponent": frame.opponent_name(team_id)
                         or (row["opponent_name"] if row else ""),
             "team_name": self.storage.team_name(team_id, self.config.team_name),
+            "team_id": team_id,
+            "opponent_id": self._opponent_id(match_id, team_id),
             "event_name": row["event_name"] if row else "",
             "url": row["url"] if row else "",
         }
@@ -193,6 +195,7 @@ class LiveMachine:
                 payload={
                     **self._context(match_id, frame),
                     "team_name": self.storage.team_name(tracked_team, self.config.team_name),
+                    "team_id": tracked_team,
                     "nick": player.nick,
                     "kills": kills,
                     "map_number": map_number,
@@ -203,6 +206,16 @@ class LiveMachine:
                 },
             ))
         return events
+
+    def _opponent_id(self, match_id: int, team_id: int):
+        """Соперник по данным матча: нужен, чтобы развернуть счёт подписчику,
+        который следит именно за ним."""
+        row = self.storage.get_match(match_id)
+        if row is None:
+            return None
+        others = [other for other in self.storage.match_team_ids(match_id)
+                  if other != team_id]
+        return others[0] if others else row["opponent_id"]
 
     def _map_number(self, match_id: int, map_name: str, recorded_count: int) -> int:
         """Номер карты в серии.
@@ -250,6 +263,8 @@ class LiveMachine:
         team_id = self.storage.canonical_team(match_id) or self.config.team_id
         return {
             "team_name": self.storage.team_name(team_id, self.config.team_name),
+            "team_id": team_id,
+            "opponent_id": self._opponent_id(match_id, team_id),
             "opponent": frame.opponent_name(team_id)
                         or (row["opponent_name"] if row else ""),
             "event_name": row["event_name"] if row else "",

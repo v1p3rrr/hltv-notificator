@@ -46,9 +46,46 @@ def _link(url: str, title: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{_esc(title)}</a>'
 
 
-def render(event: Event, *, team_name: str, tz_name: str) -> str:
+SWAPPED_PAIRS = (
+    ("team_name", "opponent"),
+    ("team_id", "opponent_id"),
+    ("score_team", "score_opponent"),
+    ("series_team", "series_opponent"),
+)
+
+
+def orient(payload: dict, for_team_id: Optional[int]) -> dict:
+    """Развернуть событие на команду получателя.
+
+    Счёт в событии ориентирован на каноническую команду матча. Если подписчик
+    следит за её соперником, ему надо показать зеркальный счёт — иначе он
+    увидит «13:10» там, где для него это «10:13».
+    """
+    if for_team_id is None or payload.get("team_id") in (None, for_team_id):
+        return payload
+    if payload.get("opponent_id") != for_team_id:
+        return payload
+
+    flipped = dict(payload)
+    for left, right in SWAPPED_PAIRS:
+        if left in payload or right in payload:
+            flipped[left], flipped[right] = payload.get(right), payload.get(left)
+    if "won" in payload and payload["won"] is not None:
+        flipped["won"] = not payload["won"]
+    if payload.get("maps"):
+        flipped["maps"] = [
+            {**item,
+             "score_team": item.get("score_opponent"),
+             "score_opponent": item.get("score_team")}
+            for item in payload["maps"]
+        ]
+    return flipped
+
+
+def render(event: Event, *, team_name: str, tz_name: str,
+           for_team_id: Optional[int] = None) -> str:
     """Событие → готовый текст в HTML-разметке Telegram."""
-    payload = event.payload
+    payload = orient(event.payload, for_team_id)
     opponent = _esc(payload.get("opponent") or "TBD")
     event_name = _esc(payload.get("event_name"))
     url = payload.get("url") or ""

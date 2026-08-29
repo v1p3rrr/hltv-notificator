@@ -15,13 +15,25 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 SCHEMA = """
+-- Кому вообще шлём. Разные аккаунты Telegram ведут свои списки команд.
+CREATE TABLE IF NOT EXISTS subscribers (
+    chat_id   TEXT PRIMARY KEY,
+    added_utc TEXT NOT NULL,
+    enabled   INTEGER NOT NULL DEFAULT 1,
+    note      TEXT
+);
+
+-- Команды — СВОИ у каждого подписчика: один и тот же матч может быть интересен
+-- двоим, и заглушить его для одного нельзя, не заглушив для другого.
 CREATE TABLE IF NOT EXISTS teams (
-    team_id      INTEGER PRIMARY KEY,
+    chat_id      TEXT NOT NULL,
+    team_id      INTEGER NOT NULL,
     slug         TEXT NOT NULL,
     name         TEXT NOT NULL,
     enabled      INTEGER NOT NULL DEFAULT 1,
     muted_events TEXT NOT NULL DEFAULT '',
-    added_utc    TEXT NOT NULL
+    added_utc    TEXT NOT NULL,
+    PRIMARY KEY (chat_id, team_id)
 );
 
 -- Какие ОТСЛЕЖИВАЕМЫЕ команды участвуют в матче. Их может быть две: если
@@ -95,6 +107,7 @@ CREATE TABLE IF NOT EXISTS sent_events (
 
 CREATE TABLE IF NOT EXISTS outbox (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id             TEXT NOT NULL DEFAULT '',
     idempotency_key     TEXT NOT NULL,
     body                TEXT NOT NULL,
     status              TEXT NOT NULL DEFAULT 'pending',
@@ -117,13 +130,14 @@ CREATE TABLE IF NOT EXISTS raw_log (
 CREATE INDEX IF NOT EXISTS raw_log_ts ON raw_log(ts_utc);
 
 CREATE TABLE IF NOT EXISTS live_messages (
+    chat_id             TEXT NOT NULL,
     match_id            INTEGER NOT NULL,
     map_number          INTEGER NOT NULL,
     telegram_message_id INTEGER,
     last_text           TEXT,
     last_edit_utc       TEXT,
     finalized           INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (match_id, map_number)
+    PRIMARY KEY (chat_id, match_id, map_number)
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -179,6 +193,9 @@ class Storage:
             "matches": {
                 "team_id": "INTEGER",
             },
+            "outbox": {
+                "chat_id": "TEXT NOT NULL DEFAULT ''",
+            },
         }
         for table, columns in added.items():
             existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
@@ -186,57 +203,138 @@ class Storage:
                 if column not in existing:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
+        # Таблицы, у которых сменился первичный ключ. ALTER TABLE такое не
+        # умеет, поэтому пересоздаём. Живые сообщения — состояние одной карты,
+        # потерять их не страшно: заведётся новое.
+        if "chat_id" not in {row["name"] for row in
+                             self.conn.execute("PRAGMA table_info(live_messages)")}:
+            self.conn.execute("DROP TABLE IF EXISTS live_messages")
+            self.conn.executescript(SCHEMA)
+
+        # teams до появления подписчиков был без chat_id. Переносить некуда:
+        # владельца определит первый посев из конфига.
+        team_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(teams)")}
+        if team_columns and "chat_id" not in team_columns:
+            self.conn.execute("ALTER TABLE teams RENAME TO teams_without_owner")
+            self.conn.executescript(SCHEMA)
+
     def close(self) -> None:
         self.conn.close()
 
-    # ---------- отслеживаемые команды ----------
+    # ---------- подписчики ----------
 
-    def add_team(self, team_id: int, slug: str, name: str) -> bool:
-        """True — команда добавлена впервые, False — уже была (и включена обратно)."""
-        existed = self.get_team(team_id) is not None
+    def add_subscriber(self, chat_id: str, note: str = "") -> bool:
+        """True — подписчик появился впервые."""
+        existed = self.get_subscriber(chat_id) is not None
         self.conn.execute(
             """
-            INSERT INTO teams (team_id, slug, name, added_utc)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(team_id) DO UPDATE SET
-                slug = excluded.slug, name = excluded.name, enabled = 1
+            INSERT INTO subscribers (chat_id, added_utc, note) VALUES (?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET enabled = 1,
+                note = COALESCE(NULLIF(excluded.note, ''), subscribers.note)
             """,
-            (team_id, slug, name, iso(utcnow())))
+            (str(chat_id), iso(utcnow()), note))
         return not existed
 
-    def get_team(self, team_id: Optional[int]):
+    def get_subscriber(self, chat_id: str):
+        return self.conn.execute(
+            "SELECT * FROM subscribers WHERE chat_id = ?", (str(chat_id),)).fetchone()
+
+    def subscribers(self, *, enabled_only: bool = True) -> List[sqlite3.Row]:
+        query = "SELECT * FROM subscribers"
+        if enabled_only:
+            query += " WHERE enabled = 1"
+        return list(self.conn.execute(query + " ORDER BY added_utc"))
+
+    def subscriber_ids(self) -> List[str]:
+        return [row["chat_id"] for row in self.subscribers()]
+
+    def set_subscriber_enabled(self, chat_id: str, enabled: bool) -> bool:
+        cur = self.conn.execute("UPDATE subscribers SET enabled = ? WHERE chat_id = ?",
+                                (1 if enabled else 0, str(chat_id)))
+        return cur.rowcount > 0
+
+    # ---------- отслеживаемые команды ----------
+
+    def add_team(self, chat_id: str, team_id: int, slug: str, name: str) -> bool:
+        """True — команда добавлена этому подписчику впервые."""
+        existed = self.get_team(chat_id, team_id) is not None
+        self.conn.execute(
+            """
+            INSERT INTO teams (chat_id, team_id, slug, name, added_utc)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id, team_id) DO UPDATE SET
+                slug = excluded.slug, name = excluded.name, enabled = 1
+            """,
+            (str(chat_id), team_id, slug, name, iso(utcnow())))
+        return not existed
+
+    def get_team(self, chat_id: str, team_id: Optional[int]):
         if team_id is None:
             return None
         return self.conn.execute(
-            "SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
+            "SELECT * FROM teams WHERE chat_id = ? AND team_id = ?",
+            (str(chat_id), team_id)).fetchone()
 
-    def teams(self, *, enabled_only: bool = True) -> List[sqlite3.Row]:
-        query = "SELECT * FROM teams"
+    def teams(self, chat_id: Optional[str] = None, *,
+              enabled_only: bool = True) -> List[sqlite3.Row]:
+        """Команды подписчика, а без chat_id — все записи всех подписчиков."""
+        clauses = []
+        params: List[Any] = []
+        if chat_id is not None:
+            clauses.append("chat_id = ?")
+            params.append(str(chat_id))
         if enabled_only:
-            query += " WHERE enabled = 1"
-        return list(self.conn.execute(query + " ORDER BY team_id"))
+            clauses.append("enabled = 1")
+        query = "SELECT * FROM teams"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        return list(self.conn.execute(query + " ORDER BY team_id", params))
+
+    def tracked_teams(self) -> List[sqlite3.Row]:
+        """Уникальные команды по всем подписчикам — их и надо опрашивать.
+
+        Одну и ту же команду могут отслеживать несколько человек, а страница
+        у неё одна: опрашивать её по разу на подписчика значило бы дёргать
+        источник вхолостую.
+        """
+        return list(self.conn.execute(
+            "SELECT team_id, MIN(slug) AS slug, MIN(name) AS name FROM teams "
+            "WHERE enabled = 1 GROUP BY team_id ORDER BY team_id"))
 
     def team_ids(self) -> List[int]:
-        return [row["team_id"] for row in self.teams()]
+        return [row["team_id"] for row in self.tracked_teams()]
 
-    def set_team_enabled(self, team_id: int, enabled: bool) -> bool:
+    def subscribers_tracking(self, team_id: int) -> List[str]:
+        """Кому интересна эта команда. Только включённые подписчики."""
+        return [row["chat_id"] for row in self.conn.execute(
+            "SELECT t.chat_id FROM teams t "
+            "JOIN subscribers s ON s.chat_id = t.chat_id "
+            "WHERE t.team_id = ? AND t.enabled = 1 AND s.enabled = 1",
+            (team_id,))]
+
+    def set_team_enabled(self, chat_id: str, team_id: int, enabled: bool) -> bool:
         cur = self.conn.execute(
-            "UPDATE teams SET enabled = ? WHERE team_id = ?",
-            (1 if enabled else 0, team_id))
+            "UPDATE teams SET enabled = ? WHERE chat_id = ? AND team_id = ?",
+            (1 if enabled else 0, str(chat_id), team_id))
         return cur.rowcount > 0
 
-    def set_team_mutes(self, team_id: int, muted: List[str]) -> None:
-        self.conn.execute("UPDATE teams SET muted_events = ? WHERE team_id = ?",
-                          (",".join(sorted(set(muted))), team_id))
+    def set_team_mutes(self, chat_id: str, team_id: int, muted: List[str]) -> None:
+        self.conn.execute(
+            "UPDATE teams SET muted_events = ? WHERE chat_id = ? AND team_id = ?",
+            (",".join(sorted(set(muted))), str(chat_id), team_id))
 
-    def team_mutes(self, team_id: int) -> List[str]:
-        row = self.get_team(team_id)
+    def team_mutes(self, chat_id: str, team_id: int) -> List[str]:
+        row = self.get_team(chat_id, team_id)
         if row is None or not row["muted_events"]:
             return []
         return [part for part in row["muted_events"].split(",") if part]
 
     def team_name(self, team_id: Optional[int], fallback: str = "") -> str:
-        row = self.get_team(team_id)
+        """Имя команды — общее, не зависит от подписчика."""
+        if team_id is None:
+            return fallback
+        row = self.conn.execute(
+            "SELECT name FROM teams WHERE team_id = ? LIMIT 1", (team_id,)).fetchone()
         return row["name"] if row else fallback
 
     # ---------- связь матча с отслеживаемыми командами ----------
@@ -439,9 +537,14 @@ class Storage:
     # ---------- события и очередь ----------
 
     def record_event(self, *, idempotency_key: str, event_type: str,
-                     match_id: Optional[int], body: str) -> bool:
-        """Одной транзакцией: журнал + очередь. False — событие уже отправлялось."""
+                     match_id: Optional[int], body: str, chat_id: str = "") -> bool:
+        """Одной транзакцией: журнал + очередь. False — событие уже отправлялось.
+
+        Ключ журнала включает адресата: одно и то же событие может касаться
+        нескольких подписчиков, и каждому оно должно уйти ровно один раз.
+        """
         now = iso(utcnow())
+        idempotency_key = f"{chat_id}|{idempotency_key}" if chat_id else idempotency_key
         try:
             self.conn.execute("BEGIN IMMEDIATE")
             self.conn.execute(
@@ -450,9 +553,9 @@ class Storage:
                 (idempotency_key, event_type, match_id, now),
             )
             self.conn.execute(
-                "INSERT INTO outbox (idempotency_key, body, next_attempt_utc, created_utc) "
-                "VALUES (?, ?, ?, ?)",
-                (idempotency_key, body, now, now),
+                "INSERT INTO outbox (chat_id, idempotency_key, body, next_attempt_utc, "
+                "created_utc) VALUES (?, ?, ?, ?, ?)",
+                (chat_id, idempotency_key, body, now, now),
             )
         except sqlite3.IntegrityError:
             # Ключ уже есть — событие отправлялось. Это штатный исход.
@@ -544,29 +647,30 @@ class Storage:
 
     # ---------- живое сообщение на карту ----------
 
-    def live_message(self, match_id: int, map_number: int) -> Optional[sqlite3.Row]:
+    def live_message(self, chat_id: str, match_id: int,
+                     map_number: int) -> Optional[sqlite3.Row]:
         return self.conn.execute(
-            "SELECT * FROM live_messages WHERE match_id = ? AND map_number = ?",
-            (match_id, map_number)).fetchone()
+            "SELECT * FROM live_messages WHERE chat_id = ? AND match_id = ? "
+            "AND map_number = ?", (str(chat_id), match_id, map_number)).fetchone()
 
-    def save_live_message(self, match_id: int, map_number: int, *,
+    def save_live_message(self, chat_id: str, match_id: int, map_number: int, *,
                           telegram_message_id: Optional[int], text: str,
                           finalized: bool = False) -> None:
         """Id сообщения переживает рестарт: иначе после перезапуска сервис
         завёл бы на ту же карту второе живое сообщение."""
         self.conn.execute(
             """
-            INSERT INTO live_messages (match_id, map_number, telegram_message_id,
+            INSERT INTO live_messages (chat_id, match_id, map_number, telegram_message_id,
                                        last_text, last_edit_utc, finalized)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(match_id, map_number) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id, match_id, map_number) DO UPDATE SET
                 telegram_message_id = COALESCE(excluded.telegram_message_id,
                                                live_messages.telegram_message_id),
                 last_text     = excluded.last_text,
                 last_edit_utc = excluded.last_edit_utc,
                 finalized     = excluded.finalized
             """,
-            (match_id, map_number, telegram_message_id, text, iso(utcnow()),
+            (str(chat_id), match_id, map_number, telegram_message_id, text, iso(utcnow()),
              1 if finalized else 0))
 
     # ---------- состав карт ----------

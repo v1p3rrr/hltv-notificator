@@ -1,3 +1,5 @@
+CHAT = "555"
+
 """Дедупликация — жёсткое требование ТЗ, а не пожелание.
 
 Защита стоит на уникальном индексе sent_events.idempotency_key: вставка либо
@@ -33,7 +35,7 @@ def test_same_event_enqueued_twice_is_sent_once(storage, config):
 def test_replaying_whole_schedule_twice_changes_nothing(storage, config):
     """Прогон одного и того же наблюдения дважды подряд не меняет число
     уведомлений — тот же сценарий, что реконнект живого фида на этапе 4."""
-    storage.add_team(TEAM_ID, 'forze-reload', 'FORZE Reload')
+    storage.add_team(CHAT, TEAM_ID, 'forze-reload', 'FORZE Reload')
     machine = ScheduleMachine(storage, config)
     n = notifier(storage, config)
     machine.apply([entry(1, start=later(600))], TEAM_ID)  # bootstrap
@@ -56,7 +58,7 @@ def test_restart_does_not_resend(tmp_path, config):
     schedule = [entry(1, start=later(600)), entry(2, start=later(900))]
 
     first = Storage(path)
-    first.add_team(TEAM_ID, 'forze-reload', 'FORZE Reload')
+    first.add_team(CHAT, TEAM_ID, 'forze-reload', 'FORZE Reload')
     machine = ScheduleMachine(first, config)
     machine.apply([entry(1, start=later(600))], TEAM_ID)
     for event in machine.apply(schedule, TEAM_ID):

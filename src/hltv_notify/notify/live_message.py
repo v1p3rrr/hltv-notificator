@@ -41,23 +41,48 @@ class LiveMessenger:
 
     async def update(self, match_id: int, snapshot: dict, *, force: bool = False,
                      finalize: bool = False) -> None:
+        """Живое сообщение — у каждого подписчика своё.
+
+        Оно редактируется, а id сообщения свой в каждом чате, поэтому общего
+        сообщения на всех быть не может.
+        """
         if not self.config.live_message or not snapshot:
             return
+        for chat_id, for_team_id in self._recipients(match_id):
+            await self._update_one(chat_id, for_team_id, match_id, snapshot,
+                                   force=force, finalize=finalize)
+
+    def _recipients(self, match_id: int):
+        subscribers = self.storage.subscriber_ids()
+        if not subscribers:
+            return [(self.config.chat_id, None)]
+        teams = self.storage.match_team_ids(match_id)
+        if not teams:
+            return [(self.config.chat_id, None)]
+        by_chat = {}
+        for team_id in teams:
+            for chat in self.storage.subscribers_tracking(team_id):
+                by_chat.setdefault(chat, team_id)
+        return list(by_chat.items())
+
+    async def _update_one(self, chat_id: str, for_team_id, match_id: int, snapshot: dict,
+                          *, force: bool = False, finalize: bool = False) -> None:
         map_number = int(snapshot.get("map_number") or 0)
         if map_number <= 0:
             return
 
-        row = self.storage.live_message(match_id, map_number)
+        row = self.storage.live_message(chat_id, match_id, map_number)
         if row is not None and row["finalized"]:
             return
 
-        key = (match_id, map_number)
+        key = (chat_id, match_id, map_number)
         if not force:
             elapsed = time.monotonic() - self._last_edit.get(key, 0.0)
             if elapsed < self._interval:
                 return
 
-        text = fmt.render_live(snapshot, team_name=self.config.team_name)
+        text = fmt.render_live(fmt.orient(snapshot, for_team_id),
+                               team_name=self.config.team_name)
         if row is not None and row["last_text"] == text and not finalize:
             # Счёт не изменился — правка тем же текстом только тратит лимит.
             self._last_edit[key] = time.monotonic()
@@ -71,12 +96,11 @@ class LiveMessenger:
         else:
             try:
                 if message_id is None:
-                    message_id = await self.telegram.send_message(self.config.chat_id, text)
-                    log.info("живое сообщение матча %s карта %d создано (id %s)",
-                             match_id, map_number, message_id)
+                    message_id = await self.telegram.send_message(chat_id, text)
+                    log.info("живое сообщение матча %s карта %d создано для %s (id %s)",
+                             match_id, map_number, chat_id, message_id)
                 else:
-                    await self.telegram.edit_message_text(
-                        self.config.chat_id, message_id, text)
+                    await self.telegram.edit_message_text(chat_id, message_id, text)
             except TelegramError as exc:
                 # Живое сообщение — вспомогательное. Если оно не обновилось,
                 # ронять из-за этого воркер и терять вехи нельзя.
@@ -87,7 +111,7 @@ class LiveMessenger:
 
         self._last_edit[key] = time.monotonic()
         self.storage.save_live_message(
-            match_id, map_number, telegram_message_id=message_id,
+            chat_id, match_id, map_number, telegram_message_id=message_id,
             text=text, finalized=finalize)
 
     async def finalize(self, match_id: int, snapshot: dict) -> None:

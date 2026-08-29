@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+CHAT = "555"
+
 from conftest import later
 from hltv_notify.models import Event, ScheduleEntry
 from hltv_notify.notify.outbox import Notifier
@@ -25,8 +27,8 @@ MATCH = 500
 
 @pytest.fixture()
 def both(storage):
-    storage.add_team(ALPHA, "mouz", "MOUZ")
-    storage.add_team(BETA, "forze-reload", "FORZE Reload")
+    storage.add_team(CHAT, ALPHA, "mouz", "MOUZ")
+    storage.add_team(CHAT, BETA, "forze-reload", "FORZE Reload")
     return storage
 
 

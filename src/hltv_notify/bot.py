@@ -36,11 +36,16 @@ def _parse_team_ref(argument: str):
         return int(argument), None
     return None, None
 
+MUTABLE_EVENTS = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E9")
+
 HELP = (
     "Команды:\n"
-    "/teams — какие команды отслеживаются\n"
+    "/teams — какие команды вы отслеживаете\n"
     "/track &lt;ссылка на команду&gt; — добавить команду\n"
     "/untrack &lt;id&gt; — перестать отслеживать\n"
+    "/mute &lt;id&gt; &lt;E5,E9&gt; — заглушить типы событий по команде\n"
+    "/unmute &lt;id&gt; — снять все глушения по команде\n"
+    "/whoami — ваш chat_id\n"
     "/status — состояние сервиса и источников\n"
     "/next — ближайшие матчи по данным сервиса\n"
     "/check — проверить расписание прямо сейчас\n"
@@ -91,16 +96,33 @@ class CommandBot:
         text = (message.get("text") or "").strip()
         if not text.startswith("/"):
             return
-        if chat_id != str(self.config.chat_id):
-            log.warning("команда из чужого чата %s проигнорирована", chat_id)
-            return
-
         command, _, argument = text.partition(" ")
         command = command.split("@")[0].lower()
-        argument = argument.strip().lower()
+        argument = argument.strip()
+
+        if command == "/whoami":
+            # Отвечаем всем: человек должен узнать свой id, чтобы его внесли
+            # в белый список. Ничего секретного в этом числе нет.
+            await self._reply(chat_id, f"Ваш chat_id: <code>{fmt.escape(chat_id)}</code>")
+            return
+
+        if not self.config.chat_allowed(chat_id):
+            # Молча: отвечать незнакомцу отказом значит подтверждать
+            # существование бота кому попало. Свой chat_id человек узнаёт
+            # командой /whoami, она обрабатывается выше и отвечает всем.
+            # Сам id пишем в лог — чтобы владелец мог внести его в белый список.
+            log.warning("команда %s из чата %s отклонена: его нет в белом списке",
+                        command, chat_id)
+            return
+
+        # Разрешённый чат становится подписчиком при первом же обращении:
+        # иначе пришлось бы заводить его руками в базе.
+        if self.storage.get_subscriber(chat_id) is None:
+            self.storage.add_subscriber(chat_id)
+            log.info("новый подписчик: %s", chat_id)
 
         handlers = {
-            "/teams": self._teams,
+            "/teams": lambda: self._teams(chat_id),
             "/status": self._status,
             "/live": self._live,
             "/next": self._next,
@@ -110,11 +132,15 @@ class CommandBot:
         }
         try:
             if command == "/verbose":
-                reply = self._verbose(argument)
+                reply = self._verbose(argument.lower())
             elif command == "/track":
-                reply = await self._track(argument)
+                reply = await self._track(chat_id, argument)
             elif command == "/untrack":
-                reply = self._untrack(argument)
+                reply = self._untrack(chat_id, argument)
+            elif command == "/mute":
+                reply = self._mute(chat_id, argument)
+            elif command == "/unmute":
+                reply = self._unmute(chat_id, argument)
             elif command in handlers:
                 result = handlers[command]()
                 reply = await result if asyncio.iscoroutine(result) else result
@@ -124,10 +150,13 @@ class CommandBot:
             log.exception("ошибка обработки команды %s", command)
             reply = "Команда упала, подробности в логах."
 
+        await self._reply(chat_id, reply)
+
+    async def _reply(self, chat_id: str, text: str) -> None:
         try:
-            await self.telegram.send_message(chat_id, reply)
+            await self.telegram.send_message(chat_id, text)
         except TelegramError as exc:
-            log.error("не удалось ответить на %s: %s", command, exc)
+            log.error("не удалось ответить в чат %s: %s", chat_id, exc)
 
     # ------------------------------------------------------------------
 
@@ -140,7 +169,8 @@ class CommandBot:
 
         lines = [
             "<b>Состояние сервиса</b>",
-            f"Команд отслеживается: {len(self.storage.teams())}",
+            f"Подписчиков: {len(self.storage.subscribers())}, "
+            f"команд под наблюдением: {len(self.storage.tracked_teams())}",
             f"Режим опроса расписания: {self.poller.mode}",
             f"Режим опроса матчей: {self.matches.mode if self.matches else '—'}",
             f"Активных матчей: {len(self.matches.active()) if self.matches else 0}",
@@ -159,17 +189,22 @@ class CommandBot:
             lines.append(f"Последняя ошибка: <i>{fmt.escape(last_error)}</i>")
         return "\n".join(lines)
 
-    def _teams(self) -> str:
-        rows = self.storage.teams(enabled_only=False)
+    def _teams(self, chat_id: str) -> str:
+        rows = self.storage.teams(chat_id, enabled_only=False)
         if not rows:
-            return "Ни одной команды не отслеживается. Добавить: /track &lt;ссылка&gt;"
-        lines = ["<b>Отслеживаемые команды</b>"]
+            return "Вы не отслеживаете ни одной команды. Добавить: /track &lt;ссылка&gt;"
+        lines = ["<b>Ваши команды</b>"]
         for row in rows:
-            mark = "" if row["enabled"] else "  (выключена)"
-            lines.append(f"{fmt.escape(row['name'])} — id {row['team_id']}{mark}")
+            marks = []
+            if not row["enabled"]:
+                marks.append("выключена")
+            if row["muted_events"]:
+                marks.append("заглушено: " + row["muted_events"].replace(",", ", "))
+            tail = ("  (" + "; ".join(marks) + ")") if marks else ""
+            lines.append(f"{fmt.escape(row['name'])} — id {row['team_id']}{tail}")
         return "\n".join(lines)
 
-    async def _track(self, argument: str) -> str:
+    async def _track(self, chat_id: str, argument: str) -> str:
         """Добавить команду. Принимает ссылку на страницу команды или её id.
 
         Ссылка предпочтительнее: из неё берутся и id, и slug. У команд бывают
@@ -192,7 +227,7 @@ class CommandBot:
         if not name:
             return f"На странице {url} не нашлось имени команды — проверьте ссылку."
 
-        added = self.storage.add_team(team_id, slug or str(team_id), name)
+        added = self.storage.add_team(chat_id, team_id, slug or str(team_id), name)
         self.poller.request_poll()
         if added:
             return (f"Отслеживаю <b>{fmt.escape(name)}</b> (id {team_id}).\n"
@@ -200,18 +235,55 @@ class CommandBot:
                     "со следующих изменений.")
         return f"<b>{fmt.escape(name)}</b> (id {team_id}) уже отслеживается, включил обратно."
 
-    def _untrack(self, argument: str) -> str:
+    def _untrack(self, chat_id: str, argument: str) -> str:
         team_id, _ = _parse_team_ref(argument)
         if team_id is None:
             return "Использование: /untrack &lt;id команды&gt;"
-        row = self.storage.get_team(team_id)
+        row = self.storage.get_team(chat_id, team_id)
         if row is None:
-            return f"Команда {team_id} и так не отслеживается."
-        self.storage.set_team_enabled(team_id, False)
+            return f"Вы и так не отслеживаете команду {team_id}."
+        self.storage.set_team_enabled(chat_id, team_id, False)
         # История матчей не удаляется: если команду вернут, журнал уже
         # отправленного не даст разослать всё заново.
         return (f"Больше не отслеживаю <b>{fmt.escape(row['name'])}</b> (id {team_id}). "
                 "История сохранена.")
+
+    def _mute(self, chat_id: str, argument: str) -> str:
+        """Заглушить типы событий по одной команде.
+
+        Если отслеживаемые команды играют друг против друга, событие всё равно
+        придёт, когда его хочет ХОТЯ БЫ ОДНА из ваших команд в этом матче:
+        иначе одна команда молча глушила бы уведомления про другую.
+        """
+        parts = argument.split()
+        team_id, _ = _parse_team_ref(parts[0]) if parts else (None, None)
+        if team_id is None or len(parts) < 2:
+            return ("Использование: /mute &lt;id команды&gt; &lt;типы через запятую&gt;\n"
+                    f"Типы: {', '.join(MUTABLE_EVENTS)}")
+        row = self.storage.get_team(chat_id, team_id)
+        if row is None:
+            return f"Вы не отслеживаете команду {team_id}."
+
+        requested = [part.strip().upper() for part in parts[1].replace(";", ",").split(",")]
+        requested = [part for part in requested if part]
+        unknown = [part for part in requested if part not in MUTABLE_EVENTS]
+        if unknown:
+            return (f"Не знаю тип(ы): {', '.join(unknown)}.\n"
+                    f"Доступные: {', '.join(MUTABLE_EVENTS)}")
+
+        self.storage.set_team_mutes(chat_id, team_id, requested)
+        return (f"По команде <b>{fmt.escape(row['name'])}</b> заглушено: "
+                f"{', '.join(sorted(set(requested)))}")
+
+    def _unmute(self, chat_id: str, argument: str) -> str:
+        team_id, _ = _parse_team_ref(argument)
+        if team_id is None:
+            return "Использование: /unmute &lt;id команды&gt;"
+        row = self.storage.get_team(chat_id, team_id)
+        if row is None:
+            return f"Вы не отслеживаете команду {team_id}."
+        self.storage.set_team_mutes(chat_id, team_id, [])
+        return f"По команде <b>{fmt.escape(row['name'])}</b> глушения сняты."
 
     def _feed_line(self) -> str:
         """Состояние живого фида: от него зависят E5, мультикиллы и скорость E6."""

@@ -241,6 +241,7 @@ class MatchMachine:
             match_id=observation.match_id,
             payload={
                 "team_name": self.storage.team_name(team_id, self.config.team_name),
+                "team_id": team_id,
                 "opponent": opponent_name or (row["opponent_name"] if row else ""),
                 "opponent_id": opponent_id,
                 "event_name": observation.event_name or (row["event_name"] if row else ""),
@@ -264,6 +265,7 @@ class MatchMachine:
             match_id=observation.match_id,
             payload={
                 "team_name": self.storage.team_name(team_id, self.config.team_name),
+                "team_id": team_id,
                 "opponent": opponent_name or (row["opponent_name"] if row else ""),
                 "opponent_id": opponent_id,
                 "event_name": observation.event_name or (row["event_name"] if row else ""),
@@ -298,6 +300,7 @@ class MatchMachine:
             match_id=observation.match_id,
             payload={
                 "team_name": self.storage.team_name(team_id, self.config.team_name),
+                "team_id": team_id,
                 "opponent": opponent_name or (row["opponent_name"] if row else ""),
                 "opponent_id": opponent_id,
                 "event_name": observation.event_name or (row["event_name"] if row else ""),

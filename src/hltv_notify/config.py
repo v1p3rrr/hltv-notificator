@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import List
 from pathlib import Path
 
 # Потолок частоты, зашитый в код. Конфигом не поднимается — см. docs/operations.md.
@@ -39,6 +40,12 @@ class Config:
     # Telegram
     bot_token: str = field(default_factory=lambda: _str("TELEGRAM_BOT_TOKEN", ""))
     chat_id: str = field(default_factory=lambda: _str("TELEGRAM_CHAT_ID", ""))
+
+    # Кому разрешено пользоваться ботом. По умолчанию — только перечисленные:
+    # у бота публичный адрес, и без белого списка команду ему сможет отдать
+    # кто угодно, кто его найдёт.
+    allowed_chats: str = field(default_factory=lambda: _str("TELEGRAM_ALLOWED_CHATS", ""))
+    whitelist_only: bool = field(default_factory=lambda: _bool("TELEGRAM_WHITELIST_ONLY", True))
 
     # режим
     dry_run: bool = field(default_factory=lambda: _bool("DRY_RUN", True))
@@ -101,7 +108,20 @@ class Config:
         return max(base, int(HARD_MIN_REQUEST_INTERVAL_SECONDS))
 
     def telegram_enabled(self) -> bool:
-        return bool(self.bot_token and self.chat_id)
+        return bool(self.bot_token and (self.chat_id or self.allowed_chat_ids()))
+
+    def allowed_chat_ids(self) -> List[str]:
+        """Белый список из .env плюс основной чат: он разрешён всегда."""
+        ids = [part.strip() for part in self.allowed_chats.replace(";", ",").split(",")]
+        ids = [part for part in ids if part]
+        if self.chat_id and self.chat_id not in ids:
+            ids.insert(0, self.chat_id)
+        return ids
+
+    def chat_allowed(self, chat_id: str) -> bool:
+        if not self.whitelist_only:
+            return True
+        return str(chat_id) in self.allowed_chat_ids()
 
 
 def load() -> Config:

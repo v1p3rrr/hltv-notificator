@@ -1,3 +1,5 @@
+CHAT = "555"
+
 """Машина состояний: E1-E3, пороги, дебаунс и дедупликация."""
 
 from datetime import timedelta
@@ -12,7 +14,7 @@ TEAM_ID = 12857
 
 
 def machine(storage, config) -> ScheduleMachine:
-    storage.add_team(TEAM_ID, "forze-reload", "FORZE Reload")
+    storage.add_team(CHAT, TEAM_ID, "forze-reload", "FORZE Reload")
     return ScheduleMachine(storage, config)
 
 

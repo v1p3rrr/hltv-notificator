@@ -92,7 +92,7 @@ class SchedulePoller:
         Страницы разных команд — независимые источники: неудача по одной не
         должна мешать остальным, поэтому ошибки собираются, а цикл идёт дальше.
         """
-        teams = self.storage.teams()
+        teams = self.storage.tracked_teams()
         if not teams:
             log.warning("не задано ни одной отслеживаемой команды")
             return []

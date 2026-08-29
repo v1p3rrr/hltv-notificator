@@ -70,10 +70,12 @@ async def run() -> int:
     # Первый посев: команда из .env становится первой отслеживаемой. Дальше
     # список живёт в базе и правится через бота, а переменные окружения
     # остаются только запасным значением.
-    if not storage.teams(enabled_only=False) and config.team_id:
-        storage.add_team(config.team_id, config.team_slug, config.team_name)
-        log.info("первая отслеживаемая команда взята из конфига: %s (id %s)",
-                 config.team_name, config.team_id)
+    for chat in config.allowed_chat_ids():
+        storage.add_subscriber(chat, note="из TELEGRAM_ALLOWED_CHATS")
+    if not storage.teams(enabled_only=False) and config.team_id and config.chat_id:
+        storage.add_team(config.chat_id, config.team_id, config.team_slug, config.team_name)
+        log.info("первая отслеживаемая команда взята из конфига: %s (id %s) для чата %s",
+                 config.team_name, config.team_id, config.chat_id)
     http = HltvHttp(config)
     telegram: Optional[Telegram] = Telegram(config.bot_token) if config.telegram_enabled() else None
     notifier = Notifier(storage, config, telegram)
@@ -85,7 +87,12 @@ async def run() -> int:
     if config.dry_run:
         log.warning("DRY_RUN включён: уведомления пишутся в лог, в Telegram не уходят")
     if telegram is None:
-        log.warning("TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не заданы — работаем без Telegram")
+        missing = []
+        if not config.bot_token:
+            missing.append("TELEGRAM_BOT_TOKEN")
+        if not config.chat_id and not config.allowed_chat_ids():
+            missing.append("TELEGRAM_CHAT_ID или TELEGRAM_ALLOWED_CHATS")
+        log.warning("работаем без Telegram: не задано %s", ", ".join(missing))
 
     stop = asyncio.Event()
     _install_signal_handlers(stop)
@@ -101,9 +108,10 @@ async def run() -> int:
         bot = CommandBot(storage, config, telegram, poller, matches, http)
         tasks.append(asyncio.create_task(bot.run(stop), name="command-bot"))
 
-    log.info("сервис запущен: команд под наблюдением %d (%s), режим отправки %s",
-             len(storage.teams()),
-             ", ".join(row["name"] for row in storage.teams()) or "нет",
+    log.info("сервис запущен: подписчиков %d, команд под наблюдением %d (%s), "
+             "режим отправки %s",
+             len(storage.subscribers()), len(storage.tracked_teams()),
+             ", ".join(row["name"] for row in storage.tracked_teams()) or "нет",
              "dry-run" if config.dry_run else "боевой")
 
     try:
