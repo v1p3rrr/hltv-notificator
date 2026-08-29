@@ -27,8 +27,9 @@ from .state.live_machine import LiveMachine
 
 log = logging.getLogger(__name__)
 
-# Пауза после 403. Источник явно попросил отойти — секунды тут не помогут.
-REJECTED_COOLDOWN_SECONDS = 600.0
+# Нижняя граница паузы после 403. Источник явно попросил отойти, и опускать
+# её конфигом ниже разумного нельзя.
+MIN_REJECTED_COOLDOWN_SECONDS = 60.0
 MAX_BACKOFF_SECONDS = 60.0
 
 
@@ -61,10 +62,12 @@ class LiveWorker:
                 await self._consume(client, stop)
             except FeedRejected as exc:
                 self.connected = False
+                cooldown = max(float(self.config.live_feed_cooldown),
+                               MIN_REJECTED_COOLDOWN_SECONDS)
                 log.error("живой фид матча %s отклонён (%s) — пауза %.0f мин, "
                           "работаем по странице матча",
-                          self.match_id, exc, REJECTED_COOLDOWN_SECONDS / 60)
-                await self._sleep(REJECTED_COOLDOWN_SECONDS, stop)
+                          self.match_id, exc, cooldown / 60)
+                await self._sleep(cooldown, stop)
             except FeedUnavailable as exc:
                 self.connected = False
                 attempt += 1

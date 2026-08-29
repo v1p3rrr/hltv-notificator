@@ -1,5 +1,10 @@
 services:
   hltv-notify:
+    # На сервере образ ТЯНЕТСЯ из реестра: `docker compose pull && up -d`.
+    # Локально его можно собрать: `docker compose up -d --build`.
+    # Имя переопределяется переменной IMAGE в .env, если публикуете в другое
+    # пространство или хотите прибиться к конкретной версии вместо latest.
+    image: ${IMAGE:-v1p3rrr/hltv-notificator:latest}
     build: .
     container_name: hltv-notify
     restart: unless-stopped
@@ -12,8 +17,21 @@ services:
       # .env (TZ_DISPLAY), здесь — только запасное на случай, если его там нет.
       # Любая зона из базы IANA: Europe/Moscow, Europe/Riga, Asia/Tbilisi...
       TZ_DISPLAY: ${TZ_DISPLAY:-Europe/Moscow}
+
     volumes:
+      # ⚠️ В этом каталоге лежит не только состояние, но и ЖУРНАЛ отправленных
+      # уведомлений. Потеря тома означает, что сервис сочтёт новым всё, что
+      # найдёт, и разошлёт уведомления повторно. Каталог бэкапить, том при
+      # обновлении образа не удалять.
       - ./data:/app/data
+
+    # Сервис гасится по SIGTERM: живой фид закрывается, очередь дописывается.
+    # Десяти секунд с запасом хватает, но убивать его на второй секунде не надо.
+    stop_grace_period: 15s
+
+    security_opt:
+      - no-new-privileges:true
+
     logging:
       driver: json-file
       options:

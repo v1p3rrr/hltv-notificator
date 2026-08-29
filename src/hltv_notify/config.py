@@ -59,6 +59,11 @@ class Config:
     live_message: bool = field(default_factory=lambda: _bool("LIVE_MESSAGE", True))
     live_edit_seconds: int = field(default_factory=lambda: _int("LIVE_EDIT_SECONDS", 10))
 
+    # пауза после 403 на живом фиде: источник просит отойти, и секунды тут
+    # не помогают. На это время сервис живёт опросом страницы матча.
+    live_feed_cooldown: int = field(
+        default_factory=lambda: _int("LIVE_FEED_COOLDOWN_SECONDS", 600))
+
     # алерт о мультикилле игрока НАШЕЙ команды, чтобы успеть клипануть
     multikill_alerts: bool = field(default_factory=lambda: _bool("MULTIKILL_ALERTS", True))
     multikill_threshold: int = field(default_factory=lambda: _int("MULTIKILL_THRESHOLD", 4))

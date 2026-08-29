@@ -73,3 +73,18 @@ def test_stop_event_ends_consumption(storage, config):
     stop.set()
     asyncio.run(w._consume(client, stop))
     assert client.polls == 0
+
+
+def test_rejection_cooldown_has_a_floor(monkeypatch, storage):
+    """403 — это «отойди». Конфиг может попросить паузу в секунду, но такая
+    пауза означала бы долбёжку источника, поэтому есть нижняя граница."""
+    from hltv_notify.config import Config
+    from hltv_notify.live_worker import MIN_REJECTED_COOLDOWN_SECONDS
+
+    tiny = Config(live_feed_cooldown=1)
+    assert max(float(tiny.live_feed_cooldown),
+               MIN_REJECTED_COOLDOWN_SECONDS) == MIN_REJECTED_COOLDOWN_SECONDS
+
+    generous = Config(live_feed_cooldown=1800)
+    assert max(float(generous.live_feed_cooldown),
+               MIN_REJECTED_COOLDOWN_SECONDS) == 1800

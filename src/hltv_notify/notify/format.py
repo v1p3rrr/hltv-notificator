@@ -98,8 +98,9 @@ def render(event: Event, *, team_name: str, tz_name: str) -> str:
         return "\n".join([
             "🗺 <b>Карта началась</b>",
             f"{team} — {opponent}",
-            f"Карта {payload.get('map_number')}: {_esc(payload.get('map_name'))}",
+            f"Карта {payload.get('map_number')}: <b>{_esc(payload.get('map_name'))}</b>",
             f"Счёт по картам: {payload.get('series_team')}:{payload.get('series_opponent')}",
+            event_name,
             _link(url, "Страница матча"),
         ])
 
