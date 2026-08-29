@@ -113,7 +113,8 @@ Keep-alive: POST с телом `1:2` (пакет `2` = ping) не реже `ping
 | `live`, `frozen`, `bombPlanted` | флаги |
 | `ctTeamScore` / `tTeamScore` | счёт **текущей карты** по сторонам |
 | `counterTerroristScore` / `terroristScore` | дубль того же |
-| `ctTeamId` / `tTeamId`, `ctTeamName` / `tTeamName` | кто сейчас за какую сторону |
+| `ctTeamId` / `tTeamId` | кто сейчас за какую сторону |
+| `ctTeamName` / `terroristTeamName` | имена команд по сторонам (именно так, асимметрично) |
 | `startingCt` / `startingT` | id команд по стартовым сторонам |
 | `regulationHalfLength` / `overtimeHalfLength` | 12 / 3 |
 | `ctMatchHistory` / `terroristMatchHistory` | `{firstHalf:[…], secondHalf:[…]}` |

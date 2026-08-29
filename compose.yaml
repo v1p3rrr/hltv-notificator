@@ -1,0 +1,17 @@
+services:
+  hltv-notify:
+    build: .
+    container_name: hltv-notify
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Внутри контейнера всё считается в UTC; часовой пояс отображения
+      # задаётся отдельно через TZ_DISPLAY в .env.
+      TZ: UTC
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

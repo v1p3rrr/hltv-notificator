@@ -1,0 +1,8 @@
+.venv/
+.git/
+data/
+docs/recon/fixtures/
+tests/
+__pycache__/
+*.pyc
+.env
