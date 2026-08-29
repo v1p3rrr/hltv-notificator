@@ -56,6 +56,10 @@ class Telegram:
             return data["result"]
 
         description = data.get("description", "")
+        # Правка тем же текстом — не ошибка, а нормальный исход: счёт мог не
+        # измениться между обновлениями.
+        if "message is not modified" in description.lower():
+            return None
         retry_after = (data.get("parameters") or {}).get("retry_after")
         # 400 и 403 сами не пройдут: неверный chat_id, бот заблокирован,
         # сломанная разметка. Повторять их бессмысленно.
@@ -71,6 +75,15 @@ class Telegram:
             "disable_web_page_preview": True,
         })
         return int(result["message_id"])
+
+    async def edit_message_text(self, chat_id: str, message_id: int, text: str) -> None:
+        await self._call("editMessageText", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        })
 
     async def get_updates(self, offset: Optional[int], timeout: int = 25) -> List[Dict[str, Any]]:
         payload: Dict[str, Any] = {"timeout": timeout, "allowed_updates": ["message"]}

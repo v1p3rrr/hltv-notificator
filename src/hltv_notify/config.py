@@ -55,6 +55,10 @@ class Config:
     prematch_window_minutes: int = field(
         default_factory=lambda: _int("PREMATCH_WINDOW_MINUTES", 30))
 
+    # живое сообщение со счётом по ходу карты
+    live_message: bool = field(default_factory=lambda: _bool("LIVE_MESSAGE", True))
+    live_edit_seconds: int = field(default_factory=lambda: _int("LIVE_EDIT_SECONDS", 10))
+
     # пороги событий
     e2_min_shift_minutes: int = field(default_factory=lambda: _int("E2_MIN_SHIFT_MINUTES", 5))
     e2_debounce_minutes: int = field(default_factory=lambda: _int("E2_DEBOUNCE_MINUTES", 10))

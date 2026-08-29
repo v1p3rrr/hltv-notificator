@@ -106,6 +106,38 @@ class LiveMachine:
 
     # ------------------------------------------------------------------
 
+    def snapshot(self, match_id: int, frame: LiveFrame) -> Optional[dict]:
+        """Данные для живого сообщения со счётом.
+
+        Отдельно от apply(): живое сообщение — это не событие. У него нет
+        ключа идемпотентности и его не надо досылать после рестарта, его надо
+        просто перерисовать текущим состоянием.
+        """
+        ours, theirs = frame.our_score(self.config.team_id)
+        if ours is None or theirs is None:
+            return None
+        map_name = normalize_map_name(frame.map_name)
+        if not map_name:
+            return None
+        recorded = self.storage.map_results(match_id)
+        series = self._series(match_id)
+        row = self.storage.get_match(match_id)
+        return {
+            "map_number": self._map_number(match_id, map_name, len(recorded)),
+            "map_name": map_name,
+            "score_team": ours,
+            "score_opponent": theirs,
+            "round": frame.current_round,
+            "round_state": frame.round_state,
+            "in_play": frame.in_play,
+            "series_team": series[0],
+            "series_opponent": series[1],
+            "opponent": frame.opponent_name(self.config.team_id)
+                        or (row["opponent_name"] if row else ""),
+            "event_name": row["event_name"] if row else "",
+            "url": row["url"] if row else "",
+        }
+
     def _map_number(self, match_id: int, map_name: str, recorded_count: int) -> int:
         """Номер карты в серии.
 

@@ -141,3 +141,30 @@ def render(event: Event, *, team_name: str, tz_name: str) -> str:
         ])
 
     return f"{_esc(event.type)}: {_esc(str(payload))}"
+
+
+ROUND_STATE_LABELS = {
+    "warmup": "разминка",
+    "freezePeriod": "закупка",
+    "started": "идёт раунд",
+    "ended": "раунд закончен",
+}
+
+
+def render_live(snapshot: dict, *, team_name: str) -> str:
+    """Живое сообщение на карту: одно на карту, обновляется по ходу игры.
+
+    Оно намеренно короткое: его перерисовывают каждые несколько секунд, и
+    длинный текст в истории чата превращается в стену.
+    """
+    team = escape(team_name)
+    opponent = escape(snapshot.get("opponent") or "TBD")
+    map_name = escape(snapshot.get("map_name"))
+    state = ROUND_STATE_LABELS.get(snapshot.get("round_state"), "")
+    tail = f" · {state}" if state else ""
+    return "\n".join([
+        f"🎯 <b>{team} {snapshot['score_team']}:{snapshot['score_opponent']} {opponent}</b>",
+        f"Карта {snapshot.get('map_number')}: {map_name} · раунд {snapshot.get('round')}{tail}",
+        f"Счёт по картам: {snapshot.get('series_team')}:{snapshot.get('series_opponent')}",
+        _link(snapshot.get("url") or "", "Страница матча"),
+    ])

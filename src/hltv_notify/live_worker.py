@@ -18,6 +18,7 @@ from typing import Dict, Optional
 
 from .config import Config
 from .models import Event
+from .notify.live_message import LiveMessenger
 from .notify.outbox import Notifier
 from .sources.scorebot import (FeedIdle, FeedRejected, FeedUnavailable,
                                ScorebotClient, frames_from_packets)
@@ -35,10 +36,11 @@ class LiveWorker:
     """Одно соединение на один матч."""
 
     def __init__(self, storage: Storage, config: Config, notifier: Notifier,
-                 match_id: int, url: str):
+                 match_id: int, url: str, messenger: Optional[LiveMessenger] = None):
         self.storage = storage
         self.config = config
         self.notifier = notifier
+        self.messenger = messenger
         self.match_id = match_id
         self.url = url
         self.machine = LiveMachine(storage, config)
@@ -90,8 +92,23 @@ class LiveWorker:
                 log.debug("живой фид матча %s молчит, опрашиваем снова", self.match_id)
                 continue
             for frame in frames_from_packets(packets):
-                for event in self.machine.apply(self.match_id, frame):
+                events = self.machine.apply(self.match_id, frame)
+                for event in events:
                     self.notifier.enqueue(event)
+                await self._refresh_live_message(frame, events)
+
+    async def _refresh_live_message(self, frame, events) -> None:
+        """Живое сообщение перерисовывается после apply, чтобы в финальной
+        правке уже стоял счёт серии с учётом только что взятой карты."""
+        if self.messenger is None:
+            return
+        snapshot = self.machine.snapshot(self.match_id, frame)
+        if not snapshot:
+            return
+        if any(event.type == "E6" for event in events):
+            await self.messenger.finalize(self.match_id, snapshot)
+        else:
+            await self.messenger.update(self.match_id, snapshot)
 
     @staticmethod
     async def _sleep(seconds: float, stop: asyncio.Event) -> None:
@@ -108,10 +125,12 @@ class LiveSupervisor:
     поэтому один воркер на матч, а не один на сервис.
     """
 
-    def __init__(self, storage: Storage, config: Config, notifier: Notifier):
+    def __init__(self, storage: Storage, config: Config, notifier: Notifier,
+                 messenger: Optional[LiveMessenger] = None):
         self.storage = storage
         self.config = config
         self.notifier = notifier
+        self.messenger = messenger
         self._workers: Dict[int, LiveWorker] = {}
         self._tasks: Dict[int, asyncio.Task] = {}
         self._stops: Dict[int, asyncio.Event] = {}
@@ -127,7 +146,8 @@ class LiveSupervisor:
         if match_id in self._tasks and not self._tasks[match_id].done():
             return
         stop = asyncio.Event()
-        worker = LiveWorker(self.storage, self.config, self.notifier, match_id, url)
+        worker = LiveWorker(self.storage, self.config, self.notifier, match_id, url,
+                            messenger=self.messenger)
         self._workers[match_id] = worker
         self._stops[match_id] = stop
         self._tasks[match_id] = asyncio.create_task(

@@ -20,6 +20,7 @@ from .bot import CommandBot
 from .http import HltvHttp
 from .live_worker import LiveSupervisor
 from .match_poller import MatchPoller
+from .notify.live_message import LiveMessenger
 from .notify.outbox import Notifier
 from .notify.telegram import Telegram
 from .scheduler import SchedulePoller
@@ -69,7 +70,8 @@ async def run() -> int:
     telegram: Optional[Telegram] = Telegram(config.bot_token) if config.telegram_enabled() else None
     notifier = Notifier(storage, config, telegram)
     poller = SchedulePoller(storage, config, http, notifier)
-    supervisor = LiveSupervisor(storage, config, notifier)
+    messenger = LiveMessenger(storage, config, telegram)
+    supervisor = LiveSupervisor(storage, config, notifier, messenger)
     matches = MatchPoller(storage, config, http, notifier, supervisor)
 
     if config.dry_run:

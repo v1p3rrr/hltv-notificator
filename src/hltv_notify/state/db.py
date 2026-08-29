@@ -86,6 +86,16 @@ CREATE TABLE IF NOT EXISTS raw_log (
 );
 CREATE INDEX IF NOT EXISTS raw_log_ts ON raw_log(ts_utc);
 
+CREATE TABLE IF NOT EXISTS live_messages (
+    match_id            INTEGER NOT NULL,
+    map_number          INTEGER NOT NULL,
+    telegram_message_id INTEGER,
+    last_text           TEXT,
+    last_edit_utc       TEXT,
+    finalized           INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (match_id, map_number)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -346,6 +356,33 @@ class Storage:
             "DELETE FROM raw_log WHERE ts_utc < ?",
             (iso(utcnow() - timedelta(days=keep_days)),),
         )
+
+    # ---------- живое сообщение на карту ----------
+
+    def live_message(self, match_id: int, map_number: int) -> Optional[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM live_messages WHERE match_id = ? AND map_number = ?",
+            (match_id, map_number)).fetchone()
+
+    def save_live_message(self, match_id: int, map_number: int, *,
+                          telegram_message_id: Optional[int], text: str,
+                          finalized: bool = False) -> None:
+        """Id сообщения переживает рестарт: иначе после перезапуска сервис
+        завёл бы на ту же карту второе живое сообщение."""
+        self.conn.execute(
+            """
+            INSERT INTO live_messages (match_id, map_number, telegram_message_id,
+                                       last_text, last_edit_utc, finalized)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(match_id, map_number) DO UPDATE SET
+                telegram_message_id = COALESCE(excluded.telegram_message_id,
+                                               live_messages.telegram_message_id),
+                last_text     = excluded.last_text,
+                last_edit_utc = excluded.last_edit_utc,
+                finalized     = excluded.finalized
+            """,
+            (match_id, map_number, telegram_message_id, text, iso(utcnow()),
+             1 if finalized else 0))
 
     # ---------- состав карт ----------
 
