@@ -55,6 +55,11 @@ class SchedulePoller:
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
+            # Флаг сбрасывается ПЕРЕД опросом, а не после. Иначе /check,
+            # отданный пока опрос уже идёт, стирался этим сбросом: бот успевал
+            # ответить «Проверяю расписание», а внеочередной проверки не было —
+            # следующая случалась только через штатный интервал, до получаса.
+            self._force.clear()
             try:
                 await self.poll_once()
             except Exception:  # noqa: BLE001 - опрос не имеет права уронить процесс
@@ -64,7 +69,11 @@ class SchedulePoller:
             delay = jittered(self.config.interval_for(self.mode))
             log.info("режим %s, следующий опрос через %.0fs", self.mode, delay)
 
-            self._force.clear()
+            if self._force.is_set():
+                # Просьба поступила во время опроса — обслуживаем её сразу.
+                log.info("внеочередной опрос по команде /check")
+                continue
+
             waiters = [asyncio.create_task(stop.wait()), asyncio.create_task(self._force.wait())]
             done, pending = await asyncio.wait(
                 waiters, timeout=delay, return_when=asyncio.FIRST_COMPLETED)

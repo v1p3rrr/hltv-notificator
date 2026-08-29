@@ -42,7 +42,12 @@ CREATE TABLE IF NOT EXISTS match_state (
     pending_start_utc  TEXT,
     pending_since_utc  TEXT,
     progress_hash      TEXT,
-    progress_since_utc TEXT
+    progress_since_utc TEXT,
+    -- current_map_name — поле ДЛЯ ОТОБРАЖЕНИЯ, его пишут обе машины, и «кто
+    -- писал последним» там не определено. Решения по нему принимать нельзя.
+    -- Ниже — приватные памятки: каждую пишет и читает ровно одна машина.
+    live_map_name      TEXT,   -- последняя карта, которую видел ЖИВОЙ ФИД
+    page_seen_utc      TEXT    -- когда СТРАНИЦА МАТЧА впервые увидела матч
 );
 
 CREATE TABLE IF NOT EXISTS map_results (
@@ -141,6 +146,8 @@ class Storage:
             "match_state": {
                 "progress_hash": "TEXT",
                 "progress_since_utc": "TEXT",
+                "live_map_name": "TEXT",
+                "page_seen_utc": "TEXT",
             },
         }
         for table, columns in added.items():
@@ -320,8 +327,15 @@ class Storage:
                 (idempotency_key, body, now, now),
             )
         except sqlite3.IntegrityError:
+            # Ключ уже есть — событие отправлялось. Это штатный исход.
             self.conn.execute("ROLLBACK")
             return False
+        except Exception:
+            # Любой другой сбой (диск, блокировка) обязан закрыть транзакцию.
+            # Соединение в автокоммите живёт всё время работы сервиса: незакрытая
+            # транзакция сломала бы КАЖДУЮ следующую отправку до перезапуска.
+            self.conn.execute("ROLLBACK")
+            raise
         self.conn.execute("COMMIT")
         return True
 
@@ -363,6 +377,30 @@ class Storage:
             "DELETE FROM raw_log WHERE ts_utc < ?",
             (iso(utcnow() - timedelta(days=keep_days)),),
         )
+
+    def set_live_map(self, match_id: int, map_name: str) -> None:
+        """Карта, которую видит живой фид. Пишет только живая машина.
+
+        Отдельно от current_map_name намеренно: то поле пишут обе машины, и
+        страница матча кладёт туда ПРЕДСТОЯЩУЮ карту (первую несыгранную).
+        Живая машина, читая его как «предыдущую карту», не видела перехода и
+        не рождала E5 вовсе.
+        """
+        self.conn.execute(
+            "UPDATE match_state SET live_map_name = ? WHERE match_id = ?",
+            (map_name, match_id))
+
+    def mark_page_seen(self, match_id: int) -> None:
+        """Отметка «страница матча этот матч уже наблюдала». Ставится один раз.
+
+        Раньше это выводилось из last_source, но живой фид переписывает его на
+        каждом кадре, и признак был вечно истинным: E6 со страницы уходил в
+        молчаливую ветку всё время, пока фид на связи.
+        """
+        self.conn.execute(
+            "UPDATE match_state SET page_seen_utc = ? "
+            "WHERE match_id = ? AND page_seen_utc IS NULL",
+            (iso(utcnow()), match_id))
 
     # ---------- живое сообщение на карту ----------
 

@@ -73,7 +73,13 @@ class MatchMachine:
         # строку состояния заводит опрос расписания, поэтому проверка
         # «state_row is None» здесь почти всегда ложна и карты, доигранные до
         # начала наблюдения, получали бы E6 задним числом.
-        first_observation = state_row is None or state_row["last_source"] != "match_page"
+        #
+        # Признак — отдельная отметка, а не last_source. Через last_source это
+        # не работало: живой фид переписывает его на каждом кадре, поэтому
+        # «страница матча ещё не смотрела» было истинным ВСЁ время работы фида,
+        # и E6 со страницы уходил в молчаливую ветку всегда. Страница переставала
+        # быть подтверждающим источником ровно тогда, когда фид что-то пропускал.
+        first_observation = state_row is None or state_row["page_seen_utc"] is None
         target = STATUS_TO_STATE.get(observation.status, previous)
 
         # Снимок ДО записи результатов: по нему видно, какие карты решились
@@ -92,6 +98,9 @@ class MatchMachine:
             series_score=f"{ours}-{theirs}",
         )
         self._store_map_results(observation, team_id)
+        # Отметку ставим ПОСЛЕ того, как first_observation уже вычислен: она
+        # относится к предыдущим наблюдениям, а не к текущему.
+        self.storage.mark_page_seen(match_id)
         # Состав карт нужен живому фиду: он знает название карты, но не её
         # номер в серии. Записываем, как только вето сыграно.
         lineup = [line.name for line in observation.maps]

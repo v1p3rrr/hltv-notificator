@@ -96,6 +96,10 @@ def rounds_to_win(score_a: int, score_b: int, *,
     Нужно для сообщений вида «матчпоинт»: величина считается по тем же
     порогам, что и сам конец карты, поэтому расходиться они не могут.
     """
+    # Та же защита, что и в map_completed: без неё формат с overtime=0 (поле
+    # пропало в кадре и подставился ноль) уронил бы вызов делением на ноль.
+    if regulation < 1 or overtime < 1:
+        return 0
     high, low = max(score_a, score_b), min(score_a, score_b)
     if low < regulation:
         return max(0, regulation + 1 - high)

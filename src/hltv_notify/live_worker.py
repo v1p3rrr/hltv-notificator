@@ -176,8 +176,12 @@ class LiveSupervisor:
                 self.release(match_id)
 
     async def shutdown(self) -> None:
+        # Список собирается ДО release(): release удаляет задачу из _tasks,
+        # поэтому раньше здесь всегда оказывался пустой список, gather не
+        # вызывался и завершения воркеров никто не ждал. Их finally с закрытием
+        # сессии не успевал отработать до закрытия цикла событий.
+        tasks = list(self._tasks.values())
         for match_id in list(self._tasks):
             self.release(match_id)
-        tasks = [task for task in self._tasks.values()]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)

@@ -81,7 +81,11 @@ class LiveMachine:
             return []
 
         state_row = self.storage.get_state(match_id)
-        previous_map = state_row["current_map_name"] if state_row else None
+        # Читаем СВОЮ памятку, а не current_map_name: то поле пишут обе машины,
+        # и страница матча кладёт туда первую несыгранную, то есть ПРЕДСТОЯЩУЮ
+        # карту. Читая его, живая машина видела «карта не менялась» ровно в тот
+        # момент, когда карта начиналась, и E5 не рождался никогда.
+        previous_map = state_row["live_map_name"] if state_row else None
         map_number = self._map_number(match_id, map_name, len(recorded))
 
         events: List[Event] = []
@@ -108,6 +112,7 @@ class LiveMachine:
             current_map_number=map_number, current_map_name=map_name,
             current_map_score=f"{ours}-{theirs}",
             series_score=f"{series[0]}-{series[1]}")
+        self.storage.set_live_map(match_id, map_name)
         return events
 
     # ------------------------------------------------------------------
