@@ -14,6 +14,7 @@ from typing import Optional
 from .config import Config
 from .notify import format as fmt
 from .notify.telegram import Telegram, TelegramError
+from .models import MatchState
 from .scheduler import LAST_ERROR_KEY, LAST_POLL_KEY, SchedulePoller
 from .state.db import Storage, parse_iso, utcnow
 
@@ -80,6 +81,7 @@ class CommandBot:
 
         handlers = {
             "/status": self._status,
+            "/live": self._live,
             "/next": self._next,
             "/check": self._check,
             "/start": lambda: HELP,
@@ -124,9 +126,62 @@ class CommandBot:
             f"В очереди на отправку: {self.storage.pending_count()}",
             f"Всего событий отправлено: {self.storage.sent_event_count()}",
         ]
+        lines.append(self._feed_line())
         if last_error:
             lines.append(f"Последняя ошибка: <i>{fmt.escape(last_error)}</i>")
         return "\n".join(lines)
+
+    def _feed_line(self) -> str:
+        """Состояние живого фида: от него зависят E5, мультикиллы и скорость E6."""
+        supervisor = getattr(self.matches, "supervisor", None) if self.matches else None
+        if supervisor is None:
+            return "Живой фид: не включён"
+        feeds = supervisor.connected_matches()
+        if not feeds:
+            return "Живой фид: матчей нет"
+        connected = [str(mid) for mid, ok in feeds.items() if ok]
+        pending = [str(mid) for mid, ok in feeds.items() if not ok]
+        parts = []
+        if connected:
+            parts.append("на связи: " + ", ".join(connected))
+        if pending:
+            parts.append("подключается: " + ", ".join(pending))
+        return "Живой фид: " + "; ".join(parts)
+
+    def _live(self) -> str:
+        """Что прямо сейчас на идущем матче.
+
+        Полезно, когда уведомление не пришло: видно, дошёл ли счёт до сервиса
+        вообще и от какого источника он последний раз обновлялся.
+        """
+        rows = [row for row in (self.matches.active() if self.matches else [])
+                if row["state"] == MatchState.LIVE]
+        if not rows:
+            return "Сейчас матчей нет."
+
+        supervisor = getattr(self.matches, "supervisor", None)
+        feeds = supervisor.connected_matches() if supervisor else {}
+        blocks = []
+        for row in rows:
+            state = self.storage.get_state(row["match_id"])
+            score = state["current_map_score"] if state else None
+            series = state["series_score"] if state else None
+            map_name = state["current_map_name"] if state else None
+            source = state["last_source"] if state else "?"
+            feed = "на связи" if feeds.get(row["match_id"]) else "нет"
+            block = [
+                f"<b>{fmt.escape(self.config.team_name)} — {fmt.escape(row['opponent_name'])}</b>",
+                fmt.escape(row["event_name"]),
+                f"Карта: {fmt.escape(map_name) if map_name else '—'}"
+                f"   счёт: {score or '—'}   по картам: {series or '—'}",
+                f"Живой фид: {feed} · последнее обновление от источника «{source}»",
+            ]
+            for result in self.storage.map_results(row["match_id"]):
+                block.append(f"   {fmt.escape(result['map_name'])} — "
+                             f"{result['score_team']}:{result['score_opponent']}")
+            block.append(row["url"])
+            blocks.append("\n".join(block))
+        return "\n\n".join(blocks)
 
     def _next(self) -> str:
         rows = self.storage.upcoming_matches()

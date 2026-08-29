@@ -123,6 +123,13 @@ class Storage:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        # Соединение в автокоммите, то есть каждый INSERT — отдельная
+        # транзакция. С synchronous=FULL это fsync на каждую запись: в
+        # контейнере первичное заполнение базы занимало 21 секунду вместо
+        # полусекунды. В режиме WAL значение NORMAL безопасно относительно
+        # падения процесса и теряет данные только при отключении питания —
+        # для журнала уведомлений это приемлемый размен.
+        self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
         self._migrate()
 
