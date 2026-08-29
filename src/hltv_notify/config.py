@@ -59,6 +59,12 @@ class Config:
     live_message: bool = field(default_factory=lambda: _bool("LIVE_MESSAGE", True))
     live_edit_seconds: int = field(default_factory=lambda: _int("LIVE_EDIT_SECONDS", 10))
 
+    # через сколько сообщать, что сервис ослеп. В срочных ситуациях (до старта
+    # меньше минуты, три раунда до конца карты, овертайм) порог всё равно
+    # минута — см. hltv_notify.watchdog.
+    degraded_alert_seconds: int = field(
+        default_factory=lambda: _int("DEGRADED_ALERT_SECONDS", 300))
+
     # пауза после 403 на живом фиде: источник просит отойти, и секунды тут
     # не помогают. На это время сервис живёт опросом страницы матча.
     live_feed_cooldown: int = field(

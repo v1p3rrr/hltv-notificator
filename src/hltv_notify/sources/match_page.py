@@ -95,6 +95,10 @@ class MatchObservation:
     team2_name: str
     maps: List[MapLine]
     scorebot_id: Optional[int]
+    # Формат карты со страницы: сколько раундов в половине регламента и
+    # овертайма. Нужен, чтобы понять «сколько осталось до победы».
+    max_rounds_regulation: Optional[int] = None
+    max_rounds_overtime: Optional[int] = None
 
     # ------------------------------------------------------------------
 
@@ -263,8 +267,14 @@ def parse(html: str, match_id: int) -> MatchObservation:
 
     scoreboard = soup.select_one("#scoreboardElement")
     scorebot_id = None
-    if scoreboard is not None and scoreboard.get("data-scorebot-id"):
-        scorebot_id = int(scoreboard["data-scorebot-id"])
+    regulation = overtime = None
+    if scoreboard is not None:
+        if scoreboard.get("data-scorebot-id"):
+            scorebot_id = int(scoreboard["data-scorebot-id"])
+        if scoreboard.get("data-max-rounds-regulation"):
+            regulation = int(scoreboard["data-max-rounds-regulation"])
+        if scoreboard.get("data-max-rounds-overtime"):
+            overtime = int(scoreboard["data-max-rounds-overtime"])
 
     return MatchObservation(
         match_id=match_id,
@@ -279,4 +289,6 @@ def parse(html: str, match_id: int) -> MatchObservation:
         team2_name=team2_name,
         maps=maps,
         scorebot_id=scorebot_id,
+        max_rounds_regulation=regulation,
+        max_rounds_overtime=overtime,
     )

@@ -9,19 +9,38 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Optional
 
-from .config import Config
+from .config import HLTV_BASE, Config
 from .notify import format as fmt
+from .sources import team_page
 from .notify.telegram import Telegram, TelegramError
 from .models import MatchState
 from .scheduler import LAST_ERROR_KEY, LAST_POLL_KEY, SchedulePoller
 from .state.db import Storage, parse_iso, utcnow
+from .watchdog import Watchdog
 
 log = logging.getLogger(__name__)
 
+TEAM_URL_RE = re.compile(r"/team/(\d+)(?:/([^/?#\s]+))?")
+
+
+def _parse_team_ref(argument: str):
+    """id и slug из ссылки на команду или из голого id."""
+    argument = (argument or "").strip()
+    found = TEAM_URL_RE.search(argument)
+    if found:
+        return int(found.group(1)), found.group(2)
+    if argument.isdigit():
+        return int(argument), None
+    return None, None
+
 HELP = (
     "Команды:\n"
+    "/teams — какие команды отслеживаются\n"
+    "/track &lt;ссылка на команду&gt; — добавить команду\n"
+    "/untrack &lt;id&gt; — перестать отслеживать\n"
     "/status — состояние сервиса и источников\n"
     "/next — ближайшие матчи по данным сервиса\n"
     "/check — проверить расписание прямо сейчас\n"
@@ -31,12 +50,13 @@ HELP = (
 
 class CommandBot:
     def __init__(self, storage: Storage, config: Config, telegram: Telegram,
-                 poller: SchedulePoller, matches=None):
+                 poller: SchedulePoller, matches=None, http=None):
         self.storage = storage
         self.config = config
         self.telegram = telegram
         self.poller = poller
         self.matches = matches
+        self.http = http
         self._offset: Optional[int] = None
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -80,6 +100,7 @@ class CommandBot:
         argument = argument.strip().lower()
 
         handlers = {
+            "/teams": self._teams,
             "/status": self._status,
             "/live": self._live,
             "/next": self._next,
@@ -90,6 +111,10 @@ class CommandBot:
         try:
             if command == "/verbose":
                 reply = self._verbose(argument)
+            elif command == "/track":
+                reply = await self._track(argument)
+            elif command == "/untrack":
+                reply = self._untrack(argument)
             elif command in handlers:
                 result = handlers[command]()
                 reply = await result if asyncio.iscoroutine(result) else result
@@ -115,7 +140,7 @@ class CommandBot:
 
         lines = [
             "<b>Состояние сервиса</b>",
-            f"Команда: {self.config.team_name} (id {self.config.team_id})",
+            f"Команд отслеживается: {len(self.storage.teams())}",
             f"Режим опроса расписания: {self.poller.mode}",
             f"Режим опроса матчей: {self.matches.mode if self.matches else '—'}",
             f"Активных матчей: {len(self.matches.active()) if self.matches else 0}",
@@ -127,9 +152,66 @@ class CommandBot:
             f"Всего событий отправлено: {self.storage.sent_event_count()}",
         ]
         lines.append(self._feed_line())
+        degraded = Watchdog(self.storage, self.config).degraded_subsystems()
+        if degraded:
+            lines.append("⚠️ Не работает: " + ", ".join(degraded))
         if last_error:
             lines.append(f"Последняя ошибка: <i>{fmt.escape(last_error)}</i>")
         return "\n".join(lines)
+
+    def _teams(self) -> str:
+        rows = self.storage.teams(enabled_only=False)
+        if not rows:
+            return "Ни одной команды не отслеживается. Добавить: /track &lt;ссылка&gt;"
+        lines = ["<b>Отслеживаемые команды</b>"]
+        for row in rows:
+            mark = "" if row["enabled"] else "  (выключена)"
+            lines.append(f"{fmt.escape(row['name'])} — id {row['team_id']}{mark}")
+        return "\n".join(lines)
+
+    async def _track(self, argument: str) -> str:
+        """Добавить команду. Принимает ссылку на страницу команды или её id.
+
+        Ссылка предпочтительнее: из неё берутся и id, и slug. У команд бывают
+        тёзки и приставки ex-, поэтому по названию искать нельзя — только по id.
+        """
+        team_id, slug = _parse_team_ref(argument)
+        if team_id is None:
+            return ("Не понял команду. Пришлите ссылку вида\n"
+                    "https://www.hltv.org/team/12857/forze-reload")
+        if self.http is None:
+            return "Добавление недоступно: сервис запущен без HTTP-слоя."
+
+        url = f"{HLTV_BASE}/team/{team_id}/{slug or '-'}"
+        try:
+            html = await self.http.get_text(url)
+        except Exception as exc:  # noqa: BLE001 - показать причину пользователю
+            return f"Страница команды не открылась: {type(exc).__name__}: {exc}"
+
+        name = team_page.parse_team_name(html)
+        if not name:
+            return f"На странице {url} не нашлось имени команды — проверьте ссылку."
+
+        added = self.storage.add_team(team_id, slug or str(team_id), name)
+        self.poller.request_poll()
+        if added:
+            return (f"Отслеживаю <b>{fmt.escape(name)}</b> (id {team_id}).\n"
+                    "Текущее расписание занесено молча — уведомления начнутся "
+                    "со следующих изменений.")
+        return f"<b>{fmt.escape(name)}</b> (id {team_id}) уже отслеживается, включил обратно."
+
+    def _untrack(self, argument: str) -> str:
+        team_id, _ = _parse_team_ref(argument)
+        if team_id is None:
+            return "Использование: /untrack &lt;id команды&gt;"
+        row = self.storage.get_team(team_id)
+        if row is None:
+            return f"Команда {team_id} и так не отслеживается."
+        self.storage.set_team_enabled(team_id, False)
+        # История матчей не удаляется: если команду вернут, журнал уже
+        # отправленного не даст разослать всё заново.
+        return (f"Больше не отслеживаю <b>{fmt.escape(row['name'])}</b> (id {team_id}). "
+                "История сохранена.")
 
     def _feed_line(self) -> str:
         """Состояние живого фида: от него зависят E5, мультикиллы и скорость E6."""

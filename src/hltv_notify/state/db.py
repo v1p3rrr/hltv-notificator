@@ -15,8 +15,31 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS teams (
+    team_id      INTEGER PRIMARY KEY,
+    slug         TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    muted_events TEXT NOT NULL DEFAULT '',
+    added_utc    TEXT NOT NULL
+);
+
+-- Какие ОТСЛЕЖИВАЕМЫЕ команды участвуют в матче. Их может быть две: если
+-- отслеживаемые команды играют друг против друга, матч всё равно один, и
+-- уведомления о нём должны прийти по одному разу.
+CREATE TABLE IF NOT EXISTS match_teams (
+    match_id INTEGER NOT NULL,
+    team_id  INTEGER NOT NULL,
+    PRIMARY KEY (match_id, team_id)
+);
+
 CREATE TABLE IF NOT EXISTS matches (
     match_id       INTEGER PRIMARY KEY,
+    -- Каноническая перспектива: от лица какой команды считается счёт и от
+    -- чьего имени пишется сообщение. Берётся детерминированно (меньший id),
+    -- иначе матч двух отслеживаемых команд породил бы два зеркальных ключа
+    -- идемпотентности и, значит, два уведомления вместо одного.
+    team_id        INTEGER,
     opponent_id    INTEGER,
     opponent_name  TEXT NOT NULL,
     event_name     TEXT NOT NULL,
@@ -47,7 +70,9 @@ CREATE TABLE IF NOT EXISTS match_state (
     -- писал последним» там не определено. Решения по нему принимать нельзя.
     -- Ниже — приватные памятки: каждую пишет и читает ровно одна машина.
     live_map_name      TEXT,   -- последняя карта, которую видел ЖИВОЙ ФИД
-    page_seen_utc      TEXT    -- когда СТРАНИЦА МАТЧА впервые увидела матч
+    page_seen_utc      TEXT,   -- когда СТРАНИЦА МАТЧА впервые увидела матч
+    regulation_rounds  INTEGER,-- формат карты: половина регламента (обычно 12)
+    overtime_rounds    INTEGER -- половина овертайма (обычно 3)
 );
 
 CREATE TABLE IF NOT EXISTS map_results (
@@ -148,6 +173,11 @@ class Storage:
                 "progress_since_utc": "TEXT",
                 "live_map_name": "TEXT",
                 "page_seen_utc": "TEXT",
+                "regulation_rounds": "INTEGER",
+                "overtime_rounds": "INTEGER",
+            },
+            "matches": {
+                "team_id": "INTEGER",
             },
         }
         for table, columns in added.items():
@@ -159,6 +189,79 @@ class Storage:
     def close(self) -> None:
         self.conn.close()
 
+    # ---------- отслеживаемые команды ----------
+
+    def add_team(self, team_id: int, slug: str, name: str) -> bool:
+        """True — команда добавлена впервые, False — уже была (и включена обратно)."""
+        existed = self.get_team(team_id) is not None
+        self.conn.execute(
+            """
+            INSERT INTO teams (team_id, slug, name, added_utc)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(team_id) DO UPDATE SET
+                slug = excluded.slug, name = excluded.name, enabled = 1
+            """,
+            (team_id, slug, name, iso(utcnow())))
+        return not existed
+
+    def get_team(self, team_id: Optional[int]):
+        if team_id is None:
+            return None
+        return self.conn.execute(
+            "SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
+
+    def teams(self, *, enabled_only: bool = True) -> List[sqlite3.Row]:
+        query = "SELECT * FROM teams"
+        if enabled_only:
+            query += " WHERE enabled = 1"
+        return list(self.conn.execute(query + " ORDER BY team_id"))
+
+    def team_ids(self) -> List[int]:
+        return [row["team_id"] for row in self.teams()]
+
+    def set_team_enabled(self, team_id: int, enabled: bool) -> bool:
+        cur = self.conn.execute(
+            "UPDATE teams SET enabled = ? WHERE team_id = ?",
+            (1 if enabled else 0, team_id))
+        return cur.rowcount > 0
+
+    def set_team_mutes(self, team_id: int, muted: List[str]) -> None:
+        self.conn.execute("UPDATE teams SET muted_events = ? WHERE team_id = ?",
+                          (",".join(sorted(set(muted))), team_id))
+
+    def team_mutes(self, team_id: int) -> List[str]:
+        row = self.get_team(team_id)
+        if row is None or not row["muted_events"]:
+            return []
+        return [part for part in row["muted_events"].split(",") if part]
+
+    def team_name(self, team_id: Optional[int], fallback: str = "") -> str:
+        row = self.get_team(team_id)
+        return row["name"] if row else fallback
+
+    # ---------- связь матча с отслеживаемыми командами ----------
+
+    def link_match_team(self, match_id: int, team_id: int) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO match_teams (match_id, team_id) VALUES (?, ?)",
+            (match_id, team_id))
+
+    def match_team_ids(self, match_id: int) -> List[int]:
+        return [row["team_id"] for row in self.conn.execute(
+            "SELECT team_id FROM match_teams WHERE match_id = ? ORDER BY team_id",
+            (match_id,))]
+
+    def canonical_team(self, match_id: int) -> Optional[int]:
+        """Команда, от лица которой описывается матч.
+
+        Меньший id из отслеживаемых участников. Выбор произволен, но обязан быть
+        ДЕТЕРМИНИРОВАННЫМ: от него зависит ориентация счёта, а значит и ключ
+        идемпотентности. Без этого матч двух отслеживаемых команд дал бы два
+        зеркальных ключа и два уведомления об одном и том же.
+        """
+        ids = self.match_team_ids(match_id)
+        return ids[0] if ids else None
+
     # ---------- матчи ----------
 
     def get_match(self, match_id: int) -> Optional[sqlite3.Row]:
@@ -168,10 +271,20 @@ class Storage:
     def all_matches(self) -> List[sqlite3.Row]:
         return list(self.conn.execute("SELECT * FROM matches ORDER BY start_utc"))
 
-    def tracked_match_ids(self) -> List[int]:
-        """Матчи, которые сервис считает актуальными: ещё не пропавшие."""
+    def tracked_match_ids(self, team_id: Optional[int] = None) -> List[int]:
+        """Матчи, которые сервис считает актуальными: ещё не пропавшие.
+
+        С team_id — только матчи этой команды. Это обязательно: матч команды А
+        не должен считаться исчезнувшим лишь потому, что его нет на странице
+        команды Б.
+        """
+        if team_id is None:
+            return [row["match_id"] for row in self.conn.execute(
+                "SELECT match_id FROM matches WHERE missing_since_utc IS NULL")]
         return [row["match_id"] for row in self.conn.execute(
-            "SELECT match_id FROM matches WHERE missing_since_utc IS NULL")]
+            "SELECT m.match_id FROM matches m "
+            "JOIN match_teams t ON t.match_id = m.match_id "
+            "WHERE m.missing_since_utc IS NULL AND t.team_id = ?", (team_id,))]
 
     def upcoming_matches(self, now: Optional[datetime] = None) -> List[sqlite3.Row]:
         now = now or utcnow()
@@ -185,14 +298,22 @@ class Storage:
 
     def upsert_match(self, *, match_id: int, opponent_id: Optional[int], opponent_name: str,
                      event_name: str, start_utc: datetime, url: str, snapshot: Dict[str, Any],
-                     snapshot_hash: str, match_format: Optional[str] = None) -> None:
+                     snapshot_hash: str, match_format: Optional[str] = None,
+                     team_id: Optional[int] = None) -> None:
         now = iso(utcnow())
         self.conn.execute(
             """
-            INSERT INTO matches (match_id, opponent_id, opponent_name, event_name, match_format,
-                                 start_utc, url, snapshot, snapshot_hash, first_seen_utc, updated_utc)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO matches (match_id, team_id, opponent_id, opponent_name, event_name,
+                                 match_format, start_utc, url, snapshot, snapshot_hash,
+                                 first_seen_utc, updated_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(match_id) DO UPDATE SET
+                -- Порядок именно такой: уже выбранная перспектива НЕ меняется.
+                -- Если бы новая перезаписывала старую, добавление второй
+                -- отслеживаемой команды перевернуло бы счёт у идущего матча,
+                -- ключи идемпотентности стали бы зеркальными и всё уже
+                -- отправленное разослалось бы заново.
+                team_id       = COALESCE(matches.team_id, excluded.team_id),
                 opponent_id   = excluded.opponent_id,
                 opponent_name = excluded.opponent_name,
                 event_name    = excluded.event_name,
@@ -204,7 +325,7 @@ class Storage:
                 updated_utc   = excluded.updated_utc,
                 missing_since_utc = NULL
             """,
-            (match_id, opponent_id, opponent_name, event_name, match_format,
+            (match_id, team_id, opponent_id, opponent_name, event_name, match_format,
              iso(start_utc), url, json.dumps(snapshot, ensure_ascii=False), snapshot_hash,
              now, now),
         )
@@ -257,6 +378,13 @@ class Storage:
             "WHERE match_id = ?",
             (iso(start) if start else None, iso(since) if since else None, match_id),
         )
+
+    def set_map_format(self, match_id: int, regulation: int, overtime: int) -> None:
+        """Формат карты из источника. Нужен, чтобы понять «сколько раундов до
+        победы» — от этого зависит срочность алертов о деградации."""
+        self.conn.execute(
+            "UPDATE match_state SET regulation_rounds = ?, overtime_rounds = ? "
+            "WHERE match_id = ?", (regulation, overtime, match_id))
 
     def set_progress(self, match_id: int, signature: str, since: datetime) -> None:
         """Отпечаток продвижения матча и момент, когда он последний раз менялся.
@@ -358,6 +486,18 @@ class Storage:
             "UPDATE outbox SET attempts = ?, next_attempt_utc = ? WHERE id = ?",
             (attempts, iso(utcnow() + timedelta(seconds=delay_seconds)), outbox_id),
         )
+
+    def oldest_pending_utc(self) -> Optional[str]:
+        """Когда создано старейшее неотправленное сообщение.
+
+        Если оно висит долго — значит Telegram не принимает, и об этом надо
+        сказать: молчащая доставка выглядит точно так же, как отсутствие
+        событий.
+        """
+        row = self.conn.execute(
+            "SELECT MIN(created_utc) AS oldest FROM outbox WHERE status = 'pending'"
+        ).fetchone()
+        return row["oldest"] if row and row["oldest"] else None
 
     def pending_count(self) -> int:
         return self.conn.execute(

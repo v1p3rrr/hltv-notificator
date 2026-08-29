@@ -11,6 +11,8 @@ from hltv_notify.models import Event
 from hltv_notify.notify.outbox import Notifier
 from hltv_notify.state.machine import ScheduleMachine
 
+TEAM_ID = 12857
+
 
 def notifier(storage, config) -> Notifier:
     return Notifier(storage, config, telegram=None)
@@ -31,13 +33,14 @@ def test_same_event_enqueued_twice_is_sent_once(storage, config):
 def test_replaying_whole_schedule_twice_changes_nothing(storage, config):
     """Прогон одного и того же наблюдения дважды подряд не меняет число
     уведомлений — тот же сценарий, что реконнект живого фида на этапе 4."""
+    storage.add_team(TEAM_ID, 'forze-reload', 'FORZE Reload')
     machine = ScheduleMachine(storage, config)
     n = notifier(storage, config)
-    machine.apply([entry(1, start=later(600))])  # bootstrap
+    machine.apply([entry(1, start=later(600))], TEAM_ID)  # bootstrap
 
     schedule = [entry(1, start=later(600)), entry(2, start=later(900))]
     for _ in range(2):
-        for event in machine.apply(schedule):
+        for event in machine.apply(schedule, TEAM_ID):
             n.enqueue(event)
 
     assert storage.sent_event_count() == 1
@@ -53,16 +56,17 @@ def test_restart_does_not_resend(tmp_path, config):
     schedule = [entry(1, start=later(600)), entry(2, start=later(900))]
 
     first = Storage(path)
+    first.add_team(TEAM_ID, 'forze-reload', 'FORZE Reload')
     machine = ScheduleMachine(first, config)
-    machine.apply([entry(1, start=later(600))])
-    for event in machine.apply(schedule):
+    machine.apply([entry(1, start=later(600))], TEAM_ID)
+    for event in machine.apply(schedule, TEAM_ID):
         Notifier(first, config, None).enqueue(event)
     sent_before = first.sent_event_count()
     first.close()
 
     second = Storage(path)
     machine2 = ScheduleMachine(second, config)
-    for event in machine2.apply(schedule):
+    for event in machine2.apply(schedule, TEAM_ID):
         Notifier(second, config, None).enqueue(event)
     assert second.sent_event_count() == sent_before
     second.close()

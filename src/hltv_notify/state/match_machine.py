@@ -56,8 +56,11 @@ class MatchMachine:
     def apply(self, observation: MatchObservation, now: Optional[datetime] = None,
               *, feed_connected: bool = False) -> List[Event]:
         now = now or utcnow()
-        team_id = self.config.team_id
         match_id = observation.match_id
+        # Перспектива берётся из матча, а не из конфига: отслеживаемых команд
+        # может быть несколько, и в матче двух из них счёт обязан считаться от
+        # ОДНОЙ и той же — иначе ключи идемпотентности получатся зеркальными.
+        team_id = self.storage.canonical_team(match_id) or self.config.team_id
 
         if observation.our_side(team_id) is None:
             # Страницу отдали не ту, либо разметка поменялась. Молча
@@ -98,6 +101,9 @@ class MatchMachine:
             series_score=f"{ours}-{theirs}",
         )
         self._store_map_results(observation, team_id)
+        if observation.max_rounds_regulation and observation.max_rounds_overtime:
+            self.storage.set_map_format(match_id, observation.max_rounds_regulation,
+                                        observation.max_rounds_overtime)
         # Отметку ставим ПОСЛЕ того, как first_observation уже вычислен: она
         # относится к предыдущим наблюдениям, а не к текущему.
         self.storage.mark_page_seen(match_id)
@@ -234,6 +240,7 @@ class MatchMachine:
             idempotency_key=f"E4:{observation.match_id}:started",
             match_id=observation.match_id,
             payload={
+                "team_name": self.storage.team_name(team_id, self.config.team_name),
                 "opponent": opponent_name or (row["opponent_name"] if row else ""),
                 "opponent_id": opponent_id,
                 "event_name": observation.event_name or (row["event_name"] if row else ""),
@@ -256,6 +263,7 @@ class MatchMachine:
                              f":result:{our_score}-{their_score}"),
             match_id=observation.match_id,
             payload={
+                "team_name": self.storage.team_name(team_id, self.config.team_name),
                 "opponent": opponent_name or (row["opponent_name"] if row else ""),
                 "opponent_id": opponent_id,
                 "event_name": observation.event_name or (row["event_name"] if row else ""),
@@ -289,6 +297,7 @@ class MatchMachine:
             idempotency_key=f"E7:{observation.match_id}:finished:{ours}-{theirs}",
             match_id=observation.match_id,
             payload={
+                "team_name": self.storage.team_name(team_id, self.config.team_name),
                 "opponent": opponent_name or (row["opponent_name"] if row else ""),
                 "opponent_id": opponent_id,
                 "event_name": observation.event_name or (row["event_name"] if row else ""),

@@ -16,7 +16,7 @@ E6 по странице приходит не в момент победног�
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..config import Config
 from ..models import Event, MatchState
@@ -49,14 +49,21 @@ class LiveMachine:
     def __init__(self, storage: Storage, config: Config):
         self.storage = storage
         self.config = config
-        # Трекер на матч: он живёт в памяти воркера и переживает реконнекты
-        # внутри него, поэтому база отсчёта раунда не сбрасывается зря.
-        self.multikill = MultikillTracker(config.multikill_threshold)
+        # Трекер на КАЖДУЮ отслеживаемую команду матча: если отслеживаемые
+        # команды играют друг против друга, четвёрка игрока каждой из них —
+        # свой самостоятельный хайлайт, и глушить одну ради другой нельзя.
+        # Живут в памяти воркера и переживают реконнекты внутри него.
+        self._multikill: Dict[int, MultikillTracker] = {}
+
+    def _tracker(self, team_id: int) -> MultikillTracker:
+        if team_id not in self._multikill:
+            self._multikill[team_id] = MultikillTracker(self.config.multikill_threshold)
+        return self._multikill[team_id]
 
     # ------------------------------------------------------------------
 
     def apply(self, match_id: int, frame: LiveFrame) -> List[Event]:
-        team_id = self.config.team_id
+        team_id = self.storage.canonical_team(match_id) or self.config.team_id
         ours, theirs = frame.our_score(team_id)
         if ours is None or theirs is None:
             # Записывать чужой счёт опаснее, чем промолчать. Но шуметь стоит
@@ -94,6 +101,7 @@ class LiveMachine:
         if self._is_new_map(previous_map, map_name, frame):
             events.append(self._event_e5(match_id, frame, map_number, map_name, len(recorded)))
 
+        self.storage.set_map_format(match_id, frame.regulation, frame.overtime)
         verdict = map_completed(ours, theirs,
                                 regulation=frame.regulation, overtime=frame.overtime)
         if verdict.completed:
@@ -124,7 +132,8 @@ class LiveMachine:
         ключа идемпотентности и его не надо досылать после рестарта, его надо
         просто перерисовать текущим состоянием.
         """
-        ours, theirs = frame.our_score(self.config.team_id)
+        team_id = self.storage.canonical_team(match_id) or self.config.team_id
+        ours, theirs = frame.our_score(team_id)
         if ours is None or theirs is None:
             return None
         map_name = normalize_map_name(frame.map_name)
@@ -143,8 +152,9 @@ class LiveMachine:
             "in_play": frame.in_play,
             "series_team": series[0],
             "series_opponent": series[1],
-            "opponent": frame.opponent_name(self.config.team_id)
+            "opponent": frame.opponent_name(team_id)
                         or (row["opponent_name"] if row else ""),
+            "team_name": self.storage.team_name(team_id, self.config.team_name),
             "event_name": row["event_name"] if row else "",
             "url": row["url"] if row else "",
         }
@@ -154,9 +164,23 @@ class LiveMachine:
         """Мультикилл игрока НАШЕЙ команды — чтобы успеть клипануть хайлайт."""
         if not self.config.multikill_alerts:
             return []
-        taken = self.multikill.observe(
+        # Все отслеживаемые участники матча, а не только каноническая команда:
+        # если отслеживаемые команды играют друг против друга, четвёрка игрока
+        # каждой из них — самостоятельный хайлайт.
+        canonical = self.storage.canonical_team(match_id) or self.config.team_id
+        tracked = self.storage.match_team_ids(match_id) or [canonical]
+        events: List[Event] = []
+        for tracked_team in tracked:
+            events.extend(self._multikill_for_team(
+                match_id, frame, map_number, map_name, ours, theirs, tracked_team))
+        return events
+
+    def _multikill_for_team(self, match_id: int, frame: LiveFrame, map_number: int,
+                            map_name: str, ours: int, theirs: int,
+                            tracked_team: int) -> List[Event]:
+        taken = self._tracker(tracked_team).observe(
             map_name, frame.current_round, frame.round_state,
-            frame.our_players(self.config.team_id))
+            frame.our_players(tracked_team))
         events: List[Event] = []
         for player, kills in taken:
             log.info("матч %s: %s взял %d фрагов в раунде %d на карте %s",
@@ -168,6 +192,7 @@ class LiveMachine:
                 match_id=match_id,
                 payload={
                     **self._context(match_id, frame),
+                    "team_name": self.storage.team_name(tracked_team, self.config.team_name),
                     "nick": player.nick,
                     "kills": kills,
                     "map_number": map_number,
@@ -222,8 +247,10 @@ class LiveMachine:
 
     def _context(self, match_id: int, frame: LiveFrame) -> dict:
         row = self.storage.get_match(match_id)
+        team_id = self.storage.canonical_team(match_id) or self.config.team_id
         return {
-            "opponent": frame.opponent_name(self.config.team_id)
+            "team_name": self.storage.team_name(team_id, self.config.team_name),
+            "opponent": frame.opponent_name(team_id)
                         or (row["opponent_name"] if row else ""),
             "event_name": row["event_name"] if row else "",
             "url": row["url"] if row else "",

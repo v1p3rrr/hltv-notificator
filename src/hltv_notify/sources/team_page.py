@@ -126,6 +126,19 @@ def parse(html: str, team_id: int) -> List[ScheduleEntry]:
     return entries
 
 
+def parse_team_name(html: str) -> Optional[str]:
+    """Каноничное имя команды со страницы.
+
+    Нужно при добавлении команды через бота: имя, выведенное из slug, будет
+    отличаться от того, что показывает HLTV («forze-reload» → «Forze Reload»
+    вместо «FORZE Reload»), а имя попадает в каждое уведомление.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    heading = soup.select_one(".profile-team-name") or soup.select_one("h1")
+    name = heading.get_text(strip=True) if heading else ""
+    return name or None
+
+
 def upcoming(entries: List[ScheduleEntry]) -> List[ScheduleEntry]:
     return [e for e in entries if not e.finished]
 

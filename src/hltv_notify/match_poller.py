@@ -20,6 +20,7 @@ from .sources import match_page
 from .sources.match_page import ParseError
 from .state.db import Storage, iso, utcnow
 from .state.match_machine import MatchMachine
+from .watchdog import Watchdog
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +37,8 @@ class MatchPoller:
         self.notifier = notifier
         self.supervisor = supervisor
         self.machine = MatchMachine(storage, config)
+        self.watchdog = Watchdog(storage, config)
+        self._last_poll_failed = False
         self.mode = "idle"
         self.live_feed_active = False
 
@@ -94,28 +97,39 @@ class MatchPoller:
                 for row in rows if row["state"] == MatchState.LIVE}
         self.supervisor.reconcile(live)
         self.live_feed_active = self.supervisor.any_connected
+        for event in self.watchdog.check_live_feed(self.supervisor.connected_matches()):
+            self.notifier.enqueue(event)
 
     async def poll_once(self, rows=None) -> List[Event]:
         rows = self.active() if rows is None else rows
         produced: List[Event] = []
+        produced_failure = False
         for row in rows:
-            produced.extend(await self._poll_match(row))
-        if rows:
+            events = await self._poll_match(row)
+            produced_failure = produced_failure or self._last_poll_failed
+            produced.extend(events)
+        if rows and not produced_failure:
             self.storage.set_meta(LAST_MATCH_POLL_KEY, iso(utcnow()))
+            for event in self.watchdog.report_success("match_page"):
+                self.notifier.enqueue(event)
+                produced.append(event)
         return produced
 
     async def _poll_match(self, row) -> List[Event]:
         match_id = row["match_id"]
         url = row["url"]
+        self._last_poll_failed = False
         try:
             html = await self.http.get_text(url)
         except (SourceRejected, SourceUnavailable) as exc:
+            self._last_poll_failed = True
             log.error("страница матча %s не читается: %s", match_id, exc)
             return self._degraded(f"Страница матча {match_id} не читается: {exc}")
 
         try:
             observation = match_page.parse(html, match_id)
         except ParseError as exc:
+            self._last_poll_failed = True
             self.storage.log_raw("match_page", url, "200/parse-error", html[:20000],
                                  self.config.raw_log_days)
             log.error("разбор страницы матча %s не удался: %s", match_id, exc)
@@ -136,17 +150,7 @@ class MatchPoller:
     # ------------------------------------------------------------------
 
     def _degraded(self, detail: str) -> List[Event]:
-        if self.http.consecutive_failures < self.config.failures_before_alert:
-            return []
-        bucket = utcnow().strftime("%Y-%m-%dT%H")
-        event = Event(
-            type="E8",
-            idempotency_key=f"E8:match_page:unavailable:{bucket}",
-            match_id=None,
-            payload={
-                "reason": "Страница матча не читается",
-                "detail": f"{self.http.consecutive_failures} неудачных попыток подряд. {detail}",
-            },
-        )
-        self.notifier.enqueue(event)
-        return [event]
+        events = self.watchdog.report_failure("match_page", detail)
+        for event in events:
+            self.notifier.enqueue(event)
+        return events

@@ -52,7 +52,9 @@ def render(event: Event, *, team_name: str, tz_name: str) -> str:
     opponent = _esc(payload.get("opponent") or "TBD")
     event_name = _esc(payload.get("event_name"))
     url = payload.get("url") or ""
-    team = _esc(team_name)
+    # Имя команды берётся из события: отслеживаемых команд может быть
+    # несколько, и у каждого матча своя. Значение из конфига — запасное.
+    team = _esc(payload.get("team_name") or team_name)
 
     if event.type == "E1":
         when = human_time(payload["start_utc"], tz_name)
@@ -146,12 +148,24 @@ def render(event: Event, *, team_name: str, tz_name: str) -> str:
             _link(url, "Смотреть матч"),
         ])
 
-    if event.type == "E8":
+    if event.type == "E8R":
         return "\n".join([
-            "⚠️ <b>Сервис деградировал</b>",
+            "✅ <b>Восстановилось</b>",
             _esc(payload.get("reason")),
             f"<i>{_esc(payload.get('detail'))}</i>",
         ])
+
+    if event.type == "E8":
+        lines = [
+            "⚠️ <b>Сервис деградировал</b>",
+            _esc(payload.get("reason")),
+            f"<i>{_esc(payload.get('detail'))}</i>",
+        ]
+        # Ссылка на матч, если тревога о конкретном матче: чтобы можно было
+        # сразу пойти и посмотреть глазами, а не искать его руками.
+        if url:
+            lines.append(_link(url, "Страница матча"))
+        return "\n".join(lines)
 
     return f"{_esc(event.type)}: {_esc(str(payload))}"
 
@@ -170,7 +184,7 @@ def render_live(snapshot: dict, *, team_name: str) -> str:
     Оно намеренно короткое: его перерисовывают каждые несколько секунд, и
     длинный текст в истории чата превращается в стену.
     """
-    team = escape(team_name)
+    team = escape(snapshot.get("team_name") or team_name)
     opponent = escape(snapshot.get("opponent") or "TBD")
     map_name = escape(snapshot.get("map_name"))
     state = ROUND_STATE_LABELS.get(snapshot.get("round_state"), "")

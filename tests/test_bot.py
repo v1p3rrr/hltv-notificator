@@ -94,9 +94,11 @@ def send(command_bot, text, chat=CHAT):
 
 def test_status_reports_what_matters(bot):
     command_bot, telegram, _ = bot
+    storage_obj = bot[2]
+    storage_obj.add_team(12857, "forze-reload", "FORZE Reload")
     send(command_bot, "/status")
     reply = telegram.sent[-1][1]
-    assert "FORZE Reload" in reply
+    assert "Команд отслеживается: 1" in reply
     assert "Живой фид" in reply
     assert "Матчей в базе" in reply
 

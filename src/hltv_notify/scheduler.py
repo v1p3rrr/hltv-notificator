@@ -11,7 +11,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from .config import Config
+from .config import HLTV_BASE, Config
 from .http import HltvHttp, SourceRejected, SourceUnavailable, jittered
 from .models import Event
 from .notify.outbox import Notifier
@@ -19,6 +19,7 @@ from .sources import team_page
 from .sources.team_page import ParseError
 from .state.db import Storage, iso, parse_iso, utcnow
 from .state.machine import ScheduleMachine
+from .watchdog import Watchdog
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class SchedulePoller:
         self.http = http
         self.notifier = notifier
         self.machine = ScheduleMachine(storage, config)
+        self.watchdog = Watchdog(storage, config)
         self.mode = "idle"
         self._force = asyncio.Event()
 
@@ -85,52 +87,68 @@ class SchedulePoller:
     # ------------------------------------------------------------------
 
     async def poll_once(self) -> List[Event]:
-        url = self.config.team_url
-        try:
-            html = await self.http.get_text(url)
-        except (SourceRejected, SourceUnavailable) as exc:
-            return self._handle_failure(str(exc))
+        """Опрос расписания по КАЖДОЙ отслеживаемой команде.
 
+        Страницы разных команд — независимые источники: неудача по одной не
+        должна мешать остальным, поэтому ошибки собираются, а цикл идёт дальше.
+        """
+        teams = self.storage.teams()
+        if not teams:
+            log.warning("не задано ни одной отслеживаемой команды")
+            return []
+
+        produced: List[Event] = []
+        failures: List[str] = []
+        for team in teams:
+            try:
+                produced.extend(await self._poll_team(team))
+            except (SourceRejected, SourceUnavailable) as exc:
+                failures.append(f"{team['name']}: {exc}")
+            except ParseError as exc:
+                failures.append(f"{team['name']}: разбор страницы не удался: {exc}")
+
+        if failures and len(failures) == len(teams):
+            # Ни одна команда не прочиталась — это отказ источника, а не
+            # частная неудача.
+            produced.extend(self._handle_failure("; ".join(failures)))
+        elif failures:
+            log.error("часть команд не прочиталась: %s", "; ".join(failures))
+        else:
+            self.storage.set_meta(LAST_POLL_KEY, iso(utcnow()))
+            self.storage.set_meta(LAST_ERROR_KEY, "")
+            self.http.consecutive_failures = 0
+            for event in self.watchdog.report_success("schedule"):
+                self.notifier.enqueue(event)
+                produced.append(event)
+        return produced
+
+    async def _poll_team(self, team) -> List[Event]:
+        url = f"{HLTV_BASE}/team/{team['team_id']}/{team['slug']}"
+        html = await self.http.get_text(url)
         try:
-            entries = team_page.parse(html, self.config.team_id)
-        except ParseError as exc:
+            entries = team_page.parse(html, team["team_id"])
+        except ParseError:
             # Ноль матчей при HTTP 200 — это почти наверняка смена вёрстки.
             # Трактуем как отказ источника, а не как «матчей нет».
             self.storage.log_raw("team_page", url, "200/parse-error", html[:20000],
                                  self.config.raw_log_days)
-            return self._handle_failure(f"разбор страницы команды не удался: {exc}")
+            raise
 
-        self.storage.set_meta(LAST_POLL_KEY, iso(utcnow()))
-        self.storage.set_meta(LAST_ERROR_KEY, "")
-        self.http.consecutive_failures = 0
-
-        events = self.machine.apply(entries)
+        events = self.machine.apply(entries, team["team_id"])
         for event in events:
             self.notifier.enqueue(event)
-        log.info("расписание: %d матчей, %d предстоящих, событий %d",
-                 len(entries), len(team_page.upcoming(entries)), len(events))
+        log.info("расписание %s: %d матчей, %d предстоящих, событий %d",
+                 team["name"], len(entries), len(team_page.upcoming(entries)), len(events))
         return events
 
     # ------------------------------------------------------------------
 
     def _handle_failure(self, detail: str) -> List[Event]:
+        """Решение о тревоге принимает сторож: она зависит не от числа попыток,
+        а от того, сколько мы уже слепы и чем рискуем прямо сейчас."""
         self.storage.set_meta(LAST_ERROR_KEY, detail)
         log.error("опрос расписания не удался: %s", detail)
-
-        if self.http.consecutive_failures < self.config.failures_before_alert:
-            return []
-
-        # Час в ключе не даёт слать «я ослеп» на каждой неудачной попытке,
-        # но и не глушит проблему навсегда.
-        bucket = utcnow().strftime("%Y-%m-%dT%H")
-        event = Event(
-            type="E8",
-            idempotency_key=f"E8:schedule:unavailable:{bucket}",
-            match_id=None,
-            payload={
-                "reason": "Расписание не читается",
-                "detail": f"{self.http.consecutive_failures} неудачных попыток подряд. {detail}",
-            },
-        )
-        self.notifier.enqueue(event)
-        return [event]
+        events = self.watchdog.report_failure("schedule", detail)
+        for event in events:
+            self.notifier.enqueue(event)
+        return events

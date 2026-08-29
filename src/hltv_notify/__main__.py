@@ -24,6 +24,7 @@ from .notify.live_message import LiveMessenger
 from .notify.outbox import Notifier
 from .notify.telegram import Telegram
 from .scheduler import SchedulePoller
+from .watchdog import Watchdog
 from .state.db import Storage
 
 log = logging.getLogger("hltv_notify")
@@ -66,6 +67,13 @@ async def run() -> int:
     setup_logging(config.log_level)
 
     storage = Storage(config.db_path)
+    # Первый посев: команда из .env становится первой отслеживаемой. Дальше
+    # список живёт в базе и правится через бота, а переменные окружения
+    # остаются только запасным значением.
+    if not storage.teams(enabled_only=False) and config.team_id:
+        storage.add_team(config.team_id, config.team_slug, config.team_name)
+        log.info("первая отслеживаемая команда взята из конфига: %s (id %s)",
+                 config.team_name, config.team_id)
     http = HltvHttp(config)
     telegram: Optional[Telegram] = Telegram(config.bot_token) if config.telegram_enabled() else None
     notifier = Notifier(storage, config, telegram)
@@ -82,17 +90,21 @@ async def run() -> int:
     stop = asyncio.Event()
     _install_signal_handlers(stop)
 
+    watchdog = Watchdog(storage, config)
     tasks: List[asyncio.Task] = [
         asyncio.create_task(poller.run(stop), name="schedule-poller"),
+        asyncio.create_task(watchdog.run(stop, notifier), name="watchdog"),
         asyncio.create_task(matches.run(stop), name="match-poller"),
         asyncio.create_task(notifier.run(stop), name="outbox"),
     ]
     if telegram is not None:
-        bot = CommandBot(storage, config, telegram, poller, matches)
+        bot = CommandBot(storage, config, telegram, poller, matches, http)
         tasks.append(asyncio.create_task(bot.run(stop), name="command-bot"))
 
-    log.info("сервис запущен: команда %s (id %s), режим отправки %s",
-             config.team_name, config.team_id, "dry-run" if config.dry_run else "боевой")
+    log.info("сервис запущен: команд под наблюдением %d (%s), режим отправки %s",
+             len(storage.teams()),
+             ", ".join(row["name"] for row in storage.teams()) or "нет",
+             "dry-run" if config.dry_run else "боевой")
 
     try:
         await stop.wait()

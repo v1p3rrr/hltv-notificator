@@ -20,7 +20,14 @@ from .db import Storage, iso, parse_iso, utcnow
 
 log = logging.getLogger(__name__)
 
-BOOTSTRAP_KEY = "bootstrapped"
+def bootstrap_key(team_id: int) -> str:
+    """Флаг первого запуска — СВОЙ на каждую команду.
+
+    Команду можно добавить через бота посреди работы сервиса, и в этот момент
+    у неё найдутся десятки уже сыгранных матчей. Общий флаг сделал бы такое
+    добавление шумным: прилетел бы E1 по каждому матчу нового расписания.
+    """
+    return f"bootstrapped:{team_id}"
 
 
 def _key_time(dt: datetime) -> str:
@@ -41,29 +48,31 @@ class ScheduleMachine:
 
     # ------------------------------------------------------------------
 
-    def apply(self, entries: List[ScheduleEntry], now: Optional[datetime] = None) -> List[Event]:
+    def apply(self, entries: List[ScheduleEntry], team_id: int,
+              now: Optional[datetime] = None) -> List[Event]:
         now = now or utcnow()
-        bootstrap = self.storage.get_meta(BOOTSTRAP_KEY) is None
+        bootstrap = self.storage.get_meta(bootstrap_key(team_id)) is None
 
         events: List[Event] = []
         seen: Dict[int, ScheduleEntry] = {e.match_id: e for e in entries}
 
         for entry in entries:
-            events.extend(self._apply_entry(entry, now=now, bootstrap=bootstrap))
+            events.extend(self._apply_entry(entry, team_id, now=now, bootstrap=bootstrap))
 
-        events.extend(self._detect_disappeared(seen, now=now, bootstrap=bootstrap))
+        events.extend(self._detect_disappeared(seen, team_id, now=now, bootstrap=bootstrap))
 
         if bootstrap:
-            self.storage.set_meta(BOOTSTRAP_KEY, iso(now))
+            self.storage.set_meta(bootstrap_key(team_id), iso(now))
             log.info(
-                "первый запуск: %d матчей взяты в базу молча, уведомления по ним не шлются",
-                len(entries),
+                "команда %s взята под наблюдение: %d матчей занесены молча, "
+                "уведомления по ним не шлются", team_id, len(entries),
             )
         return events
 
     # ------------------------------------------------------------------
 
-    def _apply_entry(self, entry: ScheduleEntry, *, now: datetime, bootstrap: bool) -> List[Event]:
+    def _apply_entry(self, entry: ScheduleEntry, team_id: int, *,
+                     now: datetime, bootstrap: bool) -> List[Event]:
         snapshot = team_page.snapshot_of(entry)
         snapshot_hash = team_page.hash_of(snapshot)
         existing = self.storage.get_match(entry.match_id)
@@ -75,8 +84,9 @@ class ScheduleMachine:
                 match_id=entry.match_id, opponent_id=entry.opponent_id,
                 opponent_name=entry.opponent_name, event_name=entry.event_name,
                 start_utc=entry.start_utc, url=entry.url,
-                snapshot=snapshot, snapshot_hash=snapshot_hash,
+                snapshot=snapshot, snapshot_hash=snapshot_hash, team_id=team_id,
             )
+            self.storage.link_match_team(entry.match_id, team_id)
             self.storage.set_state(
                 entry.match_id,
                 MatchState.FINISHED if entry.finished else MatchState.SCHEDULED,
@@ -98,11 +108,18 @@ class ScheduleMachine:
             if new_start is not None:
                 start_for_storage = new_start
 
+        # Матч мог быть заведён другой отслеживаемой командой — связь ставим
+        # в любом случае, а вот перспектива (matches.team_id) остаётся прежней.
+        self.storage.link_match_team(entry.match_id, team_id)
+        canonical = self.storage.canonical_team(entry.match_id)
+        oriented = canonical is None or canonical == team_id
         self.storage.upsert_match(
-            match_id=entry.match_id, opponent_id=entry.opponent_id,
-            opponent_name=entry.opponent_name, event_name=entry.event_name,
+            match_id=entry.match_id,
+            opponent_id=entry.opponent_id if oriented else existing["opponent_id"],
+            opponent_name=entry.opponent_name if oriented else existing["opponent_name"],
+            event_name=entry.event_name,
             start_utc=start_for_storage, url=entry.url,
-            snapshot=snapshot, snapshot_hash=snapshot_hash,
+            snapshot=snapshot, snapshot_hash=snapshot_hash, team_id=team_id,
         )
         return events
 
@@ -159,8 +176,8 @@ class ScheduleMachine:
 
     # ------------------------------------------------------------------
 
-    def _detect_disappeared(self, seen: Dict[int, ScheduleEntry], *, now: datetime,
-                            bootstrap: bool) -> List[Event]:
+    def _detect_disappeared(self, seen: Dict[int, ScheduleEntry], team_id: int, *,
+                            now: datetime, bootstrap: bool) -> List[Event]:
         """E3: матч исчез со страницы команды.
 
         Осторожно: матч уходит из «Upcoming» и в норме — когда начинается и
@@ -171,7 +188,7 @@ class ScheduleMachine:
         опрос страницы матча (этап 2).
         """
         events: List[Event] = []
-        for match_id in self.storage.tracked_match_ids():
+        for match_id in self.storage.tracked_match_ids(team_id):
             if match_id in seen:
                 continue
             row = self.storage.get_match(match_id)
