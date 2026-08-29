@@ -63,7 +63,13 @@ class MatchMachine:
         row = self.storage.get_match(match_id)
         state_row = self.storage.get_state(match_id)
         previous = state_row["state"] if state_row else MatchState.SCHEDULED
+        first_observation = state_row is None
         target = STATUS_TO_STATE.get(observation.status, previous)
+
+        # Снимок ДО записи результатов: по нему видно, какие карты решились
+        # именно сейчас. Иначе сравнивать было бы уже не с чем.
+        known_maps = {r["map_number"] for r in self.storage.map_results(match_id)}
+        seen_live = previous in (MatchState.LIVE, MatchState.MAP_LIVE, MatchState.MAP_BREAK)
 
         events: List[Event] = []
         ours, theirs = observation.series_score(team_id)
@@ -80,11 +86,16 @@ class MatchMachine:
         if target == MatchState.LIVE and previous not in (MatchState.LIVE, *TERMINAL):
             events.append(self._event_e4(observation, row, team_id))
 
+        discovered_finished = target == MatchState.FINISHED and not seen_live
+        events.extend(self._map_events(
+            observation, row, team_id, known_maps,
+            silent=first_observation or discovered_finished))
+
         if target == MatchState.FINISHED and previous not in TERMINAL:
-            if previous != MatchState.LIVE:
-                # Матч уже доигран, а «идёт» мы не застали. Слать E4 задним
-                # числом бессмысленно — сразу итог.
-                log.info("матч %s обнаружен уже завершённым, E4 пропущен", match_id)
+            if not seen_live:
+                # Матч уже доигран, а «идёт» мы не застали. Слать E4 и E6
+                # задним числом бессмысленно — сразу итог.
+                log.info("матч %s обнаружен уже завершённым, E4 и E6 пропущены", match_id)
             events.append(self._event_e7(observation, row, team_id, ours, theirs))
 
         events.extend(self._check_stall(observation, team_id, target, now))
@@ -99,6 +110,27 @@ class MatchMachine:
                 return line
         decided = observation.decided_maps()
         return decided[-1] if decided else None
+
+    def _map_events(self, observation: MatchObservation, row, team_id: int,
+                    known_maps: set, *, silent: bool) -> List[Event]:
+        """E6 — на переходе карты из нерешённой в решённую.
+
+        Событие рождается один раз на карту: повторные опросы видят ту же
+        карту уже в known_maps. Ключ идемпотентности включает счёт, поэтому
+        даже исправление счёта на стороне HLTV не приведёт к молчанию.
+        """
+        events: List[Event] = []
+        for line in observation.decided_maps():
+            if line.number in known_maps:
+                continue
+            if silent:
+                # Карта была сыграна до того, как мы начали смотреть за матчем.
+                # Это не переход, а состояние на момент знакомства.
+                log.info("матч %s: карта %d уже была сыграна к моменту наблюдения, E6 пропущен",
+                         observation.match_id, line.number)
+                continue
+            events.append(self._event_e6(observation, row, team_id, line))
+        return events
 
     def _store_map_results(self, observation: MatchObservation, team_id: int) -> None:
         for line in observation.decided_maps():
@@ -163,6 +195,35 @@ class MatchMachine:
                 "opponent_id": opponent_id,
                 "event_name": observation.event_name or (row["event_name"] if row else ""),
                 "best_of": observation.best_of,
+                "url": row["url"] if row else "",
+            },
+        )
+
+    def _event_e6(self, observation: MatchObservation, row, team_id: int,
+                  line: MapLine) -> Event:
+        our_score, their_score = observation.map_score(line, team_id)
+        opponent_id, opponent_name = observation.opponent(team_id)
+        # Счёт серии берётся на момент этой карты, а не итоговый: между двумя
+        # опросами могут завершиться сразу две карты, и в сообщении о первой
+        # итоговый счёт был бы враньём.
+        series_ours, series_theirs = observation.series_after(line.number, team_id)
+        return Event(
+            type="E6",
+            idempotency_key=(f"E6:{observation.match_id}:map:{line.number}"
+                             f":result:{our_score}-{their_score}"),
+            match_id=observation.match_id,
+            payload={
+                "opponent": opponent_name or (row["opponent_name"] if row else ""),
+                "opponent_id": opponent_id,
+                "event_name": observation.event_name or (row["event_name"] if row else ""),
+                "map_number": line.number,
+                "map_name": line.name,
+                "score_team": our_score,
+                "score_opponent": their_score,
+                "overtime": _overtime(line),
+                "halves": line.halves,
+                "series_team": series_ours,
+                "series_opponent": series_theirs,
                 "url": row["url"] if row else "",
             },
         )

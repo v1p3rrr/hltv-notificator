@@ -5,9 +5,13 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # Внутри контейнера всё считается в UTC; часовой пояс отображения
-      # задаётся отдельно через TZ_DISPLAY в .env.
+      # Внутри контейнера всё считается и хранится в UTC — это не настройка,
+      # а инвариант: от него зависит корректность на переходах летнего времени.
       TZ: UTC
+      # А вот пояс ОТОБРАЖЕНИЯ в сообщениях настраивается. Значение берётся из
+      # .env (TZ_DISPLAY), здесь — только запасное на случай, если его там нет.
+      # Любая зона из базы IANA: Europe/Moscow, Europe/Riga, Asia/Tbilisi...
+      TZ_DISPLAY: ${TZ_DISPLAY:-Europe/Moscow}
     volumes:
       - ./data:/app/data
     logging:

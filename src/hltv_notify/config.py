@@ -42,7 +42,7 @@ class Config:
 
     # режим
     dry_run: bool = field(default_factory=lambda: _bool("DRY_RUN", True))
-    timezone: str = field(default_factory=lambda: _str("TZ_DISPLAY", "Europe/Riga"))
+    timezone: str = field(default_factory=lambda: _str("TZ_DISPLAY", "Europe/Moscow"))
     log_level: str = field(default_factory=lambda: _str("LOG_LEVEL", "INFO"))
     db_path: Path = field(default_factory=lambda: Path(_str("DB_PATH", "data/hltv.db")))
 

@@ -1,4 +1,10 @@
-"""Таймзоны на переходе DST и потолок частоты запросов."""
+"""Таймзоны и потолок частоты запросов.
+
+Отображение идёт в Europe/Moscow (перехода на летнее время там нет с 2014
+года). Europe/Riga оставлена в тестах намеренно: на ней проверяется, что
+механизм переживает переход — если пояс отображения когда-нибудь сменят,
+наивная арифметика со смещением всплывёт сразу.
+"""
 
 import asyncio
 import time
@@ -12,6 +18,7 @@ from hltv_notify.http import HltvHttp
 from hltv_notify.notify.format import human_time, to_local
 
 RIGA = "Europe/Riga"
+MOSCOW = "Europe/Moscow"
 
 
 def test_dst_start_shifts_offset_by_an_hour():
@@ -110,3 +117,24 @@ def test_jitter_stays_within_bounds():
     values = [http_module.jittered(100) for _ in range(200)]
     assert all(80 <= v <= 120 for v in values)
     assert len(set(values)) > 1  # запросы не идут ровно по сетке
+
+
+def test_moscow_is_the_default_display_timezone():
+    from hltv_notify.config import Config
+    assert Config().timezone == MOSCOW
+
+
+def test_moscow_does_not_observe_dst():
+    """У Москвы перехода нет: матч не должен «уезжать» в даты, когда Европа
+    переводит часы."""
+    march = to_local(datetime(2026, 3, 29, 0, 30, tzinfo=timezone.utc), MOSCOW)
+    october = to_local(datetime(2026, 10, 25, 1, 30, tzinfo=timezone.utc), MOSCOW)
+    assert march.utcoffset() == timedelta(hours=3)
+    assert october.utcoffset() == timedelta(hours=3)
+    assert human_time(datetime(2026, 3, 29, 0, 30, tzinfo=timezone.utc), MOSCOW).endswith("03:30")
+
+
+def test_match_time_in_moscow_matches_hltv():
+    """Матч 2397053: data-unix 1787994300000. По Москве это 12:05."""
+    utc = datetime.fromtimestamp(1787994300000 / 1000, tz=timezone.utc)
+    assert human_time(utc, MOSCOW) == "сб 29 авг, 12:05"

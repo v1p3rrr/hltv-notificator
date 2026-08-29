@@ -119,6 +119,26 @@ class MatchObservation:
                 theirs += 1
         return ours, theirs
 
+    def series_after(self, map_number: int, team_id: int) -> Tuple[int, int]:
+        """Счёт серии на момент окончания указанной карты.
+
+        Нужен, потому что между двумя опросами может завершиться сразу
+        несколько карт: брать для каждой из них итоговый счёт серии значило бы
+        соврать в сообщении о более ранней карте.
+        """
+        ours = theirs = 0
+        for line in self.decided_maps():
+            if line.number > map_number:
+                continue
+            our_score, their_score = self.map_score(line, team_id)
+            if our_score is None or their_score is None:
+                continue
+            if our_score > their_score:
+                ours += 1
+            elif their_score > our_score:
+                theirs += 1
+        return ours, theirs
+
     def progress_signature(self, team_id: int) -> str:
         """Отпечаток продвижения матча: по нему видно, что матч «завис».
 

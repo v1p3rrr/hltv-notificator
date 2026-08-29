@@ -53,12 +53,14 @@ def test_e4_on_transition_to_live(storage, config):
 
 
 def test_e4_not_repeated_on_every_poll(storage, config):
-    """Страница опрашивается раз в минуту и всё это время говорит LIVE."""
+    """Страница опрашивается раз в минуту и всё это время говорит LIVE.
+    Карта при этом успела завершиться — про неё E6, но повторного E4 нет."""
     add_match(storage)
     m = MatchMachine(storage, config)
     m.apply(observe("live", maps(None, None, None)))
-    again = m.apply(observe("live", maps((13, 10, "( 8 : 4 ; 5 : 6 )"), None, None)))
-    assert [e.type for e in again] == []
+    again = [e.type for e in m.apply(observe("live", maps((13, 10, "( 8 : 4 ; 5 : 6 )"), None, None)))]
+    assert "E4" not in again
+    assert again == ["E6"]
 
 
 def test_e7_with_series_score(storage, config):
@@ -67,8 +69,9 @@ def test_e7_with_series_score(storage, config):
     m.apply(observe("live", maps(None, None, None)))
     events = m.apply(observe("over", maps(
         (10, 13, "( 5 : 7 ; 8 : 3 )"), (8, 13, "( 4 : 8 ; 4 : 5 )"), None)))
-    assert [e.type for e in events] == ["E7"]
-    e7 = events[0]
+    # Обе карты доигрались между опросами: сначала о каждой, затем итог.
+    assert [e.type for e in events] == ["E6", "E6", "E7"]
+    e7 = events[-1]
     # мы справа: 13 и 13 наши
     assert (e7.payload["series_team"], e7.payload["series_opponent"]) == (2, 0)
     assert e7.payload["won"] is True
@@ -153,7 +156,12 @@ def test_observation_without_our_team_is_dropped(storage, config):
 
 
 def test_real_fixtures_drive_a_full_match(storage, config):
-    """Прогон по настоящим страницам: live → over даёт ровно E4 и E7."""
+    """Прогон по настоящим страницам.
+
+    Первая карта на live-фикстуре уже сыграна к моменту знакомства с матчем,
+    поэтому E6 по ней не шлётся — это не переход. Вторая завершается уже под
+    наблюдением, о ней сообщается.
+    """
     add_match(storage, 2397047)
     m = MatchMachine(storage, config)
     live = match_page.parse((FIXTURES / "match-2397053-live.html").read_text(encoding="utf-8"),
@@ -161,4 +169,111 @@ def test_real_fixtures_drive_a_full_match(storage, config):
     over = match_page.parse((FIXTURES / "match-2397047-finished.html").read_text(encoding="utf-8"),
                             2397047)
     produced = [e.type for e in m.apply(live)] + [e.type for e in m.apply(over)]
-    assert produced == ["E4", "E7"]
+    assert produced == ["E4", "E6", "E7"]
+
+
+# ----------------------------------------------------------------------
+# E6 — ключевое требование ТЗ: конец карты со счётом
+# ----------------------------------------------------------------------
+
+
+def test_e6_when_map_becomes_decided(storage, config):
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    m.apply(observe("live", maps(None, None, None)))
+    events = m.apply(observe("live", maps((10, 13, "( 5 : 7 ; 8 : 3 )"), None, None)))
+    assert [e.type for e in events] == ["E6"]
+    e6 = events[0]
+    assert e6.idempotency_key == "E6:555:map:1:result:13-10"
+    assert (e6.payload["score_team"], e6.payload["score_opponent"]) == (13, 10)
+    assert (e6.payload["series_team"], e6.payload["series_opponent"]) == (1, 0)
+    assert e6.payload["map_name"] == "Map1"
+
+
+def test_e6_not_repeated_while_match_continues(storage, config):
+    """Страница ещё долго показывает счёт сыгранной карты — событие одно."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    m.apply(observe("live", maps(None, None, None)))
+    decided = observe("live", maps((10, 13, None), None, None))
+    assert [e.type for e in m.apply(decided)] == ["E6"]
+    assert m.apply(decided) == []
+    assert m.apply(decided) == []
+
+
+def test_two_maps_decided_between_polls_get_their_own_series_score(storage, config):
+    """Если опрос пропустил окончание первой карты, счёт серии в сообщении о
+    ней должен быть на момент этой карты, а не итоговый."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    m.apply(observe("live", maps(None, None, None)))
+    events = m.apply(observe("live", maps((10, 13, None), (13, 8, None), None)))
+    assert [e.type for e in events] == ["E6", "E6"]
+    first, second = events
+    assert (first.payload["map_number"], first.payload["series_team"],
+            first.payload["series_opponent"]) == (1, 1, 0)
+    assert (second.payload["map_number"], second.payload["series_team"],
+            second.payload["series_opponent"]) == (2, 1, 1)
+
+
+def test_no_e6_if_match_discovered_already_over(storage, config):
+    """Матч доигран, пока сервис лежал: сыпать E6 по всем картам задним
+    числом — мусор, шлём только итог."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    events = m.apply(observe("over", maps((10, 13, None), (8, 13, None), None)))
+    assert [e.type for e in events] == ["E7"]
+    assert len(storage.map_results(MATCH_ID)) == 2
+
+
+def test_e6_survives_overtime(storage, config):
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    m.apply(observe("live", maps(None, None, None)))
+    events = m.apply(observe("live", maps((16, 19, "( 5 : 7 ; 7 : 5 ; 4 : 7 )"), None, None)))
+    assert events[0].payload["overtime"] is True
+    assert (events[0].payload["score_team"], events[0].payload["score_opponent"]) == (19, 16)
+
+
+def test_full_bo3_replay_gives_exact_event_sequence(storage, config):
+    """Записанная последовательность наблюдений всегда даёт один и тот же
+    список событий — это и регрессионный тест."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    timeline = [
+        observe("upcoming", maps(None, None, None)),
+        observe("live", maps(None, None, None)),
+        observe("live", maps((10, 13, None), None, None)),
+        observe("live", maps((10, 13, None), None, None)),
+        observe("live", maps((10, 13, None), (13, 9, None), None)),
+        observe("live", maps((10, 13, None), (13, 9, None), None)),
+        observe("live", maps((10, 13, None), (13, 9, None), (11, 13, None))),
+        observe("over", maps((10, 13, None), (13, 9, None), (11, 13, None))),
+    ]
+    produced = []
+    for observation in timeline:
+        produced += [e.type for e in m.apply(observation)]
+    assert produced == ["E4", "E6", "E6", "E6", "E7"]
+
+
+def test_replaying_the_same_timeline_twice_sends_nothing_new(storage, config):
+    """Тот же сценарий, что реконнект живого фида: полное состояние приходит
+    заново, а число уведомлений меняться не должно."""
+    from hltv_notify.notify.outbox import Notifier
+
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    notifier = Notifier(storage, config, telegram=None)
+    timeline = [
+        observe("live", maps(None, None, None)),
+        observe("live", maps((10, 13, None), None, None)),
+        observe("live", maps((10, 13, None), (13, 9, None), None)),
+        observe("over", maps((10, 13, None), (13, 9, None), None)),
+    ]
+    for _ in range(2):
+        for observation in timeline:
+            for event in m.apply(observation):
+                notifier.enqueue(event)
+
+    assert storage.sent_event_count() == 4       # E4, E6, E6, E7
+    assert storage.pending_count() == 4
