@@ -18,6 +18,7 @@ from typing import List, Optional
 from . import config as config_module
 from .bot import CommandBot
 from .http import HltvHttp
+from .match_poller import MatchPoller
 from .notify.outbox import Notifier
 from .notify.telegram import Telegram
 from .scheduler import SchedulePoller
@@ -67,6 +68,7 @@ async def run() -> int:
     telegram: Optional[Telegram] = Telegram(config.bot_token) if config.telegram_enabled() else None
     notifier = Notifier(storage, config, telegram)
     poller = SchedulePoller(storage, config, http, notifier)
+    matches = MatchPoller(storage, config, http, notifier)
 
     if config.dry_run:
         log.warning("DRY_RUN включён: уведомления пишутся в лог, в Telegram не уходят")
@@ -78,10 +80,11 @@ async def run() -> int:
 
     tasks: List[asyncio.Task] = [
         asyncio.create_task(poller.run(stop), name="schedule-poller"),
+        asyncio.create_task(matches.run(stop), name="match-poller"),
         asyncio.create_task(notifier.run(stop), name="outbox"),
     ]
     if telegram is not None:
-        bot = CommandBot(storage, config, telegram, poller)
+        bot = CommandBot(storage, config, telegram, poller, matches)
         tasks.append(asyncio.create_task(bot.run(stop), name="command-bot"))
 
     log.info("сервис запущен: команда %s (id %s), режим отправки %s",

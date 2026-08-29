@@ -40,7 +40,9 @@ CREATE TABLE IF NOT EXISTS match_state (
     last_seen_utc      TEXT NOT NULL,
     last_source        TEXT NOT NULL,
     pending_start_utc  TEXT,
-    pending_since_utc  TEXT
+    pending_since_utc  TEXT,
+    progress_hash      TEXT,
+    progress_since_utc TEXT
 );
 
 CREATE TABLE IF NOT EXISTS map_results (
@@ -112,6 +114,23 @@ class Storage:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Колонки, добавленные позже: CREATE TABLE IF NOT EXISTS их не
+        дотянет на уже существующей базе, а терять базу нельзя — в ней журнал
+        отправленных событий."""
+        added = {
+            "match_state": {
+                "progress_hash": "TEXT",
+                "progress_since_utc": "TEXT",
+            },
+        }
+        for table, columns in added.items():
+            existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            for column, ddl in columns.items():
+                if column not in existing:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def close(self) -> None:
         self.conn.close()
@@ -214,6 +233,56 @@ class Storage:
             "WHERE match_id = ?",
             (iso(start) if start else None, iso(since) if since else None, match_id),
         )
+
+    def set_progress(self, match_id: int, signature: str, since: datetime) -> None:
+        """Отпечаток продвижения матча и момент, когда он последний раз менялся.
+        По нему отличается «матч на технической паузе» от «сервис ослеп»."""
+        self.conn.execute(
+            "UPDATE match_state SET progress_hash = ?, progress_since_utc = ? WHERE match_id = ?",
+            (signature, iso(since), match_id),
+        )
+
+    def record_map_result(self, *, match_id: int, map_number: int, map_name: str,
+                          score_team: int, score_opponent: int, overtime: bool) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO map_results (match_id, map_number, map_name, score_team,
+                                     score_opponent, overtime, recorded_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(match_id, map_number) DO UPDATE SET
+                map_name = excluded.map_name,
+                score_team = excluded.score_team,
+                score_opponent = excluded.score_opponent,
+                overtime = excluded.overtime
+            """,
+            (match_id, map_number, map_name, score_team, score_opponent,
+             1 if overtime else 0, iso(utcnow())),
+        )
+
+    def map_results(self, match_id: int) -> List[sqlite3.Row]:
+        return list(self.conn.execute(
+            "SELECT * FROM map_results WHERE match_id = ? ORDER BY map_number", (match_id,)))
+
+    def active_matches(self, now: Optional[datetime] = None, *,
+                       lookahead_minutes: int = 30,
+                       lookbehind_hours: int = 12) -> List[sqlite3.Row]:
+        """Матчи, которые имеет смысл опрашивать постранично.
+
+        Окно назад нужно, потому что матч запросто начинается позже расписания;
+        окно вперёд — чтобы поймать фактический старт. Круглосуточно активный
+        опрос не ведётся: команда может не играть неделями.
+        """
+        now = now or utcnow()
+        return list(self.conn.execute(
+            "SELECT m.*, s.state AS state FROM matches m "
+            "LEFT JOIN match_state s ON s.match_id = m.match_id "
+            "WHERE m.missing_since_utc IS NULL "
+            "  AND (s.state IS NULL OR s.state NOT IN ('FINISHED', 'CANCELLED')) "
+            "  AND m.start_utc <= ? AND m.start_utc >= ? "
+            "ORDER BY m.start_utc",
+            (iso(now + timedelta(minutes=lookahead_minutes)),
+             iso(now - timedelta(hours=lookbehind_hours))),
+        ))
 
     # ---------- события и очередь ----------
 

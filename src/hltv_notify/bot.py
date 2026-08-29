@@ -30,11 +30,12 @@ HELP = (
 
 class CommandBot:
     def __init__(self, storage: Storage, config: Config, telegram: Telegram,
-                 poller: SchedulePoller):
+                 poller: SchedulePoller, matches=None):
         self.storage = storage
         self.config = config
         self.telegram = telegram
         self.poller = poller
+        self.matches = matches
         self._offset: Optional[int] = None
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -113,7 +114,9 @@ class CommandBot:
         lines = [
             "<b>Состояние сервиса</b>",
             f"Команда: {self.config.team_name} (id {self.config.team_id})",
-            f"Режим опроса: {self.poller.mode}",
+            f"Режим опроса расписания: {self.poller.mode}",
+            f"Режим опроса матчей: {self.matches.mode if self.matches else '—'}",
+            f"Активных матчей: {len(self.matches.active()) if self.matches else 0}",
             f"Отправка: {'ВЫКЛЮЧЕНА (DRY_RUN)' if self.config.dry_run else 'включена'}",
             f"Последний опрос: {fmt.human_time(last_poll, tz) if last_poll else 'ещё не было'}",
             f"Неудач подряд: {self.poller.http.consecutive_failures}",

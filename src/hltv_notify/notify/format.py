@@ -56,25 +56,88 @@ def render(event: Event, *, team_name: str, tz_name: str) -> str:
 
     if event.type == "E1":
         when = human_time(payload["start_utc"], tz_name)
-        head = f"🆕 <b>Новый матч</b>\n{team} — {opponent}"
+        lines = ["🆕 <b>Новый матч</b>", f"{team} — {opponent}"]
         if payload.get("placeholder"):
-            head += "\n<i>соперник ещё не определён</i>"
-        return (f"{head}\n{event_name}\n🕒 {when}\n"
-                f"{_link(url, 'Страница матча')}")
+            lines.append("<i>соперник ещё не определён</i>")
+        lines += [event_name, f"🕒 {when}", _link(url, "Страница матча")]
+        return "\n".join(lines)
 
     if event.type == "E2":
         was = human_time(payload["old_start_utc"], tz_name)
         now = human_time(payload["start_utc"], tz_name)
-        return (f"🕐 <b>Время матча изменилось</b>\n{team} — {opponent}\n{event_name}\n"
-                f"Было: {was}\nСтало: {now}\n{_link(url, 'Страница матча')}")
+        return "\n".join([
+            "🕐 <b>Время матча изменилось</b>",
+            f"{team} — {opponent}",
+            event_name,
+            f"Было: {was}",
+            f"Стало: {now}",
+            _link(url, "Страница матча"),
+        ])
 
     if event.type == "E3":
         when = human_time(payload["start_utc"], tz_name)
-        return (f"❌ <b>Матч отменён или отложен</b>\n{team} — {opponent}\n{event_name}\n"
-                f"Планировался: {when}\n{_link(url, 'Страница матча')}")
+        return "\n".join([
+            "❌ <b>Матч отменён или отложен</b>",
+            f"{team} — {opponent}",
+            event_name,
+            f"Планировался: {when}",
+            _link(url, "Страница матча"),
+        ])
+
+    if event.type == "E4":
+        best_of = payload.get("best_of")
+        suffix = f" · BO{best_of}" if best_of else ""
+        return "\n".join([
+            "🔴 <b>Матч начался</b>",
+            f"{team} — {opponent}",
+            f"{event_name}{suffix}",
+            _link(url, "Страница матча"),
+        ])
+
+    if event.type == "E5":
+        return "\n".join([
+            "🗺 <b>Карта началась</b>",
+            f"{team} — {opponent}",
+            f"Карта {payload.get('map_number')}: {_esc(payload.get('map_name'))}",
+            f"Счёт по картам: {payload.get('series_team')}:{payload.get('series_opponent')}",
+            _link(url, "Страница матча"),
+        ])
+
+    if event.type == "E6":
+        ours = payload.get("score_team")
+        theirs = payload.get("score_opponent")
+        icon = "✅" if (ours or 0) > (theirs or 0) else "❌"
+        overtime = " (овертайм)" if payload.get("overtime") else ""
+        return "\n".join([
+            f"{icon} <b>Карта {payload.get('map_number')} сыграна</b>",
+            f"{_esc(payload.get('map_name'))} — <b>{ours}:{theirs}</b>{overtime}",
+            f"{team} — {opponent}",
+            f"Счёт по картам: <b>{payload.get('series_team')}:{payload.get('series_opponent')}</b>",
+            event_name,
+            _link(url, "Страница матча"),
+        ])
+
+    if event.type == "E7":
+        ours = payload.get("series_team", 0)
+        theirs = payload.get("series_opponent", 0)
+        icon = "🏆" if payload.get("won") else "💀"
+        lines = [
+            f"{icon} <b>Матч завершён</b>",
+            f"<b>{team} {ours}:{theirs} {opponent}</b>",
+            event_name,
+        ]
+        for item in payload.get("maps", []):
+            overtime = " (OT)" if item.get("overtime") else ""
+            lines.append(f"   {_esc(item['name'])} — "
+                         f"{item['score_team']}:{item['score_opponent']}{overtime}")
+        lines.append(_link(url, "Страница матча"))
+        return "\n".join(lines)
 
     if event.type == "E8":
-        return (f"⚠️ <b>Сервис деградировал</b>\n{_esc(payload.get('reason'))}\n"
-                f"<i>{_esc(payload.get('detail'))}</i>")
+        return "\n".join([
+            "⚠️ <b>Сервис деградировал</b>",
+            _esc(payload.get("reason")),
+            f"<i>{_esc(payload.get('detail'))}</i>",
+        ])
 
     return f"{_esc(event.type)}: {_esc(str(payload))}"
