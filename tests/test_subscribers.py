@@ -216,3 +216,51 @@ def test_single_user_mode_still_works(tmp_path):
     Notifier(storage, cfg, telegram=None).enqueue(e6())
     assert set(bodies(storage)) == {ILYA}
     storage.close()
+
+
+# ---------------------------------------------------------------- один список чатов
+
+
+def test_chat_ids_are_listed_through_commas():
+    """Одна переменная, id через запятую. Точка с запятой и пробелы тоже."""
+    cfg = Config(chat_id="111, 222;333")
+    assert cfg.allowed_chat_ids() == ["111", "222", "333"]
+    assert cfg.chat_allowed("333") is True
+
+
+def test_main_chat_is_the_first_in_the_list():
+    """Первый — основной: посев команды и одиночный режим адресуются ему."""
+    assert Config(chat_id="111,222").main_chat_id == "111"
+
+
+def test_legacy_variable_still_works():
+    """TELEGRAM_ALLOWED_CHATS — прежнее имя, .env с ним не должен сломаться."""
+    cfg = Config(chat_id="111", allowed_chats="222,333")
+    assert cfg.allowed_chat_ids() == ["111", "222", "333"]
+
+
+def test_only_the_legacy_variable_still_yields_a_main_chat():
+    """Раньше при пустом TELEGRAM_CHAT_ID основного чата не оставалось вовсе,
+    и первый посев команды тихо не выполнялся."""
+    cfg = Config(chat_id="", allowed_chats="222,333")
+    assert cfg.main_chat_id == "222"
+    assert cfg.telegram_enabled() is False       # токена нет
+    assert Config(chat_id="", allowed_chats="222", bot_token="t").telegram_enabled()
+
+
+def test_duplicates_and_junk_are_dropped():
+    cfg = Config(chat_id="111,111, @vasya ,-1001234567890")
+    assert cfg.allowed_chat_ids() == ["111", "-1001234567890"]
+
+
+# ---------------------------------------------------------------- пауза
+
+
+def test_pause_covers_a_match_without_team_links(store, config):
+    """Матч ещё не связан с командами — так выглядит база сразу после
+    обновления. Раньше такое событие уходило владельцу из конфига напрямую,
+    мимо и списка подписчиков, и паузы."""
+    assert store.match_team_ids(MATCH) == []
+    store.set_subscriber_paused(ILYA, True)
+    Notifier(store, config, telegram=None).enqueue(e6())
+    assert set(bodies(store)) == {FRIEND}

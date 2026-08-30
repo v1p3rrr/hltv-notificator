@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 from conftest import FIXTURES, TEAM_ID
-from hltv_notify.models import MatchState
+from hltv_notify.models import Event, MatchState
 from hltv_notify.sources import match_page
 from hltv_notify.sources.match_page import MapLine, MatchObservation
 from hltv_notify.state.db import utcnow
@@ -359,3 +359,24 @@ def test_series_score_stored_during_running_map_excludes_it(storage, config):
     m.apply(observe("live", maps((11, 13, None), None, None) [:1]
                     + [live_map_line(2, 3, 4)] + maps(None, None, None)[2:]))
     assert storage.get_state(MATCH_ID)["series_score"] == "1-0"
+
+
+def test_drawn_series_is_neither_a_win_nor_a_loss():
+    """BO2 вполне заканчивается 1:1.
+
+    Булево здесь означало бы поражение, а получателю, следящему за соперником,
+    format.orient перевернул бы его в победу — про один и тот же результат.
+    """
+    from hltv_notify.notify import format as fmt
+
+    payload = {"series_team": 1, "series_opponent": 1,
+               "won": None, "team_id": 1, "opponent_id": 2,
+               "team_name": "MOUZ", "opponent": "FORZE Reload",
+               "event_name": "Major", "url": "u", "maps": []}
+    event = Event(type="E7", idempotency_key="E7:1:finished:1-1",
+                  match_id=1, payload=payload)
+
+    ours = fmt.render(event, team_name="MOUZ", tz_name="UTC", for_team_id=1)
+    theirs = fmt.render(event, team_name="MOUZ", tz_name="UTC", for_team_id=2)
+    assert "🤝" in ours and "🤝" in theirs
+    assert "🏆" not in theirs and "💀" not in ours

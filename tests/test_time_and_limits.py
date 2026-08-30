@@ -65,7 +65,7 @@ def test_requests_are_spaced_by_the_ceiling(monkeypatch):
         text = "ok"
 
     class FakeSession:
-        async def get(self, url, timeout=None):
+        async def get(self, url, timeout=None, **kwargs):
             return FakeResponse()
 
     client = HltvHttp(Config())
@@ -94,7 +94,7 @@ def test_long_poll_is_exempt_from_the_ceiling(monkeypatch):
         text = "ok"
 
     class FakeSession:
-        async def get(self, url, timeout=None):
+        async def get(self, url, timeout=None, **kwargs):
             return FakeResponse()
 
     client = HltvHttp(Config())

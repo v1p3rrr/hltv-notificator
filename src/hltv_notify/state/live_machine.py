@@ -96,8 +96,7 @@ class LiveMachine:
         map_number = self._map_number(match_id, map_name, len(recorded))
 
         events: List[Event] = []
-        events.extend(self._multikill_events(match_id, frame, map_number, map_name,
-                                             ours, theirs))
+        events.extend(self._multikill_events(match_id, frame, map_number, map_name))
         if self._is_new_map(previous_map, map_name, frame):
             events.append(self._event_e5(match_id, frame, map_number, map_name, len(recorded)))
 
@@ -162,7 +161,7 @@ class LiveMachine:
         }
 
     def _multikill_events(self, match_id: int, frame: LiveFrame, map_number: int,
-                          map_name: str, ours: int, theirs: int) -> List[Event]:
+                          map_name: str) -> List[Event]:
         """Мультикилл игрока НАШЕЙ команды — чтобы успеть клипануть хайлайт."""
         if not self.config.multikill_alerts:
             return []
@@ -174,12 +173,24 @@ class LiveMachine:
         events: List[Event] = []
         for tracked_team in tracked:
             events.extend(self._multikill_for_team(
-                match_id, frame, map_number, map_name, ours, theirs, tracked_team))
+                match_id, frame, map_number, map_name, tracked_team))
         return events
 
     def _multikill_for_team(self, match_id: int, frame: LiveFrame, map_number: int,
-                            map_name: str, ours: int, theirs: int,
-                            tracked_team: int) -> List[Event]:
+                            map_name: str, tracked_team: int) -> List[Event]:
+        """Событие целиком от лица КОМАНДЫ ИГРОКА, а не канонической.
+
+        Здесь легко ошибиться: если взять контекст канонической команды и
+        подменить в нём только имя, соперником окажется она же сама
+        («FORZE — FORZE»), а счёт останется её, то есть перевёрнутым. Развернуть
+        такое потом не выйдет: format.orient видит team_id получателя и
+        считает, что разворачивать нечего.
+        """
+        ours, theirs = frame.our_score(tracked_team)
+        if ours is None or theirs is None:
+            # Этой команды в кадре нет — например, кадр пришёл до того, как фид
+            # проставил id. Фрагов её игроков в нём тоже не будет.
+            return []
         taken = self._tracker(tracked_team).observe(
             map_name, frame.current_round, frame.round_state,
             frame.our_players(tracked_team))
@@ -193,9 +204,7 @@ class LiveMachine:
                                  f":round:{frame.current_round}:{player.steam_id}:{kills}"),
                 match_id=match_id,
                 payload={
-                    **self._context(match_id, frame),
-                    "team_name": self.storage.team_name(tracked_team, self.config.team_name),
-                    "team_id": tracked_team,
+                    **self._context(match_id, frame, tracked_team),
                     "nick": player.nick,
                     "kills": kills,
                     "map_number": map_number,
@@ -258,9 +267,13 @@ class LiveMachine:
         row = self.storage.get_match(match_id)
         return row["url"] if row else ""
 
-    def _context(self, match_id: int, frame: LiveFrame) -> dict:
+    def _context(self, match_id: int, frame: LiveFrame,
+                 team_id: Optional[int] = None) -> dict:
+        """Общая шапка события. `team_id` — от чьего лица; по умолчанию
+        каноническая команда матча."""
         row = self.storage.get_match(match_id)
-        team_id = self.storage.canonical_team(match_id) or self.config.team_id
+        if team_id is None:
+            team_id = self.storage.canonical_team(match_id) or self.config.team_id
         return {
             "team_name": self.storage.team_name(team_id, self.config.team_name),
             "team_id": team_id,

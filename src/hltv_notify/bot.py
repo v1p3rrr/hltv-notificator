@@ -156,9 +156,9 @@ class CommandBot:
 
         handlers = {
             "/teams": lambda: self._teams(chat_id),
-            "/status": self._status,
-            "/live": self._live,
-            "/next": self._next,
+            "/status": lambda: self._status(chat_id),
+            "/live": lambda: self._live(chat_id),
+            "/next": lambda: self._next(chat_id),
             "/check": self._check,
             "/start": lambda: HELP,
             "/help": lambda: HELP,
@@ -263,11 +263,11 @@ class CommandBot:
         if kind == "m":
             section = args[0] if args else "main"
             if section == "status":
-                return self._status(), menu.keyboard([menu.back()]), ""
+                return self._status(chat_id), menu.keyboard([menu.back()]), ""
             if section == "live":
-                return self._live(), menu.keyboard([menu.back()]), ""
+                return self._live(chat_id), menu.keyboard([menu.back()]), ""
             if section == "next":
-                return self._next(), menu.keyboard([menu.back()]), ""
+                return self._next(chat_id), menu.keyboard([menu.back()]), ""
             if section == "teams":
                 return self._teams(chat_id), menu.teams(
                     self.storage.teams(chat_id, enabled_only=False)), ""
@@ -353,8 +353,8 @@ class CommandBot:
 
     # ------------------------------------------------------------------
 
-    def _status(self) -> str:
-        tz = self.config.timezone
+    def _status(self, chat_id: str) -> str:
+        tz = self._tz(chat_id)
         last_poll = self.storage.get_meta(LAST_POLL_KEY)
         last_error = self.storage.get_meta(LAST_ERROR_KEY)
         matches = len(self.storage.all_matches())
@@ -545,13 +545,23 @@ class CommandBot:
             parts.append("подключается: " + ", ".join(pending))
         return "Живой фид: " + "; ".join(parts)
 
-    def _live(self) -> str:
+    def _tz(self, chat_id: str) -> str:
+        """Пояс спрашивающего. Уведомления идут в нём же — расходиться нельзя."""
+        return self.storage.subscriber_timezone(chat_id, self.config.timezone)
+
+    def _mine(self, chat_id: str, rows):
+        """Отсеять матчи чужих команд: аккаунты ведут свои списки."""
+        visible = self.storage.visible_match_ids(chat_id)
+        return [row for row in rows if row["match_id"] in visible]
+
+    def _live(self, chat_id: str) -> str:
         """Что прямо сейчас на идущем матче.
 
         Полезно, когда уведомление не пришло: видно, дошёл ли счёт до сервиса
         вообще и от какого источника он последний раз обновлялся.
         """
-        rows = [row for row in (self.matches.active() if self.matches else [])
+        rows = [row for row in self._mine(
+                    chat_id, self.matches.active() if self.matches else [])
                 if row["state"] == MatchState.LIVE]
         if not rows:
             return "Сейчас матчей нет."
@@ -567,7 +577,10 @@ class CommandBot:
             source = state["last_source"] if state else "?"
             feed = "на связи" if feeds.get(row["match_id"]) else "нет"
             block = [
-                f"<b>{fmt.escape(self.config.team_name)} — {fmt.escape(row['opponent_name'])}</b>",
+                # Имя команды — из самого матча: отслеживаемых может быть
+                # несколько, и значение из конфига подошло бы только первой.
+                f"<b>{fmt.escape(self._match_team_name(row['match_id']))} — "
+                f"{fmt.escape(row['opponent_name'])}</b>",
                 fmt.escape(row["event_name"]),
                 f"Карта: {fmt.escape(map_name) if map_name else '—'}"
                 f"   счёт: {score or '—'}   по картам: {series or '—'}",
@@ -580,13 +593,17 @@ class CommandBot:
             blocks.append("\n".join(block))
         return "\n\n".join(blocks)
 
-    def _next(self) -> str:
-        rows = self.storage.upcoming_matches()
+    def _match_team_name(self, match_id: int) -> str:
+        team_id = self.storage.canonical_team(match_id)
+        return self.storage.team_name(team_id, self.config.team_name)
+
+    def _next(self, chat_id: str) -> str:
+        rows = self._mine(chat_id, self.storage.upcoming_matches())
         if not rows:
             return "Предстоящих матчей нет. Для этой команды это нормально — она может не играть неделями."
         lines = ["<b>Ближайшие матчи</b>"]
         for row in rows[:10]:
-            when = fmt.human_time(row["start_utc"], self.config.timezone)
+            when = fmt.human_time(row["start_utc"], self._tz(chat_id))
             lines.append(
                 f"{when} — {fmt.escape(row['opponent_name'])}\n"
                 f"    {fmt.escape(row['event_name'])}\n"

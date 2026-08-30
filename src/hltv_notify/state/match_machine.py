@@ -307,7 +307,10 @@ class MatchMachine:
                 "event_name": observation.event_name or (row["event_name"] if row else ""),
                 "series_team": ours,
                 "series_opponent": theirs,
-                "won": ours > theirs,
+                # None — ничья: BO2 вполне заканчивается 1:1. Булево здесь
+                # означало бы поражение, а получателю за соперника orient
+                # перевернул бы его в победу — про один и тот же результат.
+                "won": None if ours == theirs else ours > theirs,
                 "maps": maps,
                 "url": row["url"] if row else "",
             },

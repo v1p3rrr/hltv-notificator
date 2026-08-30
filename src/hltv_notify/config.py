@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List
 from pathlib import Path
@@ -13,6 +15,11 @@ from .proxy import ProxySettings
 HARD_MIN_REQUEST_INTERVAL_SECONDS = 30.0
 
 HLTV_BASE = "https://www.hltv.org"
+
+log = logging.getLogger(__name__)
+
+# id чата в Telegram — число; у групп и каналов оно отрицательное.
+_CHAT_ID_RE = re.compile(r"^-?\d+$")
 
 
 def _int(name: str, default: int) -> int:
@@ -41,11 +48,17 @@ class Config:
 
     # Telegram
     bot_token: str = field(default_factory=lambda: _str("TELEGRAM_BOT_TOKEN", ""))
+
+    # Кому разрешено пользоваться ботом. ОДНА переменная, id через запятую:
+    #     TELEGRAM_CHAT_ID=123456789,987654321
+    # Первый в списке — основной чат: в него садится команда из TEAM_ID при
+    # первом запуске и уходят сообщения, если подписчиков в базе ещё нет.
+    # По умолчанию список закрытый: у бота публичный адрес, и без него команду
+    # ему сможет отдать кто угодно, кто его найдёт.
     chat_id: str = field(default_factory=lambda: _str("TELEGRAM_CHAT_ID", ""))
 
-    # Кому разрешено пользоваться ботом. По умолчанию — только перечисленные:
-    # у бота публичный адрес, и без белого списка команду ему сможет отдать
-    # кто угодно, кто его найдёт.
+    # Старое имя той же настройки. Оставлено, чтобы обновление не разломало
+    # уже написанные .env; в новых достаточно TELEGRAM_CHAT_ID.
     allowed_chats: str = field(default_factory=lambda: _str("TELEGRAM_ALLOWED_CHATS", ""))
     whitelist_only: bool = field(default_factory=lambda: _bool("TELEGRAM_WHITELIST_ONLY", True))
 
@@ -126,7 +139,7 @@ class Config:
         return max(base, int(HARD_MIN_REQUEST_INTERVAL_SECONDS))
 
     def telegram_enabled(self) -> bool:
-        return bool(self.bot_token and (self.chat_id or self.allowed_chat_ids()))
+        return bool(self.bot_token and self.allowed_chat_ids())
 
     def reminder_minutes(self) -> List[int]:
         values = []
@@ -137,12 +150,36 @@ class Config:
         return sorted(set(values), reverse=True)
 
     def allowed_chat_ids(self) -> List[str]:
-        """Белый список из .env плюс основной чат: он разрешён всегда."""
-        ids = [part.strip() for part in self.allowed_chats.replace(";", ",").split(",")]
-        ids = [part for part in ids if part]
-        if self.chat_id and self.chat_id not in ids:
-            ids.insert(0, self.chat_id)
+        """Разрешённые чаты в порядке объявления, без повторов.
+
+        Источник один — `TELEGRAM_CHAT_ID`, где id перечисляются через запятую
+        (точка с запятой и пробелы тоже принимаются). `TELEGRAM_ALLOWED_CHATS`
+        читается следом: это прежнее имя, оставленное ради уже написанных .env.
+        """
+        ids: List[str] = []
+        for raw in (self.chat_id, self.allowed_chats):
+            for part in raw.replace(";", ",").split(","):
+                part = part.strip()
+                if not part or part in ids:
+                    continue
+                if not _CHAT_ID_RE.match(part):
+                    # Не роняем запуск: остальные id рабочие, а этот всё равно
+                    # ничего не получит — Telegram адресуется числом.
+                    log.warning("в списке чатов пропущено значение %r: "
+                                "нужен числовой id, его подскажет /whoami", part)
+                    continue
+                ids.append(part)
         return ids
+
+    @property
+    def main_chat_id(self) -> str:
+        """Основной чат: первый в списке.
+
+        Он же адресат первого посева команды из TEAM_ID и запасной получатель,
+        пока подписчиков в базе нет.
+        """
+        ids = self.allowed_chat_ids()
+        return ids[0] if ids else ""
 
     def chat_allowed(self, chat_id: str) -> bool:
         if not self.whitelist_only:

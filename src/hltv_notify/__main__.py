@@ -73,20 +73,21 @@ async def run() -> int:
     # остаются только запасным значением.
     # Разово: ключи журнала, записанные до появления подписчиков, получают
     # адресата. Иначе первое же обновление разослало бы историю заново.
-    adopted = storage.adopt_legacy_event_keys(config.chat_id)
+    adopted = storage.adopt_legacy_event_keys(config.main_chat_id)
     if adopted:
         log.info("журнал событий приведён к новому формату: %d записей", adopted)
 
     for chat in config.allowed_chat_ids():
-        if storage.add_subscriber(chat, note="из TELEGRAM_ALLOWED_CHATS"):
+        if storage.add_subscriber(chat, note="из TELEGRAM_CHAT_ID"):
             # Новому подписчику раскладываем напоминания по умолчанию, дальше
             # он правит их сам.
             for minutes in config.reminder_minutes():
                 storage.add_reminder(chat, minutes)
-    if not storage.teams(enabled_only=False) and config.team_id and config.chat_id:
-        storage.add_team(config.chat_id, config.team_id, config.team_slug, config.team_name)
+    main_chat = config.main_chat_id
+    if not storage.teams(enabled_only=False) and config.team_id and main_chat:
+        storage.add_team(main_chat, config.team_id, config.team_slug, config.team_name)
         log.info("первая отслеживаемая команда взята из конфига: %s (id %s) для чата %s",
-                 config.team_name, config.team_id, config.chat_id)
+                 config.team_name, config.team_id, main_chat)
     http = HltvHttp(config)
     telegram: Optional[Telegram] = (
         Telegram(config.bot_token, config.proxies_for(TELEGRAM_API_BASE))
@@ -107,8 +108,8 @@ async def run() -> int:
         missing = []
         if not config.bot_token:
             missing.append("TELEGRAM_BOT_TOKEN")
-        if not config.chat_id and not config.allowed_chat_ids():
-            missing.append("TELEGRAM_CHAT_ID или TELEGRAM_ALLOWED_CHATS")
+        if not config.allowed_chat_ids():
+            missing.append("TELEGRAM_CHAT_ID")
         log.warning("работаем без Telegram: не задано %s", ", ".join(missing))
 
     stop = asyncio.Event()

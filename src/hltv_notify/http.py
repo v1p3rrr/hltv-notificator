@@ -15,7 +15,7 @@ from typing import Optional
 
 from curl_cffi.requests import AsyncSession
 
-from .config import HARD_MIN_REQUEST_INTERVAL_SECONDS, HLTV_BASE, Config
+from .config import HARD_MIN_REQUEST_INTERVAL_SECONDS, Config
 
 log = logging.getLogger(__name__)
 
@@ -44,11 +44,7 @@ class HltvHttp:
 
     async def _ensure_session(self) -> AsyncSession:
         if self._session is None:
-            # Сессия ходит только на HLTV, поэтому прокси выбирается один раз
-            # по базовому адресу — вместе с обходом из NO_PROXY.
-            self._session = AsyncSession(
-                impersonate=self._config.impersonate,
-                proxies=self._config.proxies_for(HLTV_BASE))
+            self._session = AsyncSession(impersonate=self._config.impersonate)
         return self._session
 
     async def close(self) -> None:
@@ -82,7 +78,10 @@ class HltvHttp:
                 session = await self._ensure_session()
                 started = time.monotonic()
                 try:
-                    response = await session.get(url, timeout=timeout)
+                    # Прокси выбирается на КАЖДЫЙ адрес: так исключения из
+                    # NO_PROXY работают точно, а не «по базовому хосту сессии».
+                    response = await session.get(
+                        url, timeout=timeout, proxies=self._config.proxies_for(url))
                 except Exception as exc:  # noqa: BLE001 - сеть, таймаут, TLS
                     last_error = SourceUnavailable(f"{type(exc).__name__}: {exc}")
                     status: object = "-"

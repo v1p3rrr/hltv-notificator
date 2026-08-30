@@ -198,3 +198,62 @@ def test_failed_command_still_answers(bot, monkeypatch):
                         lambda: (_ for _ in ()).throw(RuntimeError("боль")))
     send(command_bot, "/status")
     assert "упала" in telegram.sent[-1][1]
+
+
+# ---------------------------------------------------------------- свой ответ каждому
+
+
+def test_live_names_the_teams_of_that_match(bot):
+    """Имя команды берётся из матча, а не из конфига: отслеживаемых может быть
+    несколько, и значение из .env подошло бы только первой."""
+    command_bot, telegram, storage = bot
+    storage.add_subscriber(CHAT)
+    storage.add_team(CHAT, 4494, "mouz", "MOUZ")
+    storage.link_match_team(MATCH_ID, 4494)
+    send(command_bot, "/live")
+    reply = telegram.sent[-1][1]
+    assert "MOUZ — Color" in reply
+    assert "FORZE Reload" not in reply
+
+
+def test_next_shows_only_your_own_matches(bot):
+    """Аккаунты ведут свои списки команд, и /next не должен показывать чужие."""
+    command_bot, telegram, storage = bot
+    other_chat = "777"
+    storage.add_subscriber(CHAT)
+    storage.add_subscriber(other_chat)
+    storage.add_team(CHAT, 12857, "forze-reload", "FORZE Reload")
+    storage.add_team(other_chat, 4494, "mouz", "MOUZ")
+
+    for match_id, team_id, opponent in ((901, 12857, "Color"), (902, 4494, "Vitality")):
+        storage.upsert_match(
+            match_id=match_id, team_id=team_id, opponent_id=1, opponent_name=opponent,
+            event_name="Major", start_utc=utcnow() + timedelta(hours=1),
+            url=f"https://www.hltv.org/matches/{match_id}/x",
+            snapshot={}, snapshot_hash="h")
+        storage.link_match_team(match_id, team_id)
+
+    send(command_bot, "/next")
+    reply = telegram.sent[-1][1]
+    assert "Color" in reply
+    assert "Vitality" not in reply
+
+
+def test_next_uses_the_personal_timezone(bot):
+    """Уведомления приходят в личном поясе — /next обязан отвечать в нём же,
+    иначе один и тот же матч показан на разном времени."""
+    command_bot, telegram, storage = bot
+    storage.add_subscriber(CHAT)
+    storage.add_team(CHAT, 12857, "forze-reload", "FORZE Reload")
+    storage.upsert_match(
+        match_id=903, team_id=12857, opponent_id=1, opponent_name="Color",
+        event_name="Major",
+        start_utc=utcnow().replace(hour=12, minute=0) + timedelta(days=1),
+        url="https://www.hltv.org/matches/903/x", snapshot={}, snapshot_hash="h")
+    storage.link_match_team(903, 12857)
+
+    send(command_bot, "/next")
+    moscow = telegram.sent[-1][1]
+    storage.set_subscriber_timezone(CHAT, "UTC")
+    send(command_bot, "/next")
+    assert telegram.sent[-1][1] != moscow

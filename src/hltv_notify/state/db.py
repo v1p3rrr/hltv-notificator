@@ -408,12 +408,27 @@ class Storage:
     def canonical_team(self, match_id: int) -> Optional[int]:
         """Команда, от лица которой описывается матч.
 
-        Меньший id из отслеживаемых участников. Выбор произволен, но обязан быть
-        ДЕТЕРМИНИРОВАННЫМ: от него зависит ориентация счёта, а значит и ключ
-        идемпотентности. Без этого матч двух отслеживаемых команд дал бы два
-        зеркальных ключа и два уведомления об одном и том же.
+        Берётся ЗАПОМНЕННАЯ в `matches.team_id` — та, что увидела матч первой.
+        Выбор произволен, но обязан быть не только детерминированным, а ещё и
+        неизменным: от него зависит ориентация счёта, а значит и ключ
+        идемпотентности.
+
+        Раньше здесь возвращался просто меньший id из участников, и это
+        переворачивалось на ровном месте: стоило посреди матча добавить через
+        бота команду с меньшим id — и счёт по уже сыгранным картам менялся
+        местами, а следующие сообщения о том же матче противоречили
+        предыдущим. Защита `COALESCE` в `upsert_match` стояла на столбце,
+        который никто не читал; теперь читает.
+
+        Меньший id остаётся запасным ответом: для матчей, заведённых до
+        появления столбца, и для тех, что попали в базу мимо расписания.
         """
         ids = self.match_team_ids(match_id)
+        row = self.conn.execute(
+            "SELECT team_id FROM matches WHERE match_id = ?", (match_id,)).fetchone()
+        chosen = row["team_id"] if row else None
+        if chosen is not None and (not ids or chosen in ids):
+            return chosen
         return ids[0] if ids else None
 
     # ---------- матчи ----------
@@ -439,6 +454,23 @@ class Storage:
             "SELECT m.match_id FROM matches m "
             "JOIN match_teams t ON t.match_id = m.match_id "
             "WHERE m.missing_since_utc IS NULL AND t.team_id = ?", (team_id,))]
+
+    def visible_match_ids(self, chat_id: str) -> set:
+        """Матчи, которые вправе видеть этот подписчик.
+
+        Нужно для /next и /live: аккаунты ведут свои списки команд, и матчи
+        чужих команд в чужом чате — лишнее. Матч, ещё не связанный ни с одной
+        командой, виден всем: спрятать его значило бы потерять совсем.
+        """
+        mine = {row["match_id"] for row in self.conn.execute(
+            "SELECT DISTINCT mt.match_id FROM match_teams mt "
+            "JOIN teams t ON t.team_id = mt.team_id "
+            "WHERE t.chat_id = ? AND t.enabled = 1", (str(chat_id),))}
+        unlinked = {row["match_id"] for row in self.conn.execute(
+            "SELECT m.match_id FROM matches m "
+            "LEFT JOIN match_teams mt ON mt.match_id = m.match_id "
+            "WHERE mt.team_id IS NULL")}
+        return mine | unlinked
 
     def upcoming_matches(self, now: Optional[datetime] = None) -> List[sqlite3.Row]:
         now = now or utcnow()

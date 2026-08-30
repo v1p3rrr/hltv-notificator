@@ -150,6 +150,42 @@ def test_pause_covers_service_alerts_too(store, config):
     assert {row["chat_id"] for row in store.due_outbox(limit=50)} == {ILYA}
 
 
+def test_pause_covers_the_live_score_message(store, config):
+    """Живое сообщение — тоже уведомление.
+
+    Оно идёт мимо очереди, своим путём, и когда-то этот путь про паузу не
+    знал: попросивший тишины продолжал получать счёт по ходу карты.
+    """
+    import asyncio
+
+    from hltv_notify.notify.live_message import LiveMessenger
+
+    add_match(store)
+    store.set_subscriber_paused(FRIEND, True)
+
+    class FakeTelegram:
+        def __init__(self):
+            self.sent = []
+
+        async def send_message(self, chat_id, text, reply_markup=None):
+            self.sent.append(chat_id)
+            return len(self.sent)
+
+        async def edit_message_text(self, *args, **kwargs):
+            pass
+
+    telegram = FakeTelegram()
+    messenger = LiveMessenger(store, Config(chat_id=ILYA, allowed_chats="222",
+                                            bot_token="t", dry_run=False), telegram)
+    snapshot = {"map_number": 1, "map_name": "Mirage", "score_team": 5,
+                "score_opponent": 3, "round": 9, "round_state": "started",
+                "series_team": 0, "series_opponent": 0, "opponent": "Color",
+                "team_name": "FORZE Reload", "team_id": TEAM, "opponent_id": 1,
+                "event_name": "GLuck", "url": "u"}
+    asyncio.run(messenger.update(MATCH, snapshot, force=True))
+    assert telegram.sent == [ILYA]
+
+
 # ---------------------------------------------------------------- часовой пояс
 
 

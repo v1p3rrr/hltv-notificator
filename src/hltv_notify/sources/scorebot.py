@@ -32,6 +32,8 @@ from typing import List, Optional, Tuple
 
 from curl_cffi.requests import AsyncSession
 
+from ..proxy import ProxySettings
+
 log = logging.getLogger(__name__)
 
 SCOREBOT_BASE = "https://scorebot-lb.hltv.org/socket.io/"
@@ -208,12 +210,14 @@ class ScorebotClient:
 
     def __init__(self, match_id: int, *, referer: Optional[str] = None,
                  impersonate: str = "chrome",
-                 proxies: Optional[dict] = None):
+                 proxy: Optional[ProxySettings] = None):
         self.match_id = str(match_id)
         self.referer = referer
         self._impersonate = impersonate
-        # Тот же прокси, что и у опроса страниц: фид живёт на поддомене hltv.org.
-        self._proxies = dict(proxies or {})
+        # Настройки прокси, а не готовый словарь: клиент ходит на ДВА хоста —
+        # scorebot-lb.hltv.org и страницу матча для прогрева, — и исключение из
+        # NO_PROXY может касаться только одного из них.
+        self._proxy = proxy or ProxySettings()
         self._session: Optional[AsyncSession] = None
         self.sid: Optional[str] = None
         self.ping_interval = 25.0
@@ -244,18 +248,19 @@ class ScorebotClient:
             raise FeedUnavailable(f"HTTP {response.status_code}")
 
     async def connect(self) -> None:
-        self._session = AsyncSession(impersonate=self._impersonate,
-                                     proxies=self._proxies)
+        self._session = AsyncSession(impersonate=self._impersonate)
         # Прогрев: страница матча ставит куки Cloudflare на .hltv.org.
         if self.referer:
             try:
-                await self._session.get(self.referer, timeout=30)
+                await self._session.get(self.referer, timeout=30,
+                                        proxies=self._proxy.for_url(self.referer))
             except Exception as exc:  # noqa: BLE001 - прогрев не обязателен
                 log.debug("прогрев сессии не удался: %s", exc)
 
         try:
-            response = await self._session.get(self._url(with_sid=False),
-                                               headers=self._headers, timeout=30)
+            url = self._url(with_sid=False)
+            response = await self._session.get(url, headers=self._headers, timeout=30,
+                                               proxies=self._proxy.for_url(url))
         except Exception as exc:  # noqa: BLE001 - сеть
             raise FeedUnavailable(f"{type(exc).__name__}: {exc}") from exc
         self._check(response)
@@ -291,10 +296,11 @@ class ScorebotClient:
     async def _send(self, packet: str) -> None:
         assert self._session is not None
         try:
+            url = self._url()
             response = await self._session.post(
-                self._url(), data=f"{len(packet)}:{packet}",
+                url, data=f"{len(packet)}:{packet}",
                 headers={**self._headers, "Content-Type": "text/plain;charset=UTF-8"},
-                timeout=30)
+                timeout=30, proxies=self._proxy.for_url(url))
         except Exception as exc:  # noqa: BLE001 - сеть
             raise FeedUnavailable(f"{type(exc).__name__}: {exc}") from exc
         self._check(response)
@@ -305,8 +311,10 @@ class ScorebotClient:
             await self._send("2")
             self._last_ping = time.time()
         try:
-            response = await self._session.get(self._url(), headers=self._headers,
-                                               timeout=timeout)
+            url = self._url()
+            response = await self._session.get(url, headers=self._headers,
+                                               timeout=timeout,
+                                               proxies=self._proxy.for_url(url))
         except Exception as exc:  # noqa: BLE001 - сеть
             if "timed out" in str(exc).lower() or type(exc).__name__ == "Timeout":
                 raise FeedIdle("long-poll без данных") from exc

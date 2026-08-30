@@ -138,3 +138,28 @@ def test_config_without_proxy_env(monkeypatch):
                  "HTTPS_PROXY", "https_proxy"):
         monkeypatch.delenv(name, raising=False)
     assert Config().proxies_for(HLTV) == {}
+
+
+# ---------------------------------------------------------------- по направлениям
+
+
+def test_no_proxy_splits_the_directions():
+    """Единственный способ развести направления: HLTV через прокси, Telegram
+    напрямую (или наоборот). Отдельных переменных для этого нет намеренно."""
+    from hltv_notify.notify.telegram import API_BASE
+    from hltv_notify.sources.scorebot import SCOREBOT_BASE
+
+    s = settings(ALL_PROXY="socks5h://p:20170", NO_PROXY="api.telegram.org")
+    assert s.for_url(HLTV) == {"all": "socks5h://p:20170"}
+    assert s.for_url(SCOREBOT_BASE) == {"all": "socks5h://p:20170"}
+    assert s.for_url(API_BASE) == {"all": ""}
+
+
+def test_feed_and_its_warmup_are_decided_separately():
+    """Клиент фида ходит на ДВА хоста: сам фид и страницу матча для прогрева.
+    Исключение может касаться только одного из них."""
+    from hltv_notify.sources.scorebot import SCOREBOT_BASE
+
+    s = settings(ALL_PROXY="socks5h://p:1", NO_PROXY="scorebot-lb.hltv.org")
+    assert s.for_url(SCOREBOT_BASE) == {"all": ""}
+    assert s.for_url("https://www.hltv.org/matches/1/x") == {"all": "socks5h://p:1"}

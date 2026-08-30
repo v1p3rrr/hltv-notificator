@@ -198,7 +198,8 @@ def render(event: Event, *, team_name: str, tz_name: str,
     if event.type == "E7":
         ours = payload.get("series_team", 0)
         theirs = payload.get("series_opponent", 0)
-        icon = "🏆" if payload.get("won") else "💀"
+        won = payload.get("won")
+        icon = "🤝" if won is None else ("🏆" if won else "💀")
         lines = [
             f"{icon} <b>Матч завершён</b>",
             f"<b>{team} {ours}:{theirs} {opponent}</b>",

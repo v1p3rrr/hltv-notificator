@@ -17,6 +17,7 @@ from typing import Dict, Optional, Tuple
 
 from ..config import Config
 from ..state.db import Storage
+from . import audience
 from . import format as fmt
 from .telegram import Telegram, TelegramError
 
@@ -53,17 +54,14 @@ class LiveMessenger:
                                    force=force, finalize=finalize)
 
     def _recipients(self, match_id: int):
-        subscribers = self.storage.subscriber_ids()
-        if not subscribers:
-            return [(self.config.chat_id, None)]
-        teams = self.storage.match_team_ids(match_id)
-        if not teams:
-            return [(self.config.chat_id, None)]
-        by_chat = {}
-        for team_id in teams:
-            for chat in self.storage.subscribers_tracking(team_id):
-                by_chat.setdefault(chat, team_id)
-        return list(by_chat.items())
+        """Тот же расчёт, что и у очереди событий, — и та же проверка паузы.
+
+        Своего расчёта здесь когда-то и не хватало: живое сообщение уходило
+        человеку, попросившему тишины через `/pause`.
+        """
+        return [(chat, teams[0] if teams else None)
+                for chat, teams in audience.match_audience(
+                    self.storage, self.config, match_id)]
 
     async def _update_one(self, chat_id: str, for_team_id, match_id: int, snapshot: dict,
                           *, force: bool = False, finalize: bool = False) -> None:

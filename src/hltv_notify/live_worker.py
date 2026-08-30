@@ -20,9 +20,8 @@ from .config import Config
 from .models import Event
 from .notify.live_message import LiveMessenger
 from .notify.outbox import Notifier
-from .sources.scorebot import (SCOREBOT_BASE, FeedIdle, FeedRejected,
-                               FeedUnavailable, ScorebotClient,
-                               frames_from_packets)
+from .sources.scorebot import (FeedIdle, FeedRejected, FeedUnavailable,
+                               ScorebotClient, frames_from_packets)
 from .state.db import Storage, utcnow
 from .state.live_machine import LiveMachine
 
@@ -55,7 +54,7 @@ class LiveWorker:
             client = ScorebotClient(
                 self.match_id, referer=self.url,
                 impersonate=self.config.impersonate,
-                proxies=self.config.proxies_for(SCOREBOT_BASE))
+                proxy=self.config.proxy)
             try:
                 await client.connect()
                 await client.subscribe()

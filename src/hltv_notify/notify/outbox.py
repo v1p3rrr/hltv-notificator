@@ -13,6 +13,7 @@ from typing import Optional
 from ..config import Config
 from ..models import Event
 from ..state.db import Storage
+from . import audience
 from . import format as fmt
 from .telegram import Telegram, TelegramError
 
@@ -63,60 +64,41 @@ class Notifier:
     def _recipients(self, event: Event):
         """Кому это событие адресовано и от лица какой команды показывать.
 
+        Кто вообще на связи, решает `audience` — там же и проверка паузы.
+        Здесь остаётся то, что знает только очередь: адресные события и
+        глушение по типам.
+
         Правило для матча двух отслеживаемых команд: событие уходит
         подписчику, если ХОТЯ БЫ ОДНА из его команд в этом матче не заглушила
         такой тип. Иначе одна команда молча глушила бы уведомления про другую.
         """
-        subscribers = [chat for chat in self.storage.subscriber_ids()
-                       if not self.storage.subscriber_paused(chat)]
+        if event.match_id is None:
+            rows = audience.service_audience(self.storage, self.config)
+        else:
+            teams = self.storage.match_team_ids(event.match_id)
+            player_team = event.payload.get("team_id")
+            if event.type == "E9" and player_team:
+                # Мультикилл адресован тем, кто следит за командой ЭТОГО игрока.
+                teams = [player_team]
+            rows = audience.match_audience(self.storage, self.config,
+                                           event.match_id, teams=teams)
+
         only_chat = event.payload.get("only_chat")
         if only_chat is not None:
             # Адресное событие (напоминание): интервалы у подписчиков разные,
             # и рассылать его всем участникам матча нельзя.
-            if only_chat not in subscribers:
+            if only_chat not in audience.active_subscribers(self.storage):
                 return []
-            subscribers = [only_chat]
-
-        if not subscribers:
-            # Одиночный режим: подписчиков нет — шлём в чат из конфига. Если
-            # же все на паузе, молчим: это и есть смысл паузы.
-            if self.storage.subscribers():
-                return []
-            return [(self.config.chat_id, None)]
-
-        if event.match_id is None:
-            # Служебное (деградация, восстановление) — всем: их касается
-            # то, что сервис ослеп, независимо от команд.
-            return [(chat, None) for chat in subscribers]
-
-        teams = self.storage.match_team_ids(event.match_id)
-        player_team = event.payload.get("team_id")
-        if event.type == "E9" and player_team:
-            # Мультикилл адресован тем, кто следит за командой ЭТОГО игрока.
-            teams = [player_team]
-        if not teams:
-            return [(self.config.chat_id, None)]
-
-        # ВАЖНО: сверяемся с уже отфильтрованным списком. subscribers_tracking
-        # ходит в базу отдельным запросом и про паузу ничего не знает — без
-        # этой проверки поставленный на паузу получал бы все матчевые события.
-        allowed = set(subscribers)
-        by_chat = {}
-        for team_id in teams:
-            for chat in self.storage.subscribers_tracking(team_id):
-                if chat not in allowed:
-                    continue
-                by_chat.setdefault(chat, []).append(team_id)
-
-        if only_chat is not None:
-            by_chat = {chat: teams for chat, teams in by_chat.items() if chat == only_chat}
-            if not by_chat:
-                # Матч ещё не связан с командами — напоминание всё равно
-                # адресное, показываем его от лица матча.
-                return [(only_chat, None)]
+            mine = [(chat, their) for chat, their in rows if chat == only_chat]
+            # Матч может быть ещё не связан с командами — напоминание всё
+            # равно адресное, показываем его от лица матча.
+            rows = mine or [(only_chat, [])]
 
         recipients = []
-        for chat, their_teams in by_chat.items():
+        for chat, their_teams in rows:
+            if not their_teams:
+                recipients.append((chat, None))
+                continue
             wanted = [team_id for team_id in their_teams
                       if event.type not in self.storage.team_mutes(chat, team_id)]
             if not wanted:
@@ -149,7 +131,7 @@ class Notifier:
             return
 
         attempts = row["attempts"] + 1
-        chat_id = row["chat_id"] or self.config.chat_id
+        chat_id = row["chat_id"] or self.config.main_chat_id
         try:
             message_id = await self.telegram.send_message(chat_id, row["body"])
         except TelegramError as exc:
