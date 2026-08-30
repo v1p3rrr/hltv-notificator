@@ -1,9 +1,10 @@
 CHAT = "555"
 
-"""Дедупликация — жёсткое требование ТЗ, а не пожелание.
+"""Deduplication is a hard requirement of the spec, not a nice-to-have.
 
-Защита стоит на уникальном индексе sent_events.idempotency_key: вставка либо
-проходит, либо нет. Отдельный запрос «есть ли уже такое» был бы гонкой.
+The protection sits on the unique index sent_events.idempotency_key: an insert
+either goes through or does not. A separate "is it already there" query would
+be a race.
 """
 
 import asyncio
@@ -33,8 +34,8 @@ def test_same_event_enqueued_twice_is_sent_once(storage, config):
 
 
 def test_replaying_whole_schedule_twice_changes_nothing(storage, config):
-    """Прогон одного и того же наблюдения дважды подряд не меняет число
-    уведомлений — тот же сценарий, что реконнект живого фида на этапе 4."""
+    """Replaying the same observation twice in a row does not change the
+    notification count — the same scenario as a live-feed reconnect."""
     storage.add_team(CHAT, TEAM_ID, 'forze-reload', 'FORZE Reload')
     machine = ScheduleMachine(storage, config)
     n = notifier(storage, config)
@@ -50,8 +51,8 @@ def test_replaying_whole_schedule_twice_changes_nothing(storage, config):
 
 
 def test_restart_does_not_resend(tmp_path, config):
-    """Рестарт сервиса не должен пересылать уже отправленное: журнал живёт
-    в той же базе, что и состояние."""
+    """A service restart must not resend what was already sent: the journal
+    lives in the same database as the state."""
     from hltv_notify.state.db import Storage
 
     path = tmp_path / "restart.db"
@@ -77,15 +78,15 @@ def test_restart_does_not_resend(tmp_path, config):
 def test_dry_run_marks_sent_without_telegram(storage, config, caplog):
     n = notifier(storage, config)
     n.enqueue(Event(type="E8", idempotency_key="E8:test:1", match_id=None,
-                    payload={"reason": "проверка", "detail": "деталь"}))
+                    payload={"reason": "check", "detail": "detail"}))
     assert storage.pending_count() == 1
     asyncio.run(n._drain())
     assert storage.pending_count() == 0
 
 
 def test_event_and_queue_row_are_written_atomically(storage, config):
-    """Если журнал записан, а очередь нет — уведомление потеряно навсегда,
-    потому что повторно оно уже не родится."""
+    """If the journal is written and the queue is not, the notification is
+    lost forever, because it will never be born a second time."""
     n = notifier(storage, config)
     n.enqueue(Event(type="E1", idempotency_key="E1:7:new", match_id=7,
                     payload={"opponent": "X", "event_name": "E",
@@ -95,11 +96,11 @@ def test_event_and_queue_row_are_written_atomically(storage, config):
     assert storage.sent_event_count() == 1
 
 
-# ---------------------------------------------------------------- остановка
+# ---------------------------------------------------------------- shutdown
 
 
 class SlowTelegram:
-    """Отправляет медленно — чтобы дедлайн последнего прохода был осязаем."""
+    """Sends slowly, so the final pass's deadline is tangible."""
 
     def __init__(self, delay=0.0):
         self.delay = delay
@@ -119,11 +120,11 @@ def pending_event(number: int) -> Event:
 
 
 def test_stop_flushes_what_was_already_decided(storage, config):
-    """На остановке очередь дописывает начатое.
+    """On shutdown the queue finishes what it started.
 
-    Событие могло родиться секунду назад — конец карты у матча, доигравшегося
-    прямо во время рестарта. Без последнего прохода оно пролежало бы до
-    следующего запуска, когда уведомление уже никому не нужно.
+    An event may have been born a second ago — the end of a map in a match
+    that finished right during the restart. Without the final pass it would sit
+    there until the next start, by which time nobody needs the notification.
     """
     from dataclasses import replace
 
@@ -134,7 +135,7 @@ def test_stop_flushes_what_was_already_decided(storage, config):
     assert storage.pending_count() == 1
 
     stop = asyncio.Event()
-    stop.set()                      # останов пришёл раньше, чем воркер проснулся
+    stop.set()                      # the stop arrived before the worker woke up
     asyncio.run(live.run(stop))
 
     assert telegram.sent == [CHAT]
@@ -142,9 +143,9 @@ def test_stop_flushes_what_was_already_decided(storage, config):
 
 
 def test_final_pass_respects_its_deadline(storage, config):
-    """Дедлайн важнее полноты: за нами SIGKILL, и лучше отправить сколько
-    успели, чем быть убитыми посреди записи. Остаток уйдёт при следующем
-    запуске — он никуда из очереди не делся."""
+    """The deadline outranks completeness: SIGKILL is right behind us, and
+    sending what we managed beats being killed mid-write. The remainder goes
+    out on the next start — it has not left the queue."""
     from dataclasses import replace
 
     from hltv_notify.notify import outbox as outbox_module
@@ -156,7 +157,7 @@ def test_final_pass_respects_its_deadline(storage, config):
         live.enqueue(pending_event(number))
 
     original = outbox_module.FINAL_DRAIN_SECONDS
-    outbox_module.FINAL_DRAIN_SECONDS = 0.0      # времени не отпущено вовсе
+    outbox_module.FINAL_DRAIN_SECONDS = 0.0      # no time granted at all
     try:
         stop = asyncio.Event()
         stop.set()
@@ -165,4 +166,4 @@ def test_final_pass_respects_its_deadline(storage, config):
         outbox_module.FINAL_DRAIN_SECONDS = original
 
     assert telegram.sent == []
-    assert storage.pending_count() == 3          # ничего не потеряно
+    assert storage.pending_count() == 3          # nothing was lost

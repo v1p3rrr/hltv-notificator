@@ -1,12 +1,12 @@
-"""Живое сообщение со счётом: одно на карту, обновляется по ходу игры.
+"""The live score message: one per map, updated as the game goes on.
 
-Это НЕ событие. У него нет ключа идемпотентности и его не надо досылать после
-рестарта — его надо перерисовать текущим состоянием. Поэтому оно идёт мимо
-outbox: очередь существует, чтобы не терять вехи, а устаревший кадр счёта
-терять как раз можно и нужно.
+This is NOT an event. It has no idempotency key and does not need re-delivery
+after a restart — it needs redrawing with the current state. That is why it
+goes around the outbox: the queue exists so that milestones are never lost,
+whereas a stale score frame is exactly what may and should be dropped.
 
-Id сообщения хранится в базе, иначе после перезапуска сервис завёл бы на ту же
-карту второе живое сообщение.
+The message id is kept in the database, otherwise after a restart the service
+would start a second live message for the same map.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from .telegram import Telegram, TelegramError
 
 log = logging.getLogger(__name__)
 
-# Telegram не любит частых правок. Даже если конфиг просит чаще — не даём.
+# Telegram dislikes frequent edits. Even if the config asks for more, we refuse.
 HARD_MIN_EDIT_SECONDS = 5.0
 
 
@@ -32,8 +32,8 @@ class LiveMessenger:
         self.storage = storage
         self.config = config
         self.telegram = telegram
-        # Момент последней правки держим в памяти: смысл в ограничении частоты
-        # обращений к Telegram, а не в переживании рестарта.
+        # The time of the last edit is kept in memory: the point is to limit
+        # how often we call Telegram, not to survive a restart.
         self._last_edit: Dict[Tuple[int, int], float] = {}
 
     @property
@@ -42,10 +42,10 @@ class LiveMessenger:
 
     async def update(self, match_id: int, snapshot: dict, *, force: bool = False,
                      finalize: bool = False) -> None:
-        """Живое сообщение — у каждого подписчика своё.
+        """The live message is per subscriber.
 
-        Оно редактируется, а id сообщения свой в каждом чате, поэтому общего
-        сообщения на всех быть не может.
+        It is edited in place and the message id differs per chat, so there
+        cannot be one shared message for everyone.
         """
         if not self.config.live_message or not snapshot:
             return
@@ -54,10 +54,10 @@ class LiveMessenger:
                                    force=force, finalize=finalize)
 
     def _recipients(self, match_id: int):
-        """Тот же расчёт, что и у очереди событий, — и та же проверка паузы.
+        """The same computation as the event queue's — and the same pause check.
 
-        Своего расчёта здесь когда-то и не хватало: живое сообщение уходило
-        человеку, попросившему тишины через `/pause`.
+        Having its own computation here is exactly what was missing: the live
+        message used to reach someone who had asked for quiet with `/pause`.
         """
         return [(chat, teams[0] if teams else None)
                 for chat, teams in audience.match_audience(
@@ -82,27 +82,28 @@ class LiveMessenger:
         text = fmt.render_live(fmt.orient(snapshot, for_team_id),
                                team_name=self.config.team_name)
         if row is not None and row["last_text"] == text and not finalize:
-            # Счёт не изменился — правка тем же текстом только тратит лимит.
+            # The score has not changed — an edit with the same text only
+            # spends the rate limit.
             self._last_edit[key] = time.monotonic()
             return
 
         message_id = row["telegram_message_id"] if row is not None else None
         if self.config.dry_run or self.telegram is None:
-            reason = "DRY_RUN" if self.config.dry_run else "Telegram не настроен"
-            log.debug("[%s] живое сообщение матча %s карта %d:\n%s",
+            reason = "DRY_RUN" if self.config.dry_run else "Telegram not configured"
+            log.debug("[%s] live message for match %s map %d:\n%s",
                       reason, match_id, map_number, text)
         else:
             try:
                 if message_id is None:
                     message_id = await self.telegram.send_message(chat_id, text)
-                    log.info("живое сообщение матча %s карта %d создано для %s (id %s)",
+                    log.info("live message for match %s map %d created for %s (id %s)",
                              match_id, map_number, chat_id, message_id)
                 else:
                     await self.telegram.edit_message_text(chat_id, message_id, text)
             except TelegramError as exc:
-                # Живое сообщение — вспомогательное. Если оно не обновилось,
-                # ронять из-за этого воркер и терять вехи нельзя.
-                log.warning("живое сообщение матча %s карта %d не обновилось: %s",
+                # The live message is auxiliary. Bringing the worker down over
+                # it and losing milestones is not acceptable.
+                log.warning("live message for match %s map %d was not updated: %s",
                             match_id, map_number, exc)
                 self._last_edit[key] = time.monotonic()
                 return
@@ -113,5 +114,5 @@ class LiveMessenger:
             text=text, finalized=finalize)
 
     async def finalize(self, match_id: int, snapshot: dict) -> None:
-        """Последняя правка по окончании карты: замораживаем финальный счёт."""
+        """The last edit once the map is over: freeze the final score."""
         await self.update(match_id, snapshot, force=True, finalize=True)

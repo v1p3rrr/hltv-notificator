@@ -1,8 +1,9 @@
-"""Точка входа: поднимает задачи и корректно их гасит.
+"""Entry point: brings the tasks up and shuts them down cleanly.
 
-Один процесс, один пользователь. Компоненты не вызывают друг друга напрямую:
-опрос пишет наблюдения, машина состояний рождает события, нотификатор
-отправляет. Дедупликация живёт в одном месте, а не размазана по коду.
+One process, one user. The components do not call each other directly: polling
+records observations, the state machine gives birth to events, the notifier
+sends them. Deduplication lives in one place rather than being smeared across
+the code.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ log = logging.getLogger("hltv_notify")
 
 
 def load_dotenv(path: Path) -> None:
-    """Секреты — только из окружения или .env вне репозитория."""
+    """Secrets come only from the environment or from a .env outside the repo."""
     if not path.exists():
         return
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -43,24 +44,24 @@ def load_dotenv(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
-# Сколько ждём, пока очередь допишет уже решённое к отправке. Меньше, чем
-# stop_grace_period в compose (15s): за ним докер присылает SIGKILL, и не
-# успеть дописаться лучше, чем быть убитым посреди записи.
+# How long we wait for the queue to finish writing out what has already been
+# decided. Less than stop_grace_period in compose (15s): after that Docker
+# sends SIGKILL, and failing to finish is better than being killed mid-write.
 SHUTDOWN_DRAIN_SECONDS = 8.0
 
 
 def _revoke_removed_subscribers(storage, config) -> None:
-    """Убрать из рассылки тех, кого больше нет в белом списке.
+    """Take those no longer on the whitelist out of the mailing.
 
-    Белый список закрывал только ВХОД: команды и кнопки. Доставка шла по
-    таблице подписчиков, а она про конфиг ничего не знает и строки из неё
-    никогда не удаляются. Поэтому убрать чат из TELEGRAM_CHAT_ID значило
-    отобрать управление ботом, но не отписать от уведомлений — и починить это
-    можно было только руками в базе.
+    The whitelist only closed the WAY IN: commands and buttons. Delivery went
+    by the subscribers table, which knows nothing about the config and whose
+    rows are never deleted. So removing a chat from TELEGRAM_CHAT_ID meant
+    taking away control of the bot but not unsubscribing them from
+    notifications — and the only fix was editing the database by hand.
 
-    В открытом режиме (TELEGRAM_WHITELIST_ONLY=false) не трогаем ничего: там
-    списка попросту нет. Пустой список тоже не повод разотписывать всех — это
-    почти наверняка недозаполненный .env, а не намерение.
+    In open mode (TELEGRAM_WHITELIST_ONLY=false) nothing is touched: there is
+    no list there at all. An empty list is not a reason to unsubscribe everyone
+    either — that is almost certainly an unfinished .env rather than an intent.
     """
     if not config.whitelist_only:
         return
@@ -71,28 +72,30 @@ def _revoke_removed_subscribers(storage, config) -> None:
         chat = row["chat_id"]
         if chat not in allowed:
             storage.set_subscriber_enabled(chat, False)
-            log.warning("чат %s больше не в TELEGRAM_CHAT_ID — уведомления ему "
-                        "отключены", chat)
+            log.warning("chat %s is no longer in TELEGRAM_CHAT_ID — notifications "
+                        "to it are switched off", chat)
 
 
 def _warn_about_retired_variables(config) -> None:
-    """Убранные переменные обязаны сообщать о себе.
+    """Retired variables are obliged to announce themselves.
 
-    `TELEGRAM_ALLOWED_CHATS` больше не читается — id перечисляются в
-    `TELEGRAM_CHAT_ID` через запятую. Промолчать здесь нельзя: если весь список
-    был в старой переменной, белый список окажется пустым, и бот перестанет
-    отвечать вообще кому-либо. Снаружи это выглядит как «бот умер».
+    `TELEGRAM_ALLOWED_CHATS` is no longer read — ids are listed in
+    `TELEGRAM_CHAT_ID` separated by commas. Staying quiet here is not an
+    option: if the whole list lived in the old variable, the whitelist ends up
+    empty and the bot stops answering anyone at all. From the outside that
+    looks like "the bot died".
     """
     if not os.environ.get("TELEGRAM_ALLOWED_CHATS", "").strip():
         return
-    known = ", ".join(config.allowed_chat_ids()) or "СПИСОК ПУСТ"
-    log.warning("TELEGRAM_ALLOWED_CHATS больше не читается: перенесите id в "
-                "TELEGRAM_CHAT_ID через запятую. Сейчас разрешены: %s", known)
+    known = ", ".join(config.allowed_chat_ids()) or "THE LIST IS EMPTY"
+    log.warning("TELEGRAM_ALLOWED_CHATS is no longer read: move the ids into "
+                "TELEGRAM_CHAT_ID, separated by commas. Currently allowed: %s", known)
 
 
 def setup_logging(level: str) -> None:
-    # Логи и сообщения на русском: под Windows консоль по умолчанию cp1252,
-    # и первая же кириллическая строка уронила бы обработчик логов.
+    # Log lines can carry non-ASCII (team names, player nicknames): on Windows
+    # the console defaults to cp1252 and the first such line would bring the
+    # logging handler down.
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
@@ -117,19 +120,19 @@ async def run() -> int:
     _warn_about_retired_variables(config)
 
     storage = Storage(config.db_path)
-    # Первый посев: команда из .env становится первой отслеживаемой. Дальше
-    # список живёт в базе и правится через бота, а переменные окружения
-    # остаются только запасным значением.
-    # Разово: ключи журнала, записанные до появления подписчиков, получают
-    # адресата. Иначе первое же обновление разослало бы историю заново.
+    # The first seed: the team from .env becomes the first tracked one. After
+    # that the list lives in the database and is edited through the bot, and
+    # the environment variables remain only a fallback.
+    # One-off: journal keys written before subscribers existed get a recipient.
+    # Otherwise the very first upgrade would send the whole history again.
     adopted = storage.adopt_legacy_event_keys(config.main_chat_id)
     if adopted:
-        log.info("журнал событий приведён к новому формату: %d записей", adopted)
+        log.info("event journal converted to the new format: %d records", adopted)
 
     for chat in config.allowed_chat_ids():
-        if storage.add_subscriber(chat, note="из TELEGRAM_CHAT_ID"):
-            # Новому подписчику раскладываем напоминания по умолчанию, дальше
-            # он правит их сам.
+        if storage.add_subscriber(chat, note="from TELEGRAM_CHAT_ID"):
+            # A new subscriber gets the default reminders; after that they edit
+            # them themselves.
             for minutes in config.reminder_minutes():
                 storage.add_reminder(chat, minutes)
     main_chat = config.main_chat_id
@@ -137,7 +140,7 @@ async def run() -> int:
 
     if not storage.teams(enabled_only=False) and config.team_id and main_chat:
         storage.add_team(main_chat, config.team_id, config.team_slug, config.team_name)
-        log.info("первая отслеживаемая команда взята из конфига: %s (id %s) для чата %s",
+        log.info("first tracked team taken from the config: %s (id %s) for chat %s",
                  config.team_name, config.team_id, main_chat)
     http = HltvHttp(config)
     telegram: Optional[Telegram] = (
@@ -150,10 +153,10 @@ async def run() -> int:
     matches = MatchPoller(storage, config, http, notifier, supervisor)
 
     if config.dry_run:
-        log.warning("DRY_RUN включён: уведомления пишутся в лог, в Telegram не уходят")
+        log.warning("DRY_RUN is on: notifications go to the log, not to Telegram")
     if config.proxy.configured:
-        # Печатаем всегда, когда прокси есть: молчаливый прокси — это полчаса
-        # разглядывания таймаутов на ровном месте.
+        # Always printed when a proxy is set: a silent proxy is half an hour of
+        # staring at timeouts for no reason.
         log.info("%s", config.proxy.describe())
     if telegram is None:
         missing = []
@@ -161,15 +164,15 @@ async def run() -> int:
             missing.append("TELEGRAM_BOT_TOKEN")
         if not config.allowed_chat_ids():
             missing.append("TELEGRAM_CHAT_ID")
-        log.warning("работаем без Telegram: не задано %s", ", ".join(missing))
+        log.warning("running without Telegram: %s is not set", ", ".join(missing))
 
     stop = asyncio.Event()
     _install_signal_handlers(stop)
 
     watchdog = Watchdog(storage, config)
     reminders = ReminderScheduler(storage, config)
-    # Очередь держим отдельно: при остановке её нельзя рвать наравне с
-    # остальными, см. ниже.
+    # The queue is kept separate: on shutdown it must not be torn down along
+    # with the rest, see below.
     outbox = asyncio.create_task(notifier.run(stop), name="outbox")
     tasks: List[asyncio.Task] = [
         asyncio.create_task(reminders.run(stop, notifier), name="reminders"),
@@ -182,36 +185,38 @@ async def run() -> int:
         bot = CommandBot(storage, config, telegram, poller, matches, http)
         tasks.append(asyncio.create_task(bot.run(stop), name="command-bot"))
 
-    log.info("сервис запущен: подписчиков %d, команд под наблюдением %d (%s), "
-             "режим отправки %s",
+    log.info("service started: %d subscriber(s), %d team(s) watched (%s), "
+             "sending mode %s",
              len(storage.subscribers()), len(storage.tracked_teams()),
-             ", ".join(row["name"] for row in storage.tracked_teams()) or "нет",
-             "dry-run" if config.dry_run else "боевой")
+             ", ".join(row["name"] for row in storage.tracked_teams()) or "none",
+             "dry-run" if config.dry_run else "live")
 
     try:
         await stop.wait()
     except (KeyboardInterrupt, asyncio.CancelledError):
         stop.set()
 
-    log.info("останавливаемся")
-    # Всех, кроме очереди, гасим сразу: они только порождают новое, а нового
-    # нам уже не надо. Бот при этом висит в getUpdates до 25 секунд — ждать его
-    # мы не можем, у докера свой таймер.
+    log.info("shutting down")
+    # Everything except the queue is stopped at once: those only produce new
+    # work, and new work is no longer wanted. The bot meanwhile sits in
+    # getUpdates for up to 25 seconds — we cannot wait for it, Docker has its
+    # own timer.
     others = [task for task in tasks if task is not outbox]
     for task in others:
         task.cancel()
     await asyncio.gather(*others, return_exceptions=True)
     await supervisor.shutdown()
 
-    # А очередь дописывает начатое сама и по своей воле выходит: stop уже
-    # взведён. Рвать её отменой нельзя — отмена посреди send_message оставила бы
-    # сообщение ОТПРАВЛЕННЫМ, но не отмеченным в базе, и при следующем запуске
-    # оно ушло бы человеку второй раз.
+    # The queue, on the other hand, finishes what it started and exits of its
+    # own accord: stop is already set. Tearing it down with a cancel is not
+    # allowed — a cancel in the middle of send_message would leave the message
+    # SENT but not marked in the database, and on the next start it would go to
+    # the person a second time.
     try:
         await asyncio.wait_for(outbox, timeout=SHUTDOWN_DRAIN_SECONDS)
     except asyncio.TimeoutError:
-        log.warning("очередь не успела дописаться за %.0f с; остаток (%d) уйдёт "
-                    "при следующем запуске", SHUTDOWN_DRAIN_SECONDS,
+        log.warning("the queue did not finish within %.0f s; the remainder (%d) will "
+                    "go out on the next start", SHUTDOWN_DRAIN_SECONDS,
                     storage.pending_count())
     except asyncio.CancelledError:
         pass
@@ -233,41 +238,43 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
         try:
             loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:
-            # Windows: сигналы через loop не ставятся, останов идёт по Ctrl+C.
+            # Windows: signal handlers cannot be installed on the loop, so
+            # stopping goes through Ctrl+C.
             pass
 
 
 def health(config_module_=None) -> int:
-    """Проверка живости для Docker HEALTHCHECK.
+    """The liveness check for Docker's HEALTHCHECK.
 
-    Смотрит не «процесс запущен», а «сервис делает свою работу»: база
-    открывается и расписание опрашивалось не слишком давно. Зависший процесс
-    выглядит для докера живым, и без этой проверки restart-policy его не
-    перезапустит.
+    It looks not at "the process is running" but at "the service is doing its
+    job": the database opens and the schedule was polled not too long ago. A
+    hung process looks alive to Docker, and without this check the restart
+    policy would never restart it.
     """
     load_dotenv(Path(".env"))
     config = config_module.load()
     setup_logging(config.log_level)
     try:
         storage = Storage(config.db_path)
-    except Exception as exc:  # noqa: BLE001 - причину надо показать
-        print(f"нездоров: база не открывается: {exc}")
+    except Exception as exc:  # noqa: BLE001 - the reason has to be shown
+        print(f"unhealthy: the database will not open: {exc}")
         return 1
 
     try:
         last_poll = storage.get_meta("last_schedule_poll_utc")
         if not last_poll:
-            # Сервис только что стартовал и ещё не успел опросить — это не
-            # повод его убивать.
-            print("здоров: опросов ещё не было")
+            # The service has only just started and has not polled yet — no
+            # reason to kill it.
+            print("healthy: no polls yet")
             return 0
         from .state.db import parse_iso, utcnow
         age = (utcnow() - parse_iso(last_poll)).total_seconds()
         limit = config.interval_for("idle") * 2 + 300
         if age > limit:
-            print(f"нездоров: расписание не опрашивалось {int(age)} с (порог {int(limit)})")
+            print(f"unhealthy: the schedule has not been polled for {int(age)} s "
+                  f"(threshold {int(limit)})")
             return 1
-        print(f"здоров: последний опрос {int(age)} с назад")
+        print(f"healthy: last poll {int(age)} s ago")
         return 0
     finally:
         storage.close()

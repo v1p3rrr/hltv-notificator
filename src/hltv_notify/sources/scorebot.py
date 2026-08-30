@@ -1,24 +1,24 @@
-"""Живой фид HLTV — Engine.IO v3 поверх polling-транспорта.
+"""HLTV's live feed — Engine.IO v3 over the polling transport.
 
-Почему polling, а не websocket (замерено, см. docs/recon/R4): апгрейд до
-websocket отдаёт 403 любому не-браузерному клиенту — и голому `websockets`, и
-`curl_cffi.ws_connect`, с Origin, Referer, браузерным UA и прогретыми куками.
-Polling проходит. Браузер и сам начинает с polling, так что это штатный
-транспорт того же протокола.
+Why polling and not websocket (measured, see docs/recon/R4): the websocket
+upgrade to scorebot-lb.hltv.org returns 403 to every non-browser client — bare
+`websockets` and `curl_cffi.ws_connect` alike, with Origin, Referer, a browser
+UA and warmed cookies. Polling goes through. A browser starts with polling
+itself, so this is a regular transport of the same protocol.
 
-Протокол:
+The protocol:
     GET  /socket.io/?EIO=3&transport=polling
       <- 0{"sid":..,"pingInterval":25000,"pingTimeout":60000}
       <- 40
-    POST тем же URL с &sid=
+    POST to the same URL with &sid=
       <len>:42["readyForMatch","{\\"token\\":\\"\\",\\"listId\\":\\"<id>\\"}"]
-    GET  тем же URL с &sid=   (long-poll)
+    GET  to the same URL with &sid=   (long poll)
       <- 42["scoreboard",{...}] / 42["log","{...}"]
 
-Две детали, каждая из которых даёт молчаливый отказ без ошибки:
-  * аргумент readyForMatch обязан быть JSON-СТРОКОЙ, а не объектом;
-  * подписываться можно только ПОСЛЕ пакета `40`. На реконнекте он приходит
-    не вместе с handshake, а следующим poll'ом.
+Two details, each of which produces a silent failure with no error:
+  * the readyForMatch argument must be a JSON STRING, not an object;
+  * you may only subscribe AFTER packet `40`. On a reconnect it does not
+    arrive together with the handshake but on a later poll.
 """
 
 from __future__ import annotations
@@ -47,27 +47,28 @@ ROUND_ENDED = "ended"
 
 
 class FeedRejected(RuntimeError):
-    """403: источник не принял клиента. Не сетевой сбой — отступаем надолго."""
+    """403: the source did not accept the client. Not a network failure — back
+    off for a long while."""
 
 
 class FeedUnavailable(RuntimeError):
-    """Сетевой сбой или отвергнутая сессия. Повод переподключиться."""
+    """A network failure or a rejected session. A reason to reconnect."""
 
 
 class FeedIdle(FeedUnavailable):
-    """Long-poll вернулся по таймауту без данных.
+    """The long poll came back on a timeout with no data.
 
-    Это НЕ обрыв. Фид молчит, когда на карте ничего не происходит — в
-    перерыве между картами так проходит вся пауза. Соединение живо, sid
-    действителен, надо просто опросить снова. Считать это обрывом значит
-    переподключаться каждые 45 секунд и зря дёргать источник ровно тогда,
-    когда мы ждём начала следующей карты.
+    This is NOT a disconnect. The feed goes quiet when nothing is happening on
+    the map — the whole break between maps passes like this. The connection is
+    alive, the sid is valid, we simply poll again. Treating it as a disconnect
+    would mean reconnecting every 45 seconds and pestering the source exactly
+    while we are waiting for the next map to start.
     """
 
 
 @dataclass(frozen=True)
 class PlayerLine:
-    """Игрок в кадре табло. `kills` — накопленные фраги ЗА КАРТУ."""
+    """A player in a scoreboard frame. `kills` are accumulated FOR THE MAP."""
 
     steam_id: str
     nick: str
@@ -76,7 +77,7 @@ class PlayerLine:
 
 @dataclass(frozen=True)
 class LiveFrame:
-    """Состояние табло на момент кадра."""
+    """The scoreboard state at the moment of the frame."""
 
     map_name: str
     current_round: int
@@ -94,8 +95,8 @@ class LiveFrame:
     t_players: Tuple["PlayerLine", ...] = ()
 
     def our_players(self, team_id: int) -> Tuple["PlayerLine", ...]:
-        """Состав нашей команды. Стороны меняются после перерыва, поэтому
-        определяем по id, а не по стороне."""
+        """Our team's roster. Sides swap after the break, so we go by id rather
+        than by side."""
         if self.ct_team_id == team_id:
             return self.ct_players
         if self.t_team_id == team_id:
@@ -103,10 +104,10 @@ class LiveFrame:
         return ()
 
     def our_score(self, team_id: int) -> Tuple[Optional[int], Optional[int]]:
-        """Счёт карты, ориентированный на нашу команду.
+        """The map score, oriented on our team.
 
-        Стороны меняются после перерыва, поэтому привязываться надо к
-        ctTeamId/tTeamId, а не к самим сторонам.
+        Sides swap after the break, so this must be tied to ctTeamId/tTeamId
+        rather than to the sides themselves.
         """
         if self.ct_team_id == team_id:
             return self.ct_score, self.t_score
@@ -123,12 +124,12 @@ class LiveFrame:
 
     @property
     def in_play(self) -> bool:
-        """Карта в игре, а не в разминке между картами."""
+        """The map is being played, not warming up between maps."""
         return self.live and self.round_state != ROUND_WARMUP
 
 
 def _players(raw) -> Tuple[PlayerLine, ...]:
-    """Игроки стороны. `score` в кадре — это фраги за карту."""
+    """One side's players. `score` in the frame means kills for the map."""
     if not isinstance(raw, list):
         return ()
     lines = []
@@ -145,10 +146,10 @@ def _players(raw) -> Tuple[PlayerLine, ...]:
 
 
 def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
-    """Кадр scoreboard в наблюдение. None — кадр непригоден.
+    """A scoreboard frame into an observation. None means the frame is unusable.
 
-    Пустой mapName встречается в переходных кадрах: строить по нему выводы
-    нельзя, иначе «карта началась» прилетит с пустым названием.
+    An empty mapName shows up in transitional frames: drawing conclusions from
+    it would send "map started" with an empty name.
     """
     map_name = (payload.get("mapName") or "").strip()
     if not map_name:
@@ -162,7 +163,8 @@ def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
         ct_team_name=str(payload.get("ctTeamName") or ""),
         ct_score=int(payload.get("ctTeamScore") or 0),
         t_team_id=payload.get("tTeamId"),
-        # Имена сторон в фиде лежат асимметрично: ctTeamName, но terroristTeamName.
+        # The side names are asymmetric in the feed: ctTeamName, but
+        # terroristTeamName.
         t_team_name=str(payload.get("terroristTeamName") or ""),
         t_score=int(payload.get("tTeamScore") or 0),
         regulation=int(payload.get("regulationHalfLength") or 12),
@@ -173,14 +175,14 @@ def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
 
 
 def decode_payload(body: bytes) -> List[str]:
-    """Разбор polling-ответа на отдельные пакеты.
+    """Split a polling response into individual packets.
 
-    Framing: каждый пакет — байт 0x00 (строковый) или 0x01 (бинарный), затем
-    длина ПО ОДНОЙ ЦИФРЕ В БАЙТЕ (значение 0..9, не ASCII), затем 0xff, затем
-    тело. Встречается и текстовый вариант "<len>:<тело>".
+    Framing: each packet is a byte 0x00 (string) or 0x01 (binary), then the
+    length ONE DIGIT PER BYTE (the value 0..9, not ASCII), then 0xff, then the
+    body. A textual variant "<len>:<body>" also occurs.
 
-    Работать надо по байтам: при декодировании в текст цифры длины
-    превращаются в \\ufffd и разбор ломается.
+    This has to work on bytes: decoding to text turns the length digits into
+    \\ufffd and breaks the parsing.
     """
     packets: List[str] = []
     i = 0
@@ -207,23 +209,25 @@ def decode_payload(body: bytes) -> List[str]:
 
 
 class ScorebotClient:
-    """Одно соединение на матч. Реконнект — забота вызывающего."""
+    """One connection per match. Reconnecting is the caller's business."""
 
     def __init__(self, match_id: int, *, referer: Optional[str] = None,
                  impersonate: str = "chrome",
                  proxy: Optional[ProxySettings] = None):
         self.match_id = str(match_id)
-        # Referer приходит из базы, а туда — со страницы HLTV. По нему идёт
-        # настоящий запрос (прогрев куками), поэтому посторонний адрес не берём
-        # вовсе: фид от этого не ломается, теряется только прогрев.
+        # The referer comes from the database, and into the database from the
+        # HLTV page. A real request is made to it (the cookie warm-up), so a
+        # foreign address is not taken at all: the feed does not break, only
+        # the warm-up is lost.
         if referer and not url_allowed(referer):
-            log.warning("посторонний адрес матча пропущен, прогрев без него: %s", referer)
+            log.warning("foreign match address skipped, warming up without it: %s",
+                        referer)
             referer = None
         self.referer = referer
         self._impersonate = impersonate
-        # Настройки прокси, а не готовый словарь: клиент ходит на ДВА хоста —
-        # scorebot-lb.hltv.org и страницу матча для прогрева, — и исключение из
-        # NO_PROXY может касаться только одного из них.
+        # The proxy settings rather than a ready-made dict: the client talks to
+        # TWO hosts — scorebot-lb.hltv.org and the match page for the warm-up —
+        # and a NO_PROXY exception may cover only one of them.
         self._proxy = proxy or ProxySettings()
         self._session: Optional[AsyncSession] = None
         self.sid: Optional[str] = None
@@ -250,32 +254,32 @@ class ScorebotClient:
     @staticmethod
     def _check(response) -> None:
         if response.status_code == 403:
-            raise FeedRejected("403 на polling — сессия сгорела")
+            raise FeedRejected("403 on polling — the session burned out")
         if response.status_code >= 400:
             raise FeedUnavailable(f"HTTP {response.status_code}")
 
     async def connect(self) -> None:
         self._session = AsyncSession(impersonate=self._impersonate)
-        # Прогрев: страница матча ставит куки Cloudflare на .hltv.org.
+        # Warm-up: the match page sets Cloudflare cookies on .hltv.org.
         if self.referer:
             try:
                 await self._session.get(self.referer, timeout=30,
                                         proxies=self._proxy.for_url(self.referer))
-            except Exception as exc:  # noqa: BLE001 - прогрев не обязателен
-                log.debug("прогрев сессии не удался: %s", exc)
+            except Exception as exc:  # noqa: BLE001 - the warm-up is optional
+                log.debug("session warm-up failed: %s", exc)
 
         try:
             url = self._url(with_sid=False)
             response = await self._session.get(url, headers=self._headers, timeout=30,
                                                proxies=self._proxy.for_url(url))
-        except Exception as exc:  # noqa: BLE001 - сеть
+        except Exception as exc:  # noqa: BLE001 - network
             raise FeedUnavailable(f"{type(exc).__name__}: {exc}") from exc
         self._check(response)
 
         packets = decode_payload(response.content)
         handshake = next((p for p in packets if p.startswith("0{")), None)
         if handshake is None:
-            raise FeedUnavailable("в ответе нет handshake")
+            raise FeedUnavailable("no handshake in the response")
         info = json.loads(handshake[1:])
         self.sid = info["sid"]
         self.ping_interval = info.get("pingInterval", 25000) / 1000
@@ -285,10 +289,11 @@ class ScorebotClient:
         self._ready = "40" in rest
 
     async def subscribe(self, wait_polls: int = 3) -> None:
-        """Подписка строго ПОСЛЕ пакета `40`.
+        """Subscribing strictly AFTER packet `40`.
 
-        Если отправить readyForMatch раньше, сервер молча проигнорирует
-        подписку: соединение живо, кадров нет. Ошибки при этом никакой.
+        Send readyForMatch earlier and the server silently ignores the
+        subscription: the connection is alive, there are no frames. And no
+        error either.
         """
         while not self._ready and wait_polls > 0:
             packets = await self._poll_raw()
@@ -296,7 +301,8 @@ class ScorebotClient:
             self._ready = "40" in packets
             wait_polls -= 1
         if not self._ready:
-            raise FeedUnavailable("не дождались пакета 40 — подписка была бы проигнорирована")
+            raise FeedUnavailable("packet 40 never arrived — the subscription "
+                                  "would have been ignored")
         payload = json.dumps({"token": "", "listId": self.match_id})
         await self._send("42" + json.dumps(["readyForMatch", payload]))
 
@@ -308,7 +314,7 @@ class ScorebotClient:
                 url, data=f"{len(packet)}:{packet}",
                 headers={**self._headers, "Content-Type": "text/plain;charset=UTF-8"},
                 timeout=30, proxies=self._proxy.for_url(url))
-        except Exception as exc:  # noqa: BLE001 - сеть
+        except Exception as exc:  # noqa: BLE001 - network
             raise FeedUnavailable(f"{type(exc).__name__}: {exc}") from exc
         self._check(response)
 
@@ -322,9 +328,9 @@ class ScorebotClient:
             response = await self._session.get(url, headers=self._headers,
                                                timeout=timeout,
                                                proxies=self._proxy.for_url(url))
-        except Exception as exc:  # noqa: BLE001 - сеть
+        except Exception as exc:  # noqa: BLE001 - network
             if "timed out" in str(exc).lower() or type(exc).__name__ == "Timeout":
-                raise FeedIdle("long-poll без данных") from exc
+                raise FeedIdle("long poll with no data") from exc
             raise FeedUnavailable(f"{type(exc).__name__}: {exc}") from exc
         self._check(response)
         return decode_payload(response.content)
@@ -342,12 +348,12 @@ class ScorebotClient:
 
 
 def frames_from_packets(packets: List[str]) -> List[LiveFrame]:
-    """Кадры scoreboard из пачки пакетов. Событие log здесь не нужно.
+    """Scoreboard frames out of a batch of packets. The log event is not needed.
 
-    Решения принимаются по scoreboard, а не по log намеренно: при каждом
-    подключении фид проигрывает бэклог событий заново (на серии из двух карт
-    насчитывалось 150 событий MatchStarted), и строить на нём переходы —
-    гарантированные дубли.
+    Decisions are made from scoreboard and not from log deliberately: on every
+    connect the feed replays the whole event backlog (150 MatchStarted events
+    were counted over a two-map series), so building transitions on it means
+    guaranteed duplicates.
     """
     frames: List[LiveFrame] = []
     for packet in packets:

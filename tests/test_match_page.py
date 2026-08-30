@@ -1,4 +1,4 @@
-"""Парсер страницы матча — на трёх реальных фикстурах: до матча, live, после."""
+"""The match-page parser, on three real fixtures: before, live, and after."""
 
 from pathlib import Path
 
@@ -35,14 +35,15 @@ def test_status_of_three_states(upcoming, live, finished):
 
 
 def test_start_time_is_scoped_to_the_match(finished):
-    """Без скоупа .timeAndEvent первым в DOM идёт виджет .fbw-vp-header-time
-    с временем ЧУЖИХ матчей — на этой фикстуре их там два. Ошибка дала бы
-    ложные E2 «время изменилось»."""
+    """Without the .timeAndEvent scope, the first thing in the DOM is the
+    .fbw-vp-header-time widget carrying OTHER matches' times — two of them on
+    this fixture. The mistake would produce false "time changed" E2 events."""
     assert finished.start_utc.isoformat() == "2026-08-27T18:45:00+00:00"
 
 
 def test_our_side_is_found_by_id_either_way(live, finished):
-    """В одном матче наша команда справа, в другом слева — ориентируемся по id."""
+    """In one match our team is on the right, in another on the left — we go
+    by id."""
     assert live.our_side(TEAM_ID) == "right"
     assert finished.our_side(TEAM_ID) == "left"
     assert live.opponent(TEAM_ID) == (13973, "Color")
@@ -52,19 +53,19 @@ def test_our_side_is_found_by_id_either_way(live, finished):
 def test_map_scores_are_oriented_to_our_team(live):
     first = live.maps[0]
     assert first.name == "Mirage"
-    assert live.map_score(first, TEAM_ID) == (10, 13)   # мы справа, проиграли
+    assert live.map_score(first, TEAM_ID) == (10, 13)   # we are on the right, we lost
     assert first.halves == "( 5 : 7 ; 8 : 3 )"
 
 
 def test_series_score_is_counted_from_decided_maps(live, finished):
-    """Готовый счёт серии страница показывает только у завершённого матча,
-    поэтому во время игры он считается по решённым картам."""
+    """The page shows a ready-made series score only for a finished match, so
+    during play it is computed from the decided maps."""
     assert live.series_score(TEAM_ID) == (0, 1)
     assert finished.series_score(TEAM_ID) == (2, 0)
 
 
 def test_undecided_maps_are_not_counted(finished):
-    """Решающая карта не игралась и должна остаться нерешённой, а не 0:0."""
+    """The decider was not played and must stay undecided, not 0:0."""
     decider = finished.maps[2]
     assert decider.name == "Nuke"
     assert decider.has_score is False
@@ -83,8 +84,8 @@ def test_best_of_and_event(live):
 
 
 def test_scorebot_id_only_on_live_page(upcoming, live, finished):
-    """#scoreboardElement есть только пока матч идёт: подключиться к живому
-    фиду задним числом нельзя."""
+    """#scoreboardElement only exists while the match is running: you cannot
+    connect to the live feed after the fact."""
     assert live.scorebot_id == 2397053
     assert upcoming.scorebot_id is None
     assert finished.scorebot_id is None
@@ -102,16 +103,16 @@ def test_redesign_is_an_error_not_empty_data():
 
 
 # ----------------------------------------------------------------------
-# Регрессия: у ИДУЩЕЙ карты счёт тоже числовой
+# Regression: a RUNNING map has a numeric score too
 # ----------------------------------------------------------------------
 
 
 def test_live_map_is_not_counted_as_played():
-    """Фикстура снята с матча 2397091, пока шла вторая карта.
+    """The fixture was captured from match 2397091 while the second map ran.
 
-    Наивное правило «есть числовой счёт — карта сыграна» посчитало бы её
-    завершённой со счётом 5:7 (это был текущий счёт по ходу игры) и прислало
-    бы неверный E6. Отличает завершённую карту наличие записи статистики.
+    The naive rule "there is a numeric score, so the map is played" would have
+    called it finished at 5:7 (that was the current in-play score) and sent a
+    wrong E6. What marks a finished map is the presence of a statistics record.
     """
     o = load("match-2397091-live-midmap.html", 2397091)
     assert o.status == match_page.STATUS_LIVE
@@ -122,8 +123,8 @@ def test_live_map_is_not_counted_as_played():
     assert o.is_final(played) is True
 
     assert (live.name, live.score_left, live.score_right) == ("Mirage", 5, 7)
-    assert live.has_score is True          # счёт есть...
-    assert live.has_stats is False         # ...но карта ещё идёт
+    assert live.has_score is True          # there is a score...
+    assert live.has_stats is False         # ...but the map is still running
     assert o.is_final(live) is False
 
     assert untouched.has_score is False
@@ -132,7 +133,7 @@ def test_live_map_is_not_counted_as_played():
 
 
 def test_series_score_ignores_the_running_map():
-    """Счёт серии во время идущей карты не должен её засчитывать."""
+    """The series score must not count a map that is still being played."""
     o = load("match-2397091-live-midmap.html", 2397091)
-    assert o.series_score(12363) == (1, 0)      # Arcade выиграл только Nuke
+    assert o.series_score(12363) == (1, 0)      # Arcade only won Nuke
     assert o.series_score(11668) == (0, 1)

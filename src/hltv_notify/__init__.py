@@ -1,5 +1,6 @@
-"""Уведомления о матчах CS2 из HLTV в Telegram."""
+"""CS2 match notifications from HLTV to Telegram."""
 
-# Единственное место, где живёт версия. CI читает её отсюда и сверяет с тегом
-# vX.Y.Z, поэтому строку нельзя переформатировать — см. tests/test_version.py.
+# The single place the version lives. CI reads it from here and checks it
+# against the vX.Y.Z tag, so the line must not be reformatted — see
+# tests/test_version.py.
 __version__ = "0.1.0"

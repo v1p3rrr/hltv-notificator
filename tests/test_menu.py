@@ -1,8 +1,8 @@
-"""Инлайн-меню: нажатия кнопок.
+"""The inline menu: button presses.
 
-Кнопка обязана ответить всегда — иначе Telegram крутит индикатор до таймаута,
-и человек думает, что бот завис. Поэтому здесь проверяется не только эффект
-нажатия, но и сам факт ответа.
+A button must always be answered — otherwise Telegram spins the indicator
+until it times out and the person thinks the bot has hung. So what is checked
+here is not only the effect of the press but the fact of the answer itself.
 """
 
 import asyncio
@@ -74,18 +74,18 @@ def press(command_bot, data, chat=CHAT):
     asyncio.run(command_bot._handle_callback(query))
 
 
-# ---------------------------------------------------------------- базовое
+# ---------------------------------------------------------------- basics
 
 
 def test_every_press_is_acknowledged(bot):
     command_bot, telegram, _ = bot
     press(command_bot, "m:main")
-    assert telegram.answered           # без этого у кнопки крутится индикатор
+    assert telegram.answered           # without this the button keeps spinning
 
 
 def test_unknown_data_does_not_crash(bot):
     command_bot, telegram, _ = bot
-    press(command_bot, "какая-то ерунда")
+    press(command_bot, "some nonsense")
     assert telegram.answered
     assert telegram.edited == []
 
@@ -93,12 +93,12 @@ def test_unknown_data_does_not_crash(bot):
 def test_press_from_a_stranger_is_refused(bot):
     command_bot, telegram, _ = bot
     press(command_bot, "m:status", chat=STRANGER)
-    assert telegram.answered[-1][1] == "Нет доступа"
+    assert telegram.answered[-1][1] == "No access"
     assert telegram.edited == []
 
 
 def test_section_redraws_the_same_message(bot):
-    """Разделы перерисовывают сообщение, а не плодят новые."""
+    """Sections redraw the message instead of spawning new ones."""
     command_bot, telegram, _ = bot
     press(command_bot, "m:status")
     assert len(telegram.edited) == 1
@@ -106,7 +106,7 @@ def test_section_redraws_the_same_message(bot):
     assert telegram.sent == []
 
 
-# ---------------------------------------------------------------- пауза
+# ---------------------------------------------------------------- pause
 
 
 def test_pause_button_toggles(bot):
@@ -121,10 +121,10 @@ def test_pause_button_swaps_its_label(bot):
     command_bot, telegram, storage = bot
     press(command_bot, "p:on")
     labels = [b["text"] for row in telegram.edited[-1][3]["inline_keyboard"] for b in row]
-    assert any("Включить" in label for label in labels)
+    assert any("Turn notifications on" in label for label in labels)
 
 
-# ---------------------------------------------------------------- напоминания
+# ---------------------------------------------------------------- reminders
 
 
 def test_reminder_button_adds_and_removes(bot):
@@ -140,10 +140,10 @@ def test_reminder_marks_active_presets(bot):
     storage.add_reminder(CHAT, 60)
     press(command_bot, "m:rem")
     labels = [b["text"] for row in telegram.edited[-1][3]["inline_keyboard"] for b in row]
-    assert any(label.startswith("✅") and "1 ч" in label for label in labels)
+    assert any(label.startswith("✅") and "1 h" in label for label in labels)
 
 
-# ---------------------------------------------------------------- команды
+# ---------------------------------------------------------------- teams
 
 
 def test_team_menu_lists_event_types(bot):
@@ -167,7 +167,7 @@ def test_untrack_button_disables_the_team(bot):
     command_bot, telegram, storage = bot
     press(command_bot, f"t:{TEAM}:rm")
     assert storage.get_team(CHAT, TEAM)["enabled"] == 0
-    # и меню предлагает включить обратно
+    # and the menu offers to switch it back on
     data = [b["callback_data"] for row in telegram.edited[-1][3]["inline_keyboard"]
             for b in row]
     assert f"t:{TEAM}:on" in data
@@ -176,29 +176,29 @@ def test_untrack_button_disables_the_team(bot):
 def test_team_of_another_subscriber_is_not_reachable(bot):
     command_bot, telegram, storage = bot
     press(command_bot, "t:99999")
-    assert "нет" in telegram.edited[-1][2].lower()
+    assert "do not have such a team" in telegram.edited[-1][2]
 
 
-# ---------------------------------------------------------------- согласованность
+# ---------------------------------------------------------------- consistency
 
 
 def test_text_command_and_buttons_share_one_list():
-    """Двух списков глушимых типов быть не должно: разойдутся, и кнопка
-    начнёт глушить то, чего текстовая команда не умеет."""
+    """There must not be two lists of mutable types: they would drift apart
+    and a button would start muting what the text command cannot."""
     from hltv_notify.bot import MUTABLE_EVENTS
 
     assert MUTABLE_EVENTS == tuple(code for code, _ in menu.MUTABLE)
 
 
 def test_service_alerts_cannot_be_muted():
-    """E8 в список не входит намеренно: заглушив его, можно не узнать, что
-    сервис ослеп."""
+    """E8 is deliberately not on the list: muting it means possibly never
+    learning that the service has gone blind."""
     codes = [code for code, _ in menu.MUTABLE]
     assert "E8" not in codes and "E8R" not in codes
 
 
 def test_callback_data_fits_telegram_limit():
-    """У callback_data потолок 64 байта."""
+    """callback_data is capped at 64 bytes."""
     keyboards = [menu.main(False), menu.reminders([15]),
                  menu.team(999999, "X", ["E6"], True)]
     for board in keyboards:

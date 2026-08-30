@@ -1,6 +1,6 @@
 CHAT = "555"
 
-"""Машина состояний: E1-E3, пороги, дебаунс и дедупликация."""
+"""The state machine: E1-E3, thresholds, debounce and deduplication."""
 
 from datetime import timedelta
 
@@ -19,7 +19,7 @@ def machine(storage, config) -> ScheduleMachine:
 
 
 def bootstrap(m, entries=()):
-    """Первый прогон всегда молчаливый — он только наполняет базу."""
+    """The first pass is always silent — it only fills the database."""
     return m.apply(list(entries), TEAM_ID)
 
 
@@ -40,7 +40,7 @@ def test_e1_for_match_appearing_after_bootstrap(storage, config):
 
 
 def test_finished_match_never_yields_e1(storage, config):
-    """«Новый матч» про уже доигранное — мусор."""
+    """"New match" about something already played is noise."""
     m = machine(storage, config)
     bootstrap(m, [entry(1, start=later(600))])
     events = m.apply([entry(1, start=later(600)),
@@ -59,8 +59,8 @@ def test_same_schedule_twice_produces_no_new_events(storage, config):
 
 
 def test_small_shift_is_swallowed(storage, config):
-    """Сдвиг меньше порога принимается молча: дёргать пользователя из-за
-    трёх минут — раздражать его."""
+    """A shift below the threshold is accepted silently: pestering the user
+    over three minutes is just irritating."""
     m = machine(storage, config)
     start = later(600)
     bootstrap(m, [entry(1, start=start)])
@@ -77,7 +77,7 @@ def test_e2_waits_for_debounce_window(storage, config):
     moved = start + timedelta(hours=2)
 
     now = utcnow()
-    assert m.apply([entry(1, start=moved)], TEAM_ID, now=now) == []           # окно открылось
+    assert m.apply([entry(1, start=moved)], TEAM_ID, now=now) == []           # window opened
     assert m.apply([entry(1, start=moved)], TEAM_ID, now=now + timedelta(minutes=5)) == []
 
     events = m.apply([entry(1, start=moved)], TEAM_ID,
@@ -87,7 +87,7 @@ def test_e2_waits_for_debounce_window(storage, config):
 
 
 def test_move_there_and_back_is_not_an_event(storage, config):
-    """Перенос туда-обратно внутри окна не должен ничего порождать."""
+    """Moving it there and back inside the window must produce nothing."""
     m = machine(storage, config)
     start = later(600)
     bootstrap(m, [entry(1, start=start)])
@@ -122,8 +122,8 @@ def test_e3_when_future_match_disappears(storage, config):
 
 
 def test_no_e3_when_start_already_passed(storage, config):
-    """Матч, чей старт уже прошёл, мог просто начаться. Решать это должен
-    опрос страницы матча, а не догадка по расписанию."""
+    """A match whose start has passed may simply have begun. That is for the
+    match-page polling to decide, not for a guess from the schedule."""
     m = machine(storage, config)
     bootstrap(m, [entry(1, start=later(600)), entry(2, start=later(-30))])
     events = m.apply([entry(1, start=later(600))], TEAM_ID)
@@ -132,7 +132,7 @@ def test_no_e3_when_start_already_passed(storage, config):
 
 
 def test_placeholder_opponent_resolves_without_new_match(storage, config):
-    """Появление реального соперника вместо «Winner of match X» — это не новый матч."""
+    """A real opponent replacing "Winner of match X" is not a new match."""
     m = machine(storage, config)
     bootstrap(m, [entry(1, start=later(600))])
     start = later(900)

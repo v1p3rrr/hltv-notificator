@@ -1,12 +1,14 @@
-"""Live Worker: держит соединение с фидом на время матча.
+"""Live Worker: holds the feed connection for the duration of a match.
 
-Живёт только пока матч идёт. Обрыв соединения — норма, а не авария: на записи
-реального матча за час случилось 15 подключений и 14 обрывов. Поэтому
-переподключение с backoff, а вся защита от повторов — в машине состояний.
+It only lives while the match is running. A dropped connection is normal, not
+an emergency: over a recording of a real match there were 15 connects and 14
+drops in an hour. Hence reconnecting with backoff, and all the protection
+against repeats living in the state machine.
 
-Отдельно обрабатывается 403: это не сетевой сбой, а «отойди». Реконнекты с
-обычным backoff в такой ситуации только долбят источник, поэтому пауза
-минутами, а опрос страницы матча остаётся работать как был.
+403 is handled separately: it is not a network failure but a "back off".
+Reconnecting with the usual backoff in that situation only pesters the source,
+so the pause is measured in minutes while match-page polling carries on as
+before.
 """
 
 from __future__ import annotations
@@ -27,14 +29,14 @@ from .state.live_machine import LiveMachine
 
 log = logging.getLogger(__name__)
 
-# Нижняя граница паузы после 403. Источник явно попросил отойти, и опускать
-# её конфигом ниже разумного нельзя.
+# The lower bound of the pause after a 403. The source explicitly asked us to
+# back off, and config must not lower it below something reasonable.
 MIN_REJECTED_COOLDOWN_SECONDS = 60.0
 MAX_BACKOFF_SECONDS = 60.0
 
 
 class LiveWorker:
-    """Одно соединение на один матч."""
+    """One connection for one match."""
 
     def __init__(self, storage: Storage, config: Config, notifier: Notifier,
                  match_id: int, url: str, messenger: Optional[LiveMessenger] = None):
@@ -60,28 +62,28 @@ class LiveWorker:
                 await client.subscribe()
                 self.connected = True
                 attempt = 0
-                log.info("живой фид матча %s подключён (sid %s)", self.match_id, client.sid)
+                log.info("live feed of match %s connected (sid %s)", self.match_id, client.sid)
                 await self._consume(client, stop)
             except FeedRejected as exc:
                 self.connected = False
                 cooldown = max(float(self.config.live_feed_cooldown),
                                MIN_REJECTED_COOLDOWN_SECONDS)
-                log.error("живой фид матча %s отклонён (%s) — пауза %.0f мин, "
-                          "работаем по странице матча",
+                log.error("live feed of match %s rejected (%s) — pausing %.0f min, "
+                          "working from the match page",
                           self.match_id, exc, cooldown / 60)
                 await self._sleep(cooldown, stop)
             except FeedUnavailable as exc:
                 self.connected = False
                 attempt += 1
                 delay = min(2 ** attempt, MAX_BACKOFF_SECONDS) * random.uniform(0.8, 1.2)
-                log.warning("живой фид матча %s оборвался (%s), переподключение через %.0fs",
+                log.warning("live feed of match %s dropped (%s), reconnecting in %.0fs",
                             self.match_id, exc, delay)
                 await self._sleep(delay, stop)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - воркер не имеет права уронить процесс
+            except Exception:  # noqa: BLE001 - the worker must not bring the process down
                 self.connected = False
-                log.exception("непредвиденный сбой живого фида матча %s", self.match_id)
+                log.exception("unexpected failure of the live feed of match %s", self.match_id)
                 await self._sleep(30, stop)
             finally:
                 self.connected = False
@@ -92,9 +94,9 @@ class LiveWorker:
             try:
                 packets = await client.poll()
             except FeedIdle:
-                # Фид молчит — на карте пауза или идёт перерыв между картами.
-                # Соединение живо, переподключаться не нужно.
-                log.debug("живой фид матча %s молчит, опрашиваем снова", self.match_id)
+                # The feed is quiet — a pause on the map or the break between
+                # maps. The connection is alive, no need to reconnect.
+                log.debug("live feed of match %s is quiet, polling again", self.match_id)
                 continue
             for frame in frames_from_packets(packets):
                 events = self.machine.apply(self.match_id, frame)
@@ -103,8 +105,8 @@ class LiveWorker:
                 await self._refresh_live_message(frame, events)
 
     async def _refresh_live_message(self, frame, events) -> None:
-        """Живое сообщение перерисовывается после apply, чтобы в финальной
-        правке уже стоял счёт серии с учётом только что взятой карты."""
+        """The live message is redrawn after apply, so that the final edit
+        already carries the series score including the map just taken."""
         if self.messenger is None:
             return
         snapshot = self.machine.snapshot(self.match_id, frame)
@@ -124,10 +126,10 @@ class LiveWorker:
 
 
 class LiveSupervisor:
-    """Поднимает и гасит воркеры под идущие матчи.
+    """Brings workers up and takes them down for running matches.
 
-    Матчей может идти несколько одновременно — у этой команды такое бывает,
-    поэтому один воркер на матч, а не один на сервис.
+    Several matches can run at once — this team does that — so it is one worker
+    per match, not one per service.
     """
 
     def __init__(self, storage: Storage, config: Config, notifier: Notifier,
@@ -157,7 +159,7 @@ class LiveSupervisor:
         self._stops[match_id] = stop
         self._tasks[match_id] = asyncio.create_task(
             worker.run(stop), name=f"live-{match_id}")
-        log.info("поднят живой фид для матча %s", match_id)
+        log.info("live feed brought up for match %s", match_id)
 
     def release(self, match_id: int) -> None:
         stop = self._stops.pop(match_id, None)
@@ -167,10 +169,10 @@ class LiveSupervisor:
         if task is not None:
             task.cancel()
         self._workers.pop(match_id, None)
-        log.info("живой фид для матча %s остановлен", match_id)
+        log.info("live feed for match %s stopped", match_id)
 
     def reconcile(self, live_match_ids: Dict[int, str]) -> None:
-        """Привести набор воркеров в соответствие с идущими матчами."""
+        """Bring the set of workers in line with the running matches."""
         for match_id, url in live_match_ids.items():
             self.ensure(match_id, url)
         for match_id in list(self._tasks):
@@ -178,10 +180,11 @@ class LiveSupervisor:
                 self.release(match_id)
 
     async def shutdown(self) -> None:
-        # Список собирается ДО release(): release удаляет задачу из _tasks,
-        # поэтому раньше здесь всегда оказывался пустой список, gather не
-        # вызывался и завершения воркеров никто не ждал. Их finally с закрытием
-        # сессии не успевал отработать до закрытия цикла событий.
+        # The list is collected BEFORE release(): release removes the task from
+        # _tasks, so this used to end up with an empty list every time, gather
+        # was never called and nobody waited for the workers to finish. Their
+        # finally, which closes the session, did not get to run before the
+        # event loop closed.
         tasks = list(self._tasks.values())
         for match_id in list(self._tasks):
             self.release(match_id)

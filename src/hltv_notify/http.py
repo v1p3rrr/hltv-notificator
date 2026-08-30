@@ -1,8 +1,8 @@
-"""Единственная точка выхода в сеть.
+"""The single point of egress to the network.
 
-Обычные requests/httpx получают 403 там, где браузер получает данные — отсев
-идёт по TLS-фингерпринту, а не по заголовкам (замерено, см. docs/recon/R3).
-Поэтому curl_cffi с профилем impersonation с самого начала.
+Ordinary requests/httpx get a 403 where a browser gets data — the filtering is
+by TLS fingerprint, not by headers (measured, see docs/recon/R3). Hence
+curl_cffi with an impersonation profile from the very beginning.
 """
 
 from __future__ import annotations
@@ -21,27 +21,30 @@ log = logging.getLogger(__name__)
 
 
 class SourceRejected(RuntimeError):
-    """403: источник не принял клиента. Не сетевой сбой — отступаем надолго."""
+    """403: the source did not accept the client. Not a network failure — back
+    off for a long while."""
 
 
 class SourceUnavailable(RuntimeError):
-    """Таймаут, 5xx, сеть. Обычный повод для повтора с backoff."""
+    """Timeout, 5xx, network. The ordinary reason to retry with backoff."""
 
 
 class BlockedTarget(SourceRejected):
-    """Адрес не из разрешённых. Повторять бессмысленно — отсюда наследование.
+    """The address is not on the allow-list. Retrying is pointless — hence the
+    inheritance.
 
-    Последний заслон: адрес матча приходит со страницы HLTV, и если разбор
-    когда-нибудь снова позволит увести его на чужой хост, запрос всё равно не
-    уйдёт. Срабатывает и на записях, попавших в базу раньше.
+    The last line of defence: match addresses come from the HLTV page, and if
+    the parser ever again allows one to be steered at a foreign host, the
+    request still will not leave. It also fires on records written to the
+    database earlier.
     """
 
 
 class HltvHttp:
-    """Последовательные запросы с джиттером и потолком частоты.
+    """Sequential requests with jitter and a rate ceiling.
 
-    Потолок общий на весь процесс: параллельных запросов не бывает по
-    построению (см. правило «уважай источник» в ТЗ).
+    The ceiling is process-wide: by construction there are never parallel
+    requests (see the "respect the source" rule in the spec).
     """
 
     def __init__(self, config: Config):
@@ -62,24 +65,25 @@ class HltvHttp:
             self._session = None
 
     async def _respect_ceiling(self) -> None:
-        # Цикл, а не одиночный sleep: таймер может вернуть управление на
-        # несколько миллисекунд раньше срока, и потолок систематически
-        # недотягивал бы. Обещание «не чаще, чем раз в N секунд» должно
-        # выполняться буквально.
+        # A loop, not a single sleep: the timer can return control a few
+        # milliseconds early, and the ceiling would then systematically fall
+        # short. The promise "no more often than once every N seconds" has to
+        # hold literally.
         while True:
             elapsed = time.monotonic() - self._last_request_at
             wait = HARD_MIN_REQUEST_INTERVAL_SECONDS - elapsed
             if wait <= 0:
                 return
-            log.debug("потолок частоты: ждём %.2fs", wait)
+            log.debug("rate ceiling: waiting %.2fs", wait)
             await asyncio.sleep(wait)
 
     async def get_text(self, url: str, *, timeout: int = 30, exempt_from_ceiling: bool = False) -> str:
-        """GET с повторами. `exempt_from_ceiling` — для удерживаемых соединений
-        (long-poll живого фида): это не частый опрос, а одно соединение."""
+        """GET with retries. `exempt_from_ceiling` is for held connections
+        (the live feed's long poll): that is one connection, not frequent
+        polling."""
         if not url_allowed(url):
-            log.error("запрос на посторонний адрес отклонён: %s", url)
-            raise BlockedTarget(f"адрес не из списка разрешённых: {url}")
+            log.error("request to a foreign address refused: %s", url)
+            raise BlockedTarget(f"address is not on the allow-list: {url}")
 
         attempts = max(1, self._config.http_retries)
         last_error: Optional[Exception] = None
@@ -91,11 +95,12 @@ class HltvHttp:
                 session = await self._ensure_session()
                 started = time.monotonic()
                 try:
-                    # Прокси выбирается на КАЖДЫЙ адрес: так исключения из
-                    # NO_PROXY работают точно, а не «по базовому хосту сессии».
+                    # The proxy is chosen per ADDRESS: that way NO_PROXY
+                    # exceptions apply precisely, rather than "by the session's
+                    # base host".
                     response = await session.get(
                         url, timeout=timeout, proxies=self._config.proxies_for(url))
-                except Exception as exc:  # noqa: BLE001 - сеть, таймаут, TLS
+                except Exception as exc:  # noqa: BLE001 - network, timeout, TLS
                     last_error = SourceUnavailable(f"{type(exc).__name__}: {exc}")
                     status: object = "-"
                 else:
@@ -105,27 +110,28 @@ class HltvHttp:
                     self._last_request_at = time.monotonic()
                     duration = time.monotonic() - started
 
-            log.info("GET %s -> %s за %.2fs (попытка %d/%d)", url, status, duration, attempt, attempts)
+            log.info("GET %s -> %s in %.2fs (attempt %d/%d)", url, status, duration,
+                     attempt, attempts)
 
             if last_error is None:
                 if status == 403:
                     self.consecutive_failures += 1
-                    raise SourceRejected(f"403 на {url}")
+                    raise SourceRejected(f"403 on {url}")
                 if status == 429 or (isinstance(status, int) and status >= 500):
-                    last_error = SourceUnavailable(f"HTTP {status} на {url}")
+                    last_error = SourceUnavailable(f"HTTP {status} on {url}")
                 else:
                     self.consecutive_failures = 0
                     return response.text
 
             if attempt < attempts:
                 backoff = min(2 ** attempt, 30) * random.uniform(0.8, 1.2)
-                log.warning("повтор через %.1fs: %s", backoff, last_error)
+                log.warning("retrying in %.1fs: %s", backoff, last_error)
                 await asyncio.sleep(backoff)
 
         self.consecutive_failures += 1
-        raise last_error or SourceUnavailable(f"не удалось получить {url}")
+        raise last_error or SourceUnavailable(f"could not fetch {url}")
 
 
 def jittered(interval: float, spread: float = 0.2) -> float:
-    """Интервал с джиттером, чтобы запросы не шли ровно по сетке."""
+    """An interval with jitter, so requests do not land exactly on a grid."""
     return interval * random.uniform(1 - spread, 1 + spread)

@@ -1,39 +1,42 @@
-"""Парсер страницы матча: состояние, формат, счёт по картам.
+"""Parser for the match page: state, format, per-map scores.
 
-Разметка (проверена на трёх фикстурах — upcoming, live, finished):
-    .timeAndEvent [data-unix]      время старта. ОБЯЗАТЕЛЬНО со скоупом:
-                                   без него первым в DOM идёт виджет
-                                   .fbw-vp-header-time с временем ЧУЖИХ матчей
+Markup (verified against three fixtures — upcoming, live, finished):
+    .timeAndEvent [data-unix]      start time. THE SCOPE IS MANDATORY: without
+                                   it the first [data-unix] in the DOM belongs
+                                   to the .fbw-vp-header-time widget, which
+                                   carries OTHER matches' times
     .countdown                     "4h : 57m : 28s" / "LIVE" / "Match over"
-    .timeAndEvent .event a         турнир
-    .preformatted-text             "Best of 3 (Online)" и примечания
+    .timeAndEvent .event a         tournament
+    .preformatted-text             "Best of 3 (Online)" and notes
     .team1-gradient / .team2-gradient
-        a[href*="/team/"]          id команды
-        .teamName                  имя
-        .won / .lost               счёт СЕРИИ, но только у завершённого матча
+        a[href*="/team/"]          team id
+        .teamName                  name
+        .won / .lost               the SERIES score, but only once the match
+                                   is finished
     .mapholder
-        .mapname                   имя карты, "TBA" до вето
-        .results-left.pick         сторона, выбравшая карту (у решающей нет)
-        .results-team-score x2     счёт карты — но у ИДУЩЕЙ карты это
-                                   текущий счёт, а не финальный
+        .mapname                   map name, "TBA" before the veto
+        .results-left.pick         the side that picked the map (the decider
+                                   has none)
+        .results-team-score x2     the map score — but on a RUNNING map this is
+                                   the current score, not the final one
         .results-center-half-score "( 5 : 7 ; 8 : 3 )"
-        .results-stats             ссылка на статистику карты. Появляется
-                                   ровно в момент её завершения
+        .results-stats             link to the map statistics. It appears
+                                   exactly when the map ends
 
-Правило конца карты (D7). Наивное «есть числовой счёт» неверно: у идущей
-карты счёт тоже числовой. Наблюдение на живом матче 2397091: пока Mirage
-шла, в счёте стояло 5:7 и ссылки на статистику не было; как только карта
-закончилась, счёт стал 11:13 и появилась `.results-stats`. Классы
-`won`/`lost` не помогают — на идущей карте HLTV помечает ими текущего
-лидера. Арифметика по раундам тоже не годится: она ломается на овертаймах,
-форфейтах и нестандартных регламентах.
+The map-completion rule (D7). The naive "there is a numeric score" is wrong:
+a running map has a numeric score too. Observed on live match 2397091: while
+Mirage was being played the score read 5:7 and there was no statistics link;
+the moment the map ended the score became 11:13 and `.results-stats` appeared.
+The `won`/`lost` classes do not help — on a running map HLTV puts them on the
+current leader. Round arithmetic is no good either: it breaks on overtimes,
+forfeits and non-standard formats.
 
-Признаком служит появление записи статистики карты — HLTV заводит её, когда
-карта сыграна. Для завершённого матча признак дополняется статусом страницы:
-у форфейта статистики может не быть вовсе.
+The signal is the appearance of the map statistics record — HLTV creates it
+when the map has been played. For a finished match the signal is backed up by
+the page status: a forfeit may have no statistics at all.
 
-Счёт серии во время игры на странице не выводится и считается по
-завершённым картам.
+The series score is not shown on the page during play and is computed from the
+finished maps.
 """
 
 from __future__ import annotations
@@ -59,7 +62,7 @@ STATUS_UNKNOWN = "unknown"
 
 
 class ParseError(RuntimeError):
-    """Разметка не та, что ожидалась — отказ источника, а не «данных нет»."""
+    """The markup is not what was expected — a source failure, not "no data"."""
 
 
 @dataclass(frozen=True)
@@ -70,17 +73,17 @@ class MapLine:
     score_right: Optional[int]
     halves: Optional[str]
     has_stats: bool = False
-    # Чей это пик: "left"/"right" по сторонам страницы, None — решающая карта,
-    # которая осталась после вето и никем не выбиралась.
+    # Whose pick this is: "left"/"right" by page side, None for the decider,
+    # the map left after the veto that nobody picked.
     picked_by: Optional[str] = None
 
     @property
     def has_score(self) -> bool:
-        """У карты есть числовой счёт.
+        """The map has a numeric score.
 
-        ВНИМАНИЕ: этого мало, чтобы считать карту сыгранной. У идущей карты
-        счёт тоже числовой — он просто текущий. Признак завершённости — см.
-        MatchObservation.is_final().
+        CAREFUL: that alone is not enough to call the map played. A running map
+        has a numeric score too, it is simply the current one. For the
+        completion signal see MatchObservation.is_final().
         """
         return self.score_left is not None and self.score_right is not None
 
@@ -99,8 +102,8 @@ class MatchObservation:
     team2_name: str
     maps: List[MapLine]
     scorebot_id: Optional[int]
-    # Формат карты со страницы: сколько раундов в половине регламента и
-    # овертайма. Нужен, чтобы понять «сколько осталось до победы».
+    # The map format from the page: how many rounds are in a half of regulation
+    # and of overtime. Needed to work out "how many rounds are left to win".
     max_rounds_regulation: Optional[int] = None
     max_rounds_overtime: Optional[int] = None
 
@@ -122,11 +125,11 @@ class MatchObservation:
         return None, ""
 
     def is_final(self, line: MapLine) -> bool:
-        """Карта сыграна: есть счёт И есть запись статистики.
+        """The map is played: there is a score AND a statistics record.
 
-        Статус `over` служит запасным признаком: если матч завершён, всё, у
-        чего есть счёт, доиграно — включая карты, отданные форфейтом, у
-        которых статистики может не быть.
+        The `over` status serves as the backup signal: if the match is
+        finished, everything with a score has been played — including maps
+        given away by forfeit, which may have no statistics.
         """
         if not line.has_score:
             return False
@@ -136,10 +139,10 @@ class MatchObservation:
         return [m for m in self.maps if self.is_final(m)]
 
     def picks(self, team_id: int) -> List[dict]:
-        """Состав карт с указанием, чей это выбор.
+        """The map lineup with whose pick each one is.
 
-        Решающая карта — та, что осталась после вето: её никто не выбирал,
-        поэтому у неё нет класса `pick` ни на одной стороне.
+        The decider is the map left after the veto: nobody picked it, so it has
+        no `pick` class on either side.
         """
         side = self.our_side(team_id)
         result = []
@@ -156,7 +159,7 @@ class MatchObservation:
         return result
 
     def live_map(self) -> Optional[MapLine]:
-        """Карта, которая идёт прямо сейчас: со счётом, но ещё без статистики."""
+        """The map being played right now: it has a score but no statistics yet."""
         if self.status != STATUS_LIVE:
             return None
         for line in self.maps:
@@ -165,14 +168,15 @@ class MatchObservation:
         return None
 
     def map_score(self, line: MapLine, team_id: int) -> Tuple[Optional[int], Optional[int]]:
-        """Счёт карты, ориентированный на нашу команду."""
+        """The map score, oriented on our team."""
         if self.our_side(team_id) == "right":
             return line.score_right, line.score_left
         return line.score_left, line.score_right
 
     def series_score(self, team_id: int) -> Tuple[int, int]:
-        """Счёт серии по картам. Считается по решённым картам, потому что
-        готовый счёт серии страница показывает только у завершённого матча."""
+        """The series score in maps. Computed from the decided maps, because
+        the page only shows a ready-made series score once the match is
+        finished."""
         ours = theirs = 0
         for line in self.final_maps():
             our_score, their_score = self.map_score(line, team_id)
@@ -185,11 +189,11 @@ class MatchObservation:
         return ours, theirs
 
     def series_after(self, map_number: int, team_id: int) -> Tuple[int, int]:
-        """Счёт серии на момент окончания указанной карты.
+        """The series score as of the end of the given map.
 
-        Нужен, потому что между двумя опросами может завершиться сразу
-        несколько карт: брать для каждой из них итоговый счёт серии значило бы
-        соврать в сообщении о более ранней карте.
+        Needed because several maps can finish between two polls: taking the
+        final series score for each of them would be a lie in the message about
+        the earlier one.
         """
         ours = theirs = 0
         for line in self.final_maps():
@@ -205,10 +209,11 @@ class MatchObservation:
         return ours, theirs
 
     def progress_signature(self, team_id: int) -> str:
-        """Отпечаток продвижения матча: по нему видно, что матч «завис».
+        """A fingerprint of the match moving forward: it is how a "stalled"
+        match is spotted.
 
-        Только то, что обязано меняться по ходу игры. Ничего волатильного
-        вроде времени ответа сюда попадать не должно.
+        Only what is bound to change as the game goes on. Nothing volatile such
+        as response time may end up here.
         """
         parts = [self.status]
         for line in self.maps:
@@ -244,17 +249,17 @@ def _status(soup) -> str:
         return STATUS_OVER
     if re.search(r"\d+\s*[hmsd]", lowered) or ":" in text:
         return STATUS_UPCOMING
-    log.warning("незнакомое состояние матча на странице: %r", text)
+    log.warning("unfamiliar match state on the page: %r", text)
     return STATUS_UNKNOWN
 
 
 def parse(html: str, match_id: int) -> MatchObservation:
     soup = BeautifulSoup(html, "lxml")
     if soup.select_one(".teamsBox") is None:
-        raise ParseError("на странице матча нет .teamsBox")
+        raise ParseError("no .teamsBox on the match page")
 
-    # Скоуп обязателен: неквалифицированный [data-unix] берёт время чужого
-    # матча из бокового виджета и порождает ложные E2.
+    # The scope is mandatory: an unqualified [data-unix] picks up another
+    # match's time from the sidebar widget and produces false E2 events.
     time_el = soup.select_one(".timeAndEvent [data-unix]")
     start_utc = (datetime.fromtimestamp(int(time_el["data-unix"]) / 1000, tz=timezone.utc)
                  if time_el else None)
@@ -275,8 +280,8 @@ def parse(html: str, match_id: int) -> MatchObservation:
     maps: List[MapLine] = []
     for number, holder in enumerate(soup.select(".mapholder"), start=1):
         name_el = holder.select_one(".mapname")
-        # Скоуп по сторонам, а не holder.select(".results-team-score"): половины
-        # лежат отдельно, и смешивать их со счётом карты нельзя.
+        # Scoped by side rather than holder.select(".results-team-score"): the
+        # halves live separately and must not be mixed into the map score.
         left_el = holder.select_one(".results-left .results-team-score")
         right_el = holder.select_one(".results-right .results-team-score")
         halves_el = holder.select_one(".results-center-half-score")

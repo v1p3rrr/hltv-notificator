@@ -1,15 +1,16 @@
-"""Прогон записанного дампа живого фида через машину состояний.
+"""Replaying a recorded live-feed dump through the state machine.
 
-Живой источник для тестов не годится: матчи нужной команды редки, а конец
-карты, овертайм и обрыв связи по заказу не воспроизводятся. Поэтому дампы
-реальных матчей лежат в docs/recon/fixtures и прогоняются отсюда.
+A live source is no good for tests: matches of the team in question are rare,
+and the end of a map, an overtime and a dropped connection cannot be
+reproduced on demand. So dumps of real matches live in docs/recon/fixtures and
+are replayed from here.
 
-Один и тот же дамп обязан всегда давать один и тот же список событий — это
-регрессионный тест. А прогон дважды подряд не должен добавлять ни одного
-уведомления: ровно то, что происходит при реконнекте, когда фид присылает
-полное состояние заново.
+One and the same dump must always produce one and the same list of events —
+that is a regression test. And replaying it twice in a row must not add a
+single notification: that is exactly what happens on a reconnect, when the
+feed sends the full state again.
 
-Запуск: python -m hltv_notify.replay <файл.jsonl.gz> [--team-id N]
+Usage: python -m hltv_notify.replay <file.jsonl.gz> [--team-id N]
 """
 
 from __future__ import annotations
@@ -30,7 +31,8 @@ from .state.live_machine import LiveMachine
 
 
 def read_records(path: Path) -> Iterator[dict]:
-    """Записи дампа. Хвост может быть оборван, если процесс записи убили."""
+    """Records from the dump. The tail may be truncated if the recording
+    process was killed."""
     opener = gzip.open if path.suffix == ".gz" else open
     try:
         with opener(path, "rt", encoding="utf-8") as fh:
@@ -73,7 +75,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--team-id", type=int, default=None)
     parser.add_argument("--match-id", type=int, default=1)
     parser.add_argument("--twice", action="store_true",
-                        help="прогнать дамп дважды и сравнить число событий")
+                        help="replay the dump twice and compare the event counts")
     args = parser.parse_args(argv)
 
     config = Config()
@@ -85,17 +87,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         _prepare(storage, args.match_id)
 
         first = replay(args.dump, storage, config, args.match_id)
-        print(f"событий за первый прогон: {len(first)}")
+        print(f"events on the first pass: {len(first)}")
         for event in first:
             print(f"  {event.type}  {event.idempotency_key}")
 
         if args.twice:
             second = replay(args.dump, storage, config, args.match_id)
-            print(f"событий за повторный прогон: {len(second)}")
+            print(f"events on the second pass: {len(second)}")
             if second:
-                print("ОШИБКА: повторный прогон породил события — дедупликация не держит")
+                print("ERROR: the second pass produced events — deduplication is not holding")
                 return 1
-            print("повторный прогон не добавил ничего — дедупликация держит")
+            print("the second pass added nothing — deduplication holds")
         storage.close()
     return 0
 

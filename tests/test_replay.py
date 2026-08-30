@@ -1,11 +1,11 @@
-"""Replay записанного живого матча.
+"""Replaying a recorded live match.
 
-Дамп снят с реального матча FORZE Reload (2397053): 2150 записей, 1977
-кадров, 15 подключений и 14 обрывов за прогон. Такое по заказу не
-воспроизведёшь, поэтому он и лежит в репозитории.
+The dump was taken from a real FORZE Reload match (2397053): 2150 records,
+1977 frames, 15 connects and 14 disconnects over the run. That cannot be
+reproduced on demand, which is why it sits in the repository.
 
-Обязательные по ТЗ проверки на дедупликацию — здесь: прогон дважды подряд и
-прогон с искусственным обрывом посередине.
+The deduplication checks required by the spec are here: two passes in a row,
+and a pass with an artificial disconnect in the middle.
 """
 
 from pathlib import Path
@@ -36,7 +36,7 @@ def test_dump_is_readable():
 
 
 def test_replay_produces_the_expected_events(prepared, config):
-    """Записанный матч всегда даёт один и тот же список событий."""
+    """A recorded match always yields one and the same list of events."""
     events = replay(DUMP, prepared, config, MATCH_ID)
     assert [e.type for e in events] == ["E5", "E6"]
     assert [e.idempotency_key for e in events] == [
@@ -46,7 +46,7 @@ def test_replay_produces_the_expected_events(prepared, config):
 
 
 def test_replayed_score_matches_the_site(prepared, config):
-    """На сайте эта карта закончилась 10:13 не в нашу пользу."""
+    """On the site this map ended 10:13, not in our favour."""
     events = replay(DUMP, prepared, config, MATCH_ID)
     e6 = events[-1]
     assert (e6.payload["score_team"], e6.payload["score_opponent"]) == (10, 13)
@@ -56,7 +56,7 @@ def test_replayed_score_matches_the_site(prepared, config):
 
 
 def test_running_the_same_dump_twice_adds_nothing(prepared, config):
-    """Главная ловушка проекта: фид присылает полное состояние заново."""
+    """The project's main trap: the feed sends the full state all over again."""
     first = replay(DUMP, prepared, config, MATCH_ID)
     second = replay(DUMP, prepared, config, MATCH_ID)
     assert len(first) == 2
@@ -64,8 +64,8 @@ def test_running_the_same_dump_twice_adds_nothing(prepared, config):
 
 
 def test_break_in_the_middle_and_full_state_again(prepared, config):
-    """Искусственный обрыв: половина кадров, затем всё с начала — ровно то,
-    что происходит при реконнекте посреди карты."""
+    """An artificial disconnect: half the frames, then everything from the
+    start — exactly what happens on a reconnect mid-map."""
     machine = LiveMachine(prepared, config)
     all_frames = list(frames(DUMP))
     half = len(all_frames) // 2
@@ -73,7 +73,7 @@ def test_break_in_the_middle_and_full_state_again(prepared, config):
     produced = []
     for frame in all_frames[:half]:
         produced += machine.apply(MATCH_ID, frame)
-    # «обрыв» — и фид отдаёт историю сначала
+    # the "disconnect" — and the feed serves the history from the beginning
     for frame in all_frames:
         produced += machine.apply(MATCH_ID, frame)
 
@@ -81,7 +81,7 @@ def test_break_in_the_middle_and_full_state_again(prepared, config):
 
 
 def test_notifications_are_not_duplicated_across_replays(tmp_path, config):
-    """Тот же прогон, но через нотификатор: число уведомлений не меняется."""
+    """The same pass but through the notifier: the notification count is unchanged."""
     storage = Storage(tmp_path / "replay.db")
     _prepare(storage, MATCH_ID)
     storage.set_map_lineup(MATCH_ID, LINEUP)
@@ -106,7 +106,7 @@ def test_map_result_is_recorded_once(prepared, config):
 
 
 # ----------------------------------------------------------------------
-# Второй дамп: живой матч с границей карты и настоящим мультикиллом
+# The second dump: a live match with a map boundary and a real multikill
 # ----------------------------------------------------------------------
 
 BOUNDARY = FIXTURES / "scorebot-2396936-map-boundary.jsonl.gz"
@@ -128,14 +128,14 @@ def mouz_config():
 
 
 def test_boundary_dump_gives_map_start_multikill_and_map_end(mouz, mouz_config):
-    """Запись сделана с живого матча BLAST: карта Ancient от начала до конца."""
+    """Recorded from a live BLAST match: the map Ancient from start to finish."""
     events = replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH)
     assert [e.type for e in events] == ["E5", "E9", "E6"]
 
 
 def test_real_multikill_is_detected(mouz, mouz_config):
-    """xertioN взял 4 фрага в 15-м раунде — событие рождено по приросту
-    фрагов в кадрах табло, без единого обращения к логу."""
+    """xertioN took 4 kills in round 15 — the event was born from the kill
+    increment in scoreboard frames, without a single look at the log."""
     e9 = [e for e in replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH) if e.type == "E9"][0]
     assert e9.payload["nick"] == "xertioN"
     assert e9.payload["kills"] == 4

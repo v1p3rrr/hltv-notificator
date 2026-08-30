@@ -1,4 +1,4 @@
-"""Напоминания перед матчем, пауза и личный часовой пояс."""
+"""Pre-match reminders, the pause and the personal timezone."""
 
 from datetime import timedelta
 
@@ -40,7 +40,7 @@ def add_match(storage, *, minutes_ahead=60, match_id=MATCH):
     storage.link_match_team(match_id, TEAM)
 
 
-# ---------------------------------------------------------------- напоминания
+# ---------------------------------------------------------------- reminders
 
 
 def test_no_reminders_configured_means_silence(store, config):
@@ -64,7 +64,7 @@ def test_reminder_does_not_fire_too_early(store, config):
 
 
 def test_reminder_does_not_fire_after_the_start(store, config):
-    """Матч уже идёт — напоминать поздно, для этого есть E4."""
+    """The match is already running — too late to remind, that is what E4 is for."""
     store.add_reminder(ILYA, 15)
     add_match(store, minutes_ahead=-5)
     assert ReminderScheduler(store, config).due() == []
@@ -85,15 +85,15 @@ def test_reminder_is_sent_once(store, config):
     scheduler = ReminderScheduler(store, config)
     notifier = Notifier(store, config, telegram=None)
 
-    for _ in range(5):                       # тик планировщика идёт часто
+    for _ in range(5):                       # the scheduler ticks often
         for event in scheduler.due():
             notifier.enqueue(event)
     assert store.pending_count() == 1
 
 
 def test_reminder_is_addressed_not_broadcast(store, config):
-    """Интервалы у подписчиков разные, поэтому напоминание идёт конкретному
-    чату, а не всем, кто следит за этой командой."""
+    """Intervals differ between subscribers, so a reminder goes to one specific
+    chat rather than to everyone following that team."""
     store.add_reminder(ILYA, 15)
     add_match(store, minutes_ahead=10)
 
@@ -106,14 +106,14 @@ def test_reminder_is_addressed_not_broadcast(store, config):
 
 
 def test_reminder_only_for_own_teams(store, config):
-    """Чужая команда — не мой матч, даже если напоминания настроены."""
+    """Someone else's team is not my match, even with reminders configured."""
     store.add_reminder(FRIEND, 15)
     store.set_team_enabled(FRIEND, TEAM, False)
     add_match(store, minutes_ahead=10)
     assert [e.payload["only_chat"] for e in ReminderScheduler(store, config).due()] == []
 
 
-# ---------------------------------------------------------------- пауза
+# ---------------------------------------------------------------- pause
 
 
 def test_paused_subscriber_gets_nothing(store, config):
@@ -128,7 +128,7 @@ def test_paused_subscriber_gets_nothing(store, config):
 
 
 def test_pause_does_not_defer_notifications(store, config):
-    """Пауза — это тишина, а не отложенная доставка: пропущенное не копится."""
+    """The pause means silence, not deferred delivery: nothing piles up."""
     add_match(store)
     store.set_subscriber_paused(ILYA, True)
     store.set_subscriber_paused(FRIEND, True)
@@ -139,22 +139,23 @@ def test_pause_does_not_defer_notifications(store, config):
     assert Notifier(store, config, telegram=None).enqueue(event) is False
 
     store.set_subscriber_paused(ILYA, False)
-    assert store.pending_count() == 0        # ничего не накопилось
+    assert store.pending_count() == 0        # nothing accumulated
 
 
 def test_pause_covers_service_alerts_too(store, config):
     store.set_subscriber_paused(FRIEND, True)
     event = Event(type="E8", idempotency_key="E8:schedule:down:x", match_id=None,
-                  payload={"reason": "Расписание не читается", "detail": "таймаут"})
+                  payload={"reason": "The schedule cannot be read", "detail": "timeout"})
     Notifier(store, config, telegram=None).enqueue(event)
     assert {row["chat_id"] for row in store.due_outbox(limit=50)} == {ILYA}
 
 
 def test_pause_covers_the_live_score_message(store, config):
-    """Живое сообщение — тоже уведомление.
+    """The live message is a notification too.
 
-    Оно идёт мимо очереди, своим путём, и когда-то этот путь про паузу не
-    знал: попросивший тишины продолжал получать счёт по ходу карты.
+    It goes around the queue, along its own path, and that path once knew
+    nothing about the pause: someone who asked for quiet kept receiving the
+    score as the map went on.
     """
     import asyncio
 
@@ -186,7 +187,7 @@ def test_pause_covers_the_live_score_message(store, config):
     assert telegram.sent == [ILYA]
 
 
-# ---------------------------------------------------------------- часовой пояс
+# ---------------------------------------------------------------- timezone
 
 
 def test_each_subscriber_sees_their_own_timezone(store, config):
@@ -208,7 +209,7 @@ def test_timezone_falls_back_to_config(store, config):
     assert store.subscriber_timezone(ILYA, config.timezone) == config.timezone
 
 
-# ---------------------------------------------------------------- пики карт
+# ---------------------------------------------------------------- map picks
 
 
 def test_picks_are_parsed_with_their_owner():
@@ -223,7 +224,7 @@ def test_picks_are_parsed_with_their_owner():
 
 
 def test_picks_flip_for_the_opponent_follower():
-    """Вето на странице одно, но «наш пик» у каждого свой."""
+    """There is one veto on the page, but "our pick" differs per reader."""
     from conftest import FIXTURES
     from hltv_notify.sources import match_page
 
@@ -244,4 +245,4 @@ def test_match_start_message_carries_a_copyable_block():
                   {"number": 3, "name": "Ancient", "pick": "decider"}]})
     text = fmt.render(event, team_name="FORZE Reload", tz_name="Europe/Moscow")
     assert "<pre>" in text and "</pre>" in text
-    assert "Mirage" in text and "наш пик" in text and "решающая" in text
+    assert "Mirage" in text and "our pick" in text and "decider" in text

@@ -1,8 +1,9 @@
-"""Страница матча и живой фид на ОДНОМ матче.
+"""The match page and the live feed on ONE match.
 
-Обе машины по отдельности покрыты тестами, и обе по отдельности вели себя
-правильно. Два дефекта жили именно на стыке: машины делили одно поле состояния
-и делали по нему выводы о собственной истории. Этот файл закрывает стык.
+Both machines are covered by tests individually, and individually both behaved
+correctly. Two defects lived precisely at the seam: the machines shared one
+state field and drew conclusions about their own history from it. This file
+covers the seam.
 """
 
 from datetime import timedelta
@@ -43,13 +44,13 @@ def frame(map_name, *, ours=0, theirs=0, rnd=1, state="started", live=True):
 
 
 # ----------------------------------------------------------------------
-# E5: страница не должна «съедать» начало карты
+# E5: the page must not swallow the start of a map
 # ----------------------------------------------------------------------
 
 
 def test_page_poll_does_not_swallow_map_start(match, config):
-    """Опрос страницы кладёт в состояние ПРЕДСТОЯЩУЮ карту (первую
-    несыгранную). Живая машина не должна принимать это за «карта уже была»."""
+    """Page polling puts the UPCOMING map (the first unplayed one) into the
+    state. The live machine must not read that as the map having already been."""
     MatchMachine(match, config).apply(page("match-2397053-live.html"))
     assert match.get_state(MATCH_ID)["current_map_name"] == "Dust2"
 
@@ -59,8 +60,8 @@ def test_page_poll_does_not_swallow_map_start(match, config):
 
 
 def test_map_start_survives_repeated_page_polls(match, config):
-    """Опрос страницы идёт каждую минуту всё время, пока идёт карта, и не
-    должен ломать признак начала следующей."""
+    """Page polling runs every minute for as long as the map lasts and must
+    not break the marker for the start of the next one."""
     page_machine = MatchMachine(match, config)
     live_machine = LiveMachine(match, config)
     live = page("match-2397053-live.html")
@@ -68,18 +69,20 @@ def test_map_start_survives_repeated_page_polls(match, config):
     page_machine.apply(live)
     assert [e.type for e in live_machine.apply(MATCH_ID, frame("de_dust2", rnd=1))] == ["E5"]
 
-    page_machine.apply(live)          # страница снова говорит про Dust2
+    page_machine.apply(live)          # the page talks about Dust2 again
     later = live_machine.apply(MATCH_ID, frame("de_dust2", ours=5, theirs=3, rnd=9))
-    assert [e.type for e in later] == []      # второго E5 быть не должно
+    assert [e.type for e in later] == []      # there must be no second E5
 
 
 def test_feed_writes_do_not_reset_what_the_page_already_saw(match, config):
-    """Живой фид переписывает состояние по нескольку раз в секунду, и это не
-    должно возвращать страницу в положение «я этот матч впервые вижу».
+    """The live feed rewrites the state several times a second, and that must
+    not return the page to the "I am seeing this match for the first time"
+    position.
 
-    Порядок здесь именно такой, как в бою: воркер живого фида поднимается
-    только для матча, уже помеченного LIVE, а помечает его страница — она же
-    в этот момент и выдаёт E4. Опередить её фид не может.
+    The order here is exactly the production one: the live worker is only
+    brought up for a match already marked LIVE, and it is the page that marks
+    it — the same page that emits E4 at that moment. The feed cannot get ahead
+    of it.
     """
     page_machine = MatchMachine(match, config)
     live = page("match-2397053-live.html")
@@ -92,46 +95,48 @@ def test_feed_writes_do_not_reset_what_the_page_already_saw(match, config):
     for _ in range(5):
         live_machine.apply(MATCH_ID, frame("de_dust2", ours=3, theirs=2, rnd=6))
 
-    # Отметка пережила запись фида и не переставилась на новое время.
+    # The marker survived the feed writing and was not reset to a new time.
     assert match.get_state(MATCH_ID)["page_seen_utc"] == seen_at
-    # Повторный опрос страницы не выдаёт E4 второй раз.
+    # A repeat page poll does not emit E4 a second time.
     assert page_machine.apply(live) == []
 
 
 # ----------------------------------------------------------------------
-# E6: страница обязана подстраховывать фид
+# E6: the page is obliged to back the feed up
 # ----------------------------------------------------------------------
 
 
 def test_page_reports_map_end_that_the_feed_missed(match, config):
-    """Главное свойство схемы «фид решает, страница подтверждает»: если фид
-    пропустил конец карты (реконнект, пауза после 403), сообщить обязана
-    страница. Раньше она молчала всё время, пока фид на связи."""
+    """The key property of "the feed decides, the page confirms": if the feed
+    missed the end of a map (a reconnect, the pause after a 403), the page is
+    obliged to report it. It used to stay silent the whole time the feed was
+    connected."""
     page_machine = MatchMachine(match, config)
 
-    # страница уже наблюдала матч, карта ещё идёт
+    # the page has already observed the match, the map is still running
     page_machine.apply(page("match-2397053-live.html"), feed_connected=True)
 
-    # фид работает и переписывает состояние на каждом кадре
+    # the feed is working and rewrites the state on every frame
     live_machine = LiveMachine(match, config)
     for _ in range(3):
         live_machine.apply(MATCH_ID, frame("de_dust2", ours=4, theirs=6, rnd=11))
     assert match.get_state(MATCH_ID)["last_source"] == "scorebot"
 
-    # ...и пропустил окончание карты. Страница видит её сыгранной.
+    # ...and missed the end of the map. The page sees it as played.
     events = page_machine.apply(page("match-2397047-finished.html"), feed_connected=True)
     assert "E6" in [e.type for e in events]
 
 
 def test_first_page_observation_is_still_silent(match, config):
-    """Обратная сторона: если страница видит матч ВПЕРВЫЕ и карта уже сыграна,
-    это не переход, а состояние на момент знакомства."""
+    """The flip side: if the page sees the match FOR THE FIRST TIME and the
+    map is already played, that is not a transition but the state at the moment
+    of meeting."""
     events = MatchMachine(match, config).apply(page("match-2397047-finished.html"))
     assert [e.type for e in events] == ["E7"]
 
 
 def test_both_sources_on_the_same_map_end_give_one_event(match, config):
-    """Фид и страница приносят один и тот же конец карты. Уведомление одно."""
+    """The feed and the page bring the same end of map. One notification."""
     from hltv_notify.notify.outbox import Notifier
 
     notifier = Notifier(match, config, telegram=None)
@@ -141,10 +146,10 @@ def test_both_sources_on_the_same_map_end_give_one_event(match, config):
     page_machine.apply(page("match-2397053-live.html"), feed_connected=True)
     live_machine.apply(MATCH_ID, frame("de_dust2", rnd=1))
 
-    # фид фиксирует конец карты по счёту
+    # the feed settles the end of the map from the score
     for event in live_machine.apply(MATCH_ID, frame("de_dust2", ours=13, theirs=10, rnd=23)):
         notifier.enqueue(event)
-    # затем страница видит ту же карту сыгранной
+    # then the page sees the same map as played
     for event in page_machine.apply(page("match-2397047-finished.html"), feed_connected=True):
         notifier.enqueue(event)
 

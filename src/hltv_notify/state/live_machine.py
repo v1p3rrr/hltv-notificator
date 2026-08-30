@@ -1,16 +1,17 @@
-"""Переходы по кадрам живого фида: E5 и мгновенный E6.
+"""Transitions driven by live-feed frames: E5 and an immediate E6.
 
-Ради чего всё: секция карт на странице матча обновляется с задержкой, поэтому
-E6 по странице приходит не в момент победного раунда. Фид знает счёт сразу,
-и решение принимается по счёту — правило в hltv_notify.scoring, пороги
-считаются от формата, который присылает сам фид.
+What it is all for: the maps section on the match page updates late, so a
+page-driven E6 does not arrive at the winning round. The feed knows the score
+at once, and the decision is made from the score — the rule lives in
+hltv_notify.scoring, with thresholds derived from the format the feed itself
+reports.
 
-Два свойства фида, из-за которых события рождаются ТОЛЬКО на переходах:
-  * кадр scoreboard приходит по нескольку раз в секунду и всегда целиком;
-  * при каждом подключении прилетает полное состояние заново, а в логе — ещё
-    и бэклог уже случившегося.
-Поэтому решения строятся на сравнении с сохранённым состоянием, а не на факте
-получения кадра. И поэтому же log не используется вовсе.
+Two properties of the feed force events to be born ONLY on transitions:
+  * a scoreboard frame arrives several times a second and always in full;
+  * on every connect the full state arrives again, and the log carries a
+    backlog of things that already happened.
+So decisions are built on comparison with the stored state, not on the fact
+that a frame arrived. And that is also why the log is not used at all.
 """
 
 from __future__ import annotations
@@ -31,11 +32,11 @@ SOURCE = "scorebot"
 
 
 def normalize_map_name(name: str) -> str:
-    """`de_mirage` → `Mirage`.
+    """`de_mirage` -> `Mirage`.
 
-    Фид даёт внутренние имена карт, страница матча — человеческие. Хранить и
-    сравнивать надо в одном виде, иначе смена источника выглядела бы как смена
-    карты и порождала ложный E5.
+    The feed gives internal map names, the match page gives human ones. They
+    have to be stored and compared in one shape, otherwise a change of source
+    would look like a change of map and produce a false E5.
     """
     cleaned = (name or "").strip()
     for prefix in ("de_", "cs_"):
@@ -49,10 +50,10 @@ class LiveMachine:
     def __init__(self, storage: Storage, config: Config):
         self.storage = storage
         self.config = config
-        # Трекер на КАЖДУЮ отслеживаемую команду матча: если отслеживаемые
-        # команды играют друг против друга, четвёрка игрока каждой из них —
-        # свой самостоятельный хайлайт, и глушить одну ради другой нельзя.
-        # Живут в памяти воркера и переживают реконнекты внутри него.
+        # A tracker per EVERY tracked team in the match: if tracked teams play
+        # each other, a 4k by a player of either is its own highlight, and one
+        # must not be muted for the sake of the other. They live in the
+        # worker's memory and survive reconnects inside it.
         self._multikill: Dict[int, MultikillTracker] = {}
 
     def _tracker(self, team_id: int) -> MultikillTracker:
@@ -66,14 +67,15 @@ class LiveMachine:
         team_id = self.storage.canonical_team(match_id) or self.config.team_id
         ours, theirs = frame.our_score(team_id)
         if ours is None or theirs is None:
-            # Записывать чужой счёт опаснее, чем промолчать. Но шуметь стоит
-            # только когда id команд проставлены и просто не наши: пока фид их
-            # не заполнил, это обычные переходные кадры между картами.
+            # Recording somebody else's score is worse than staying quiet. But
+            # it is only worth making noise when the team ids are filled in and
+            # simply are not ours; while the feed has not filled them, these
+            # are ordinary transitional frames between maps.
             if frame.ct_team_id or frame.t_team_id:
-                log.warning("в кадре матча %s нет команды %s — кадр отброшен",
-                            match_id, team_id)
+                log.warning("team %s is not in the frame of match %s — frame discarded",
+                            team_id, match_id)
             else:
-                log.debug("переходный кадр матча %s без команд — пропущен", match_id)
+                log.debug("transitional frame of match %s with no teams — skipped", match_id)
             return []
 
         map_name = normalize_map_name(frame.map_name)
@@ -83,15 +85,15 @@ class LiveMachine:
         recorded = {row["map_name"]: row["map_number"]
                     for row in self.storage.map_results(match_id)}
         if map_name in recorded:
-            # Карта уже записана как сыгранная: фид ещё какое-то время
-            # присылает её финальный счёт, реагировать не на что.
+            # The map is already recorded as played: the feed keeps sending its
+            # final score for a while, there is nothing to react to.
             return []
 
         state_row = self.storage.get_state(match_id)
-        # Читаем СВОЮ памятку, а не current_map_name: то поле пишут обе машины,
-        # и страница матча кладёт туда первую несыгранную, то есть ПРЕДСТОЯЩУЮ
-        # карту. Читая его, живая машина видела «карта не менялась» ровно в тот
-        # момент, когда карта начиналась, и E5 не рождался никогда.
+        # Read OUR OWN memo, not current_map_name: that field is written by
+        # both machines, and the match page puts the first undecided, i.e. the
+        # UPCOMING map there. Reading it, the live machine saw "the map has not
+        # changed" at exactly the moment a map started, and E5 was never born.
         previous_map = state_row["live_map_name"] if state_row else None
         map_number = self._map_number(match_id, map_name, len(recorded))
 
@@ -110,7 +112,7 @@ class LiveMachine:
                 match_id=match_id, map_number=map_number, map_name=map_name,
                 score_team=ours, score_opponent=theirs,
                 overtime=verdict.overtime_number > 0)
-            log.info("матч %s: карта %d (%s) взята по счёту %d:%d, овертайм №%d",
+            log.info("match %s: map %d (%s) taken at %d:%d, overtime #%d",
                      match_id, map_number, map_name, ours, theirs, verdict.overtime_number)
 
         series = self._series(match_id)
@@ -125,11 +127,11 @@ class LiveMachine:
     # ------------------------------------------------------------------
 
     def snapshot(self, match_id: int, frame: LiveFrame) -> Optional[dict]:
-        """Данные для живого сообщения со счётом.
+        """Data for the live score message.
 
-        Отдельно от apply(): живое сообщение — это не событие. У него нет
-        ключа идемпотентности и его не надо досылать после рестарта, его надо
-        просто перерисовать текущим состоянием.
+        Separate from apply(): the live message is not an event. It has no
+        idempotency key and does not need re-delivery after a restart, it
+        simply needs redrawing with the current state.
         """
         team_id = self.storage.canonical_team(match_id) or self.config.team_id
         ours, theirs = frame.our_score(team_id)
@@ -162,12 +164,12 @@ class LiveMachine:
 
     def _multikill_events(self, match_id: int, frame: LiveFrame, map_number: int,
                           map_name: str) -> List[Event]:
-        """Мультикилл игрока НАШЕЙ команды — чтобы успеть клипануть хайлайт."""
+        """A multikill by a player of OUR team — so a highlight can be clipped."""
         if not self.config.multikill_alerts:
             return []
-        # Все отслеживаемые участники матча, а не только каноническая команда:
-        # если отслеживаемые команды играют друг против друга, четвёрка игрока
-        # каждой из них — самостоятельный хайлайт.
+        # Every tracked participant of the match, not only the canonical team:
+        # if tracked teams play each other, a 4k by a player of either is its
+        # own highlight.
         canonical = self.storage.canonical_team(match_id) or self.config.team_id
         tracked = self.storage.match_team_ids(match_id) or [canonical]
         events: List[Event] = []
@@ -178,25 +180,26 @@ class LiveMachine:
 
     def _multikill_for_team(self, match_id: int, frame: LiveFrame, map_number: int,
                             map_name: str, tracked_team: int) -> List[Event]:
-        """Событие целиком от лица КОМАНДЫ ИГРОКА, а не канонической.
+        """The event is built entirely from the PLAYER'S TEAM's point of view.
 
-        Здесь легко ошибиться: если взять контекст канонической команды и
-        подменить в нём только имя, соперником окажется она же сама
-        («FORZE — FORZE»), а счёт останется её, то есть перевёрнутым. Развернуть
-        такое потом не выйдет: format.orient видит team_id получателя и
-        считает, что разворачивать нечего.
+        This is easy to get wrong: take the canonical team's context and swap
+        only the name, and the opponent turns out to be that same team
+        ("FORZE — FORZE") while the score stays theirs, i.e. mirrored. It
+        cannot be turned around later: format.orient sees the recipient's
+        team_id and concludes there is nothing to flip.
         """
         ours, theirs = frame.our_score(tracked_team)
         if ours is None or theirs is None:
-            # Этой команды в кадре нет — например, кадр пришёл до того, как фид
-            # проставил id. Фрагов её игроков в нём тоже не будет.
+            # This team is not in the frame — for example the frame arrived
+            # before the feed filled the ids in. Its players' kills will not be
+            # there either.
             return []
         taken = self._tracker(tracked_team).observe(
             map_name, frame.current_round, frame.round_state,
             frame.our_players(tracked_team))
         events: List[Event] = []
         for player, kills in taken:
-            log.info("матч %s: %s взял %d фрагов в раунде %d на карте %s",
+            log.info("match %s: %s took %d kills in round %d on %s",
                      match_id, player.nick, kills, frame.current_round, map_name)
             events.append(Event(
                 type="E9",
@@ -217,8 +220,8 @@ class LiveMachine:
         return events
 
     def _opponent_id(self, match_id: int, team_id: int):
-        """Соперник по данным матча: нужен, чтобы развернуть счёт подписчику,
-        который следит именно за ним."""
+        """The opponent according to the match data: needed to turn the score
+        around for a subscriber who follows precisely them."""
         row = self.storage.get_match(match_id)
         if row is None:
             return None
@@ -227,13 +230,13 @@ class LiveMachine:
         return others[0] if others else row["opponent_id"]
 
     def _map_number(self, match_id: int, map_name: str, recorded_count: int) -> int:
-        """Номер карты в серии.
+        """The map's number in the series.
 
-        Фид присылает только название, номера у него нет. Берём его из состава
-        карт, вычитанного со страницы матча. Считать «сколько карт уже
-        записано плюс один» ненадёжно: страница обновляется с задержкой, и
-        если сервис подключился к фиду посреди серии, предыдущая карта могла
-        быть ещё не записана — вторая карта получила бы номер первой.
+        The feed only sends the name, it has no number. We take it from the map
+        lineup read off the match page. Counting "however many maps are already
+        recorded, plus one" is unreliable: the page updates late, and if the
+        service connected to the feed mid-series the previous map might not be
+        recorded yet — the second map would get the first one's number.
         """
         lineup = self.storage.map_lineup(match_id)
         for index, name in enumerate(lineup, start=1):
@@ -243,12 +246,12 @@ class LiveMachine:
 
     def _is_new_map(self, previous_map: Optional[str], map_name: str,
                     frame: LiveFrame) -> bool:
-        """Карта началась.
+        """The map has started.
 
-        Если предыдущей карты в состоянии нет, значит матч мы только что взяли
-        под наблюдение. Объявлять «карта началась» про карту, которая идёт уже
-        двадцать раундов, поздно — поэтому в этом случае событие рождается
-        только если карта действительно в самом начале.
+        If there is no previous map in the state, we have only just taken the
+        match under observation. Announcing "the map has started" about a map
+        twenty rounds in is too late — so in that case the event is only born
+        if the map really is at its very beginning.
         """
         if previous_map is None:
             return frame.current_round <= 1
@@ -269,8 +272,8 @@ class LiveMachine:
 
     def _context(self, match_id: int, frame: LiveFrame,
                  team_id: Optional[int] = None) -> dict:
-        """Общая шапка события. `team_id` — от чьего лица; по умолчанию
-        каноническая команда матча."""
+        """The event's common header. `team_id` is whose point of view; by
+        default the match's canonical team."""
         row = self.storage.get_match(match_id)
         if team_id is None:
             team_id = self.storage.canonical_team(match_id) or self.config.team_id
@@ -305,7 +308,7 @@ class LiveMachine:
     def _event_e6(self, match_id: int, frame: LiveFrame, map_number: int, map_name: str,
                   ours: int, theirs: int, overtime: bool) -> Event:
         series = self._series(match_id)
-        # Счёт серии с учётом только что взятой карты.
+        # The series score including the map just taken.
         if ours > theirs:
             series = (series[0] + 1, series[1])
         elif theirs > ours:

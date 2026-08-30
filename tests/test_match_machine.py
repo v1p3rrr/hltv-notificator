@@ -1,4 +1,4 @@
-"""Переходы по странице матча: E4, E7, детект зависания и дедупликация."""
+"""Transitions from the match page: E4, E7, the stall detector and dedup."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -22,7 +22,7 @@ def add_match(storage, match_id=MATCH_ID):
 
 
 def observe(status, maps, *, match_id=MATCH_ID):
-    """Наша команда — team2 (справа), как в реальном матче 2397053."""
+    """Our team is team2 (on the right), as in the real match 2397053."""
     return MatchObservation(
         match_id=match_id, status=status,
         start_utc=datetime(2026, 9, 1, 15, 0, tzinfo=timezone.utc),
@@ -34,11 +34,11 @@ def observe(status, maps, *, match_id=MATCH_ID):
 
 
 def maps(*scores):
-    """scores — тройки (левый, правый, половины) или None для несыгранной карты.
+    """`scores` are triples (left, right, halves) or None for an unplayed map.
 
-    Счёт означает СЫГРАННУЮ карту, поэтому has_stats=True: у HLTV запись
-    статистики появляется в момент её завершения. Для карты, которая идёт
-    прямо сейчас, есть отдельный хелпер live_map_line().
+    A score here means a PLAYED map, hence has_stats=True: on HLTV the
+    statistics record appears at the moment it finishes. For a map being played
+    right now there is a separate helper, live_map_line().
     """
     lines = []
     for number, score in enumerate(scores, start=1):
@@ -50,7 +50,7 @@ def maps(*scores):
 
 
 def live_map_line(number, left, right):
-    """Карта, которая идёт: счёт есть, записи статистики ещё нет."""
+    """A map being played: there is a score, there is no statistics record yet."""
     return MapLine(number=number, name=f"Map{number}", score_left=left,
                    score_right=right, halves=None, has_stats=False)
 
@@ -65,8 +65,8 @@ def test_e4_on_transition_to_live(storage, config):
 
 
 def test_e4_not_repeated_on_every_poll(storage, config):
-    """Страница опрашивается раз в минуту и всё это время говорит LIVE.
-    Карта при этом успела завершиться — про неё E6, но повторного E4 нет."""
+    """The page is polled every minute and says LIVE the whole time. A map
+    managed to finish meanwhile — an E6 about it, but no repeat E4."""
     add_match(storage)
     m = MatchMachine(storage, config)
     m.apply(observe("live", maps(None, None, None)))
@@ -81,10 +81,10 @@ def test_e7_with_series_score(storage, config):
     m.apply(observe("live", maps(None, None, None)))
     events = m.apply(observe("over", maps(
         (10, 13, "( 5 : 7 ; 8 : 3 )"), (8, 13, "( 4 : 8 ; 4 : 5 )"), None)))
-    # Обе карты доигрались между опросами: сначала о каждой, затем итог.
+    # Both maps finished between polls: first each of them, then the result.
     assert [e.type for e in events] == ["E6", "E6", "E7"]
     e7 = events[-1]
-    # мы справа: 13 и 13 наши
+    # we are on the right: both 13s are ours
     assert (e7.payload["series_team"], e7.payload["series_opponent"]) == (2, 0)
     assert e7.payload["won"] is True
     assert e7.idempotency_key == "E7:555:finished:2-0"
@@ -101,7 +101,8 @@ def test_e7_not_repeated(storage, config):
 
 
 def test_no_e4_if_match_discovered_already_over(storage, config):
-    """Слать «матч начался» про доигранный матч бессмысленно — сразу итог."""
+    """Sending "the match started" about a finished match is pointless — go
+    straight to the result."""
     add_match(storage)
     m = MatchMachine(storage, config)
     events = m.apply(observe("over", maps((10, 13, None), (8, 13, None), None)))
@@ -109,7 +110,7 @@ def test_no_e4_if_match_discovered_already_over(storage, config):
 
 
 def test_decider_not_played_is_not_counted(storage, config):
-    """BO3 закончился 2:0 — третья карта осталась с прочерком."""
+    """The BO3 ended 2:0 — the third map was left with a dash."""
     add_match(storage)
     m = MatchMachine(storage, config)
     events = m.apply(observe("over", maps((10, 13, None), (8, 13, None), None)))
@@ -117,8 +118,8 @@ def test_decider_not_played_is_not_counted(storage, config):
 
 
 def test_overtime_detected_by_halves_not_by_score(storage, config):
-    """Регламент овертаймов различается между турнирами, поэтому считаем
-    половины, а не раунды."""
+    """Overtime rules differ between tournaments, so we count halves rather
+    than rounds."""
     add_match(storage)
     m = MatchMachine(storage, config)
     m.apply(observe("over", maps((16, 19, "( 5 : 7 ; 7 : 5 ; 4 : 7 )"), None, None)))
@@ -128,7 +129,8 @@ def test_overtime_detected_by_halves_not_by_score(storage, config):
 
 
 def test_stall_reported_only_after_threshold(storage, config):
-    """Зависание ПОСРЕДИ карты: карта идёт, но счёт не двигается."""
+    """A stall IN THE MIDDLE of a map: the map is running but the score is
+    not moving."""
     add_match(storage)
     m = MatchMachine(storage, config)
     frozen = observe("live", [live_map_line(1, 5, 7)] + maps(None, None)[1:])
@@ -144,7 +146,7 @@ def test_stall_reported_only_after_threshold(storage, config):
 
 
 def test_progress_resets_the_stall_timer(storage, config):
-    """Технические паузы бывают долгими, но пока счёт идёт — это не зависание."""
+    """Technical pauses can be long, but while the score moves it is not a stall."""
     add_match(storage)
     m = MatchMachine(storage, config)
     now = utcnow()
@@ -157,9 +159,9 @@ def test_progress_resets_the_stall_timer(storage, config):
 
 
 def test_break_between_maps_is_not_a_stall(storage, config):
-    """Реальный случай с матча BLAST: карта закончилась, следующая ещё не
-    началась, и через 20 минут прилетело ложное «матч завис». Между картами
-    порог растягивается."""
+    """A real case from a BLAST match: a map ended, the next had not started,
+    and after 20 minutes a false "the match has stalled" arrived. Between maps
+    the threshold is stretched."""
     add_match(storage)
     m = MatchMachine(storage, config)
     between = observe("live", maps((13, 4, "( 8 : 4 ; 5 : 0 )"), None, None))
@@ -174,8 +176,9 @@ def test_break_between_maps_is_not_a_stall(storage, config):
 
 
 def test_no_stall_alert_while_the_live_feed_is_connected(storage, config):
-    """Смысл события — «я ослеп». Пока фид на связи, мы видим матч, и его
-    молчание в паузе слепотой не является."""
+    """The point of the event is "I have gone blind". While the feed is
+    connected we do see the match, and its silence during a pause is not
+    blindness."""
     add_match(storage)
     m = MatchMachine(storage, config)
     frozen = observe("live", [live_map_line(1, 5, 7)] + maps(None, None)[1:])
@@ -186,8 +189,8 @@ def test_no_stall_alert_while_the_live_feed_is_connected(storage, config):
 
 
 def test_stall_timer_does_not_accumulate_under_a_working_feed(storage, config):
-    """После отключения фида тревога не должна прилететь мгновенно за всё
-    время, что он работал."""
+    """After the feed disconnects the alarm must not fire instantly for all
+    the time it was working."""
     add_match(storage)
     m = MatchMachine(storage, config)
     frozen = observe("live", [live_map_line(1, 5, 7)] + maps(None, None)[1:])
@@ -195,12 +198,12 @@ def test_stall_timer_does_not_accumulate_under_a_working_feed(storage, config):
     m.apply(frozen, now=now, feed_connected=True)
     later = now + timedelta(hours=2)
     assert m.apply(frozen, now=later, feed_connected=True) == []
-    # фид отвалился — отсчёт начинается заново, а не задним числом
+    # the feed dropped — the countdown restarts rather than backdating
     assert m.apply(frozen, now=later, feed_connected=False) == []
 
 
 def test_observation_without_our_team_is_dropped(storage, config):
-    """Не та страница или сменившаяся разметка не должны записать чужой счёт."""
+    """The wrong page or changed markup must not record somebody else's score."""
     add_match(storage)
     m = MatchMachine(storage, config)
     alien = MatchObservation(
@@ -212,11 +215,11 @@ def test_observation_without_our_team_is_dropped(storage, config):
 
 
 def test_real_fixtures_drive_a_full_match(storage, config):
-    """Прогон по настоящим страницам.
+    """A pass over the real pages.
 
-    Первая карта на live-фикстуре уже сыграна к моменту знакомства с матчем,
-    поэтому E6 по ней не шлётся — это не переход. Вторая завершается уже под
-    наблюдением, о ней сообщается.
+    On the live fixture the first map has already been played by the time we
+    meet the match, so no E6 is sent for it — that is not a transition. The
+    second finishes under observation and is reported.
     """
     add_match(storage, 2397047)
     m = MatchMachine(storage, config)
@@ -229,7 +232,7 @@ def test_real_fixtures_drive_a_full_match(storage, config):
 
 
 # ----------------------------------------------------------------------
-# E6 — ключевое требование ТЗ: конец карты со счётом
+# E6 is the key requirement of the spec: the end of a map with the score
 # ----------------------------------------------------------------------
 
 
@@ -247,7 +250,7 @@ def test_e6_when_map_becomes_decided(storage, config):
 
 
 def test_e6_not_repeated_while_match_continues(storage, config):
-    """Страница ещё долго показывает счёт сыгранной карты — событие одно."""
+    """The page keeps showing a played map's score for a long time — one event."""
     add_match(storage)
     m = MatchMachine(storage, config)
     m.apply(observe("live", maps(None, None, None)))
@@ -258,8 +261,8 @@ def test_e6_not_repeated_while_match_continues(storage, config):
 
 
 def test_two_maps_decided_between_polls_get_their_own_series_score(storage, config):
-    """Если опрос пропустил окончание первой карты, счёт серии в сообщении о
-    ней должен быть на момент этой карты, а не итоговый."""
+    """If polling missed the end of the first map, the series score in the
+    message about it must be as of that map, not the final one."""
     add_match(storage)
     m = MatchMachine(storage, config)
     m.apply(observe("live", maps(None, None, None)))
@@ -273,8 +276,8 @@ def test_two_maps_decided_between_polls_get_their_own_series_score(storage, conf
 
 
 def test_no_e6_if_match_discovered_already_over(storage, config):
-    """Матч доигран, пока сервис лежал: сыпать E6 по всем картам задним
-    числом — мусор, шлём только итог."""
+    """The match finished while the service was down: showering E6 over every
+    map after the fact is noise, we send only the result."""
     add_match(storage)
     m = MatchMachine(storage, config)
     events = m.apply(observe("over", maps((10, 13, None), (8, 13, None), None)))
@@ -292,8 +295,8 @@ def test_e6_survives_overtime(storage, config):
 
 
 def test_full_bo3_replay_gives_exact_event_sequence(storage, config):
-    """Записанная последовательность наблюдений всегда даёт один и тот же
-    список событий — это и регрессионный тест."""
+    """A recorded sequence of observations always yields the same list of
+    events — that doubles as a regression test."""
     add_match(storage)
     m = MatchMachine(storage, config)
     timeline = [
@@ -313,8 +316,8 @@ def test_full_bo3_replay_gives_exact_event_sequence(storage, config):
 
 
 def test_replaying_the_same_timeline_twice_sends_nothing_new(storage, config):
-    """Тот же сценарий, что реконнект живого фида: полное состояние приходит
-    заново, а число уведомлений меняться не должно."""
+    """The same scenario as a live-feed reconnect: the full state arrives
+    again and the notification count must not change."""
     from hltv_notify.notify.outbox import Notifier
 
     add_match(storage)
@@ -336,8 +339,8 @@ def test_replaying_the_same_timeline_twice_sends_nothing_new(storage, config):
 
 
 def test_running_map_does_not_produce_e6(storage, config):
-    """Главная ловушка, найденная на живом матче: у идущей карты счёт тоже
-    числовой, и наивное правило прислало бы E6 с промежуточным счётом."""
+    """The main trap, found on a live match: a running map has a numeric score
+    too, and the naive rule would have sent an E6 with an in-play score."""
     add_match(storage)
     m = MatchMachine(storage, config)
     m.apply(observe("live", maps(None, None, None)))
@@ -346,7 +349,7 @@ def test_running_map_does_not_produce_e6(storage, config):
     assert m.apply(observe("live", running)) == []
     assert storage.map_results(MATCH_ID) == []
 
-    # ...а когда карта закончилась, событие приходит один раз и с финальным счётом
+    # ...and once the map ended, the event arrives once, with the final score
     events = m.apply(observe("live", maps((11, 13, "( 5 : 7 ; 6 : 6 )"), None, None)))
     assert [e.type for e in events] == ["E6"]
     assert (events[0].payload["score_team"], events[0].payload["score_opponent"]) == (13, 11)
@@ -362,10 +365,11 @@ def test_series_score_stored_during_running_map_excludes_it(storage, config):
 
 
 def test_drawn_series_is_neither_a_win_nor_a_loss():
-    """BO2 вполне заканчивается 1:1.
+    """A BO2 quite happily ends 1:1.
 
-    Булево здесь означало бы поражение, а получателю, следящему за соперником,
-    format.orient перевернул бы его в победу — про один и тот же результат.
+    A boolean here would mean a defeat, and for the recipient following the
+    opponent format.orient would flip it into a win — about one and the same
+    result.
     """
     from hltv_notify.notify import format as fmt
 

@@ -1,7 +1,7 @@
-"""Клиент Telegram Bot API.
+"""Telegram Bot API client.
 
-Отдельная сессия без impersonation: подмена TLS-фингерпринта нужна только
-для HLTV, а к Telegram надо ходить как обычный клиент.
+A separate session without impersonation: spoofing the TLS fingerprint is only
+needed for HLTV, and Telegram should be approached as an ordinary client.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ class TelegramError(RuntimeError):
 class Telegram:
     def __init__(self, token: str, proxies: Optional[Mapping[str, str]] = None):
         self._token = token
-        # Прокси у Telegram свой на случай, если api.telegram.org попал в
-        # NO_PROXY, а HLTV — нет (или наоборот).
+        # Telegram gets its own proxy setting in case api.telegram.org is in
+        # NO_PROXY while HLTV is not, or the other way round.
         self._proxies = dict(proxies or {})
         self._session: Optional[AsyncSession] = None
 
@@ -48,25 +48,25 @@ class Telegram:
         url = API.format(token=self._token, method=method)
         try:
             response = await session.post(url, json=payload, timeout=timeout)
-        except Exception as exc:  # noqa: BLE001 - сеть
+        except Exception as exc:  # noqa: BLE001 - network
             raise TelegramError(f"{type(exc).__name__}: {exc}") from exc
 
         try:
             data = response.json()
-        except Exception as exc:  # noqa: BLE001 - невалидный ответ
-            raise TelegramError(f"HTTP {response.status_code}, тело не JSON") from exc
+        except Exception as exc:  # noqa: BLE001 - invalid response
+            raise TelegramError(f"HTTP {response.status_code}, body is not JSON") from exc
 
         if data.get("ok"):
             return data["result"]
 
         description = data.get("description", "")
-        # Правка тем же текстом — не ошибка, а нормальный исход: счёт мог не
-        # измениться между обновлениями.
+        # An edit with the same text is not an error but a normal outcome: the
+        # score may not have changed between two updates.
         if "message is not modified" in description.lower():
             return None
         retry_after = (data.get("parameters") or {}).get("retry_after")
-        # 400 и 403 сами не пройдут: неверный chat_id, бот заблокирован,
-        # сломанная разметка. Повторять их бессмысленно.
+        # 400 and 403 will not resolve themselves: a wrong chat_id, the bot
+        # blocked, broken markup. Retrying them is pointless.
         fatal = response.status_code in (400, 401, 403) and retry_after is None
         raise TelegramError(f"Telegram {response.status_code}: {description}",
                             retry_after=retry_after, fatal=fatal)
@@ -98,10 +98,10 @@ class Telegram:
         await self._call("editMessageText", payload)
 
     async def answer_callback_query(self, callback_id: str, text: str = "") -> None:
-        """Обязательный ответ на нажатие кнопки.
+        """The mandatory answer to a button press.
 
-        Без него Telegram показывает у кнопки крутилку, пока не отвалится по
-        таймауту, и человек думает, что бот завис.
+        Without it Telegram keeps a spinner on the button until it times out,
+        and the person concludes the bot has hung.
         """
         await self._call("answerCallbackQuery",
                          {"callback_query_id": callback_id, "text": text[:200]})

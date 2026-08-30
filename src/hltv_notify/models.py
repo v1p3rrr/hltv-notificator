@@ -1,5 +1,5 @@
-"""Общие структуры. Наблюдения приходят от источников, события рождает
-только машина состояний."""
+"""Shared structures. Sources record observations; only the state machine
+gives birth to events."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 @dataclass(frozen=True)
 class ScheduleEntry:
-    """Один матч, увиденный на странице команды."""
+    """One match as seen on the team page."""
 
     match_id: int
     start_utc: datetime
@@ -24,13 +24,13 @@ class ScheduleEntry:
 
     @property
     def opponent_is_placeholder(self) -> bool:
-        """«Winner of match X» и подобное: соперник ещё не определён."""
+        """"Winner of match X" and the like: the opponent is not decided yet."""
         return self.opponent_id is None
 
 
 @dataclass(frozen=True)
 class Event:
-    """Готовое к отправке событие. Ключ вычисляется из содержания."""
+    """An event ready to send. The key is derived from the content."""
 
     type: str
     idempotency_key: str

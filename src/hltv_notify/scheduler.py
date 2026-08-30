@@ -1,7 +1,7 @@
-"""Опрос расписания и выбор режима частоты.
+"""Schedule polling and the choice of frequency mode.
 
-Матч не должен опрашиваться в активном режиме круглосуточно: команда может не
-играть неделями, и это норма, а не ошибка.
+A match must not be polled in active mode around the clock: a team can go weeks
+without playing, and that is normal, not an error.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class SchedulePoller:
     # ------------------------------------------------------------------
 
     def request_poll(self) -> None:
-        """Внеочередной опрос по команде /check."""
+        """An out-of-turn poll requested by the /check command."""
         self._force.set()
 
     def current_mode(self, now: Optional[datetime] = None) -> str:
@@ -57,23 +57,24 @@ class SchedulePoller:
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            # Флаг сбрасывается ПЕРЕД опросом, а не после. Иначе /check,
-            # отданный пока опрос уже идёт, стирался этим сбросом: бот успевал
-            # ответить «Проверяю расписание», а внеочередной проверки не было —
-            # следующая случалась только через штатный интервал, до получаса.
+            # The flag is cleared BEFORE the poll, not after. Otherwise a
+            # /check issued while a poll was already running was erased by that
+            # clear: the bot answered "checking the schedule" and no
+            # out-of-turn check happened — the next one came only after the
+            # regular interval, up to half an hour later.
             self._force.clear()
             try:
                 await self.poll_once()
-            except Exception:  # noqa: BLE001 - опрос не имеет права уронить процесс
-                log.exception("непредвиденный сбой опроса расписания")
+            except Exception:  # noqa: BLE001 - polling must not bring the process down
+                log.exception("unexpected failure while polling the schedule")
 
             self.mode = self.current_mode()
             delay = jittered(self.config.interval_for(self.mode))
-            log.info("режим %s, следующий опрос через %.0fs", self.mode, delay)
+            log.info("mode %s, next poll in %.0fs", self.mode, delay)
 
             if self._force.is_set():
-                # Просьба поступила во время опроса — обслуживаем её сразу.
-                log.info("внеочередной опрос по команде /check")
+                # The request arrived during the poll — serve it right away.
+                log.info("out-of-turn poll requested by /check")
                 continue
 
             waiters = [asyncio.create_task(stop.wait()), asyncio.create_task(self._force.wait())]
@@ -87,14 +88,15 @@ class SchedulePoller:
     # ------------------------------------------------------------------
 
     async def poll_once(self) -> List[Event]:
-        """Опрос расписания по КАЖДОЙ отслеживаемой команде.
+        """Poll the schedule of EVERY tracked team.
 
-        Страницы разных команд — независимые источники: неудача по одной не
-        должна мешать остальным, поэтому ошибки собираются, а цикл идёт дальше.
+        Different teams' pages are independent sources: a failure on one must
+        not get in the way of the others, so errors are collected and the loop
+        goes on.
         """
         teams = self.storage.tracked_teams()
         if not teams:
-            log.warning("не задано ни одной отслеживаемой команды")
+            log.warning("no tracked teams configured")
             return []
 
         produced: List[Event] = []
@@ -105,14 +107,14 @@ class SchedulePoller:
             except (SourceRejected, SourceUnavailable) as exc:
                 failures.append(f"{team['name']}: {exc}")
             except ParseError as exc:
-                failures.append(f"{team['name']}: разбор страницы не удался: {exc}")
+                failures.append(f"{team['name']}: could not parse the page: {exc}")
 
         if failures and len(failures) == len(teams):
-            # Ни одна команда не прочиталась — это отказ источника, а не
-            # частная неудача.
+            # Not a single team could be read — that is a source failure, not
+            # an individual mishap.
             produced.extend(self._handle_failure("; ".join(failures)))
         elif failures:
-            log.error("часть команд не прочиталась: %s", "; ".join(failures))
+            log.error("some teams could not be read: %s", "; ".join(failures))
         else:
             self.storage.set_meta(LAST_POLL_KEY, iso(utcnow()))
             self.storage.set_meta(LAST_ERROR_KEY, "")
@@ -128,8 +130,8 @@ class SchedulePoller:
         try:
             entries = team_page.parse(html, team["team_id"])
         except ParseError:
-            # Ноль матчей при HTTP 200 — это почти наверняка смена вёрстки.
-            # Трактуем как отказ источника, а не как «матчей нет».
+            # Zero matches on an HTTP 200 is almost certainly a markup change.
+            # Treat it as a source failure, not as "there are no matches".
             self.storage.log_raw("team_page", url, "200/parse-error", html[:20000],
                                  self.config.raw_log_days)
             raise
@@ -137,17 +139,17 @@ class SchedulePoller:
         events = self.machine.apply(entries, team["team_id"])
         for event in events:
             self.notifier.enqueue(event)
-        log.info("расписание %s: %d матчей, %d предстоящих, событий %d",
+        log.info("schedule of %s: %d matches, %d upcoming, %d events",
                  team["name"], len(entries), len(team_page.upcoming(entries)), len(events))
         return events
 
     # ------------------------------------------------------------------
 
     def _handle_failure(self, detail: str) -> List[Event]:
-        """Решение о тревоге принимает сторож: она зависит не от числа попыток,
-        а от того, сколько мы уже слепы и чем рискуем прямо сейчас."""
+        """The watchdog decides about the alarm: it depends not on the number of
+        attempts but on how long we have been blind and what is at risk now."""
         self.storage.set_meta(LAST_ERROR_KEY, detail)
-        log.error("опрос расписания не удался: %s", detail)
+        log.error("schedule polling failed: %s", detail)
         events = self.watchdog.report_failure("schedule", detail)
         for event in events:
             self.notifier.enqueue(event)

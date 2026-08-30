@@ -1,11 +1,12 @@
-"""Напоминания перед матчем.
+"""Pre-match reminders.
 
-Первое уведомление о матче — «матч начался», а хочется успеть сесть заранее.
-Набор интервалов свой у каждого подписчика: кому-то хватает пятнадцати минут,
-кому-то нужен час, чтобы доехать до телевизора.
+The first notification about a match is "the match has started", and one would
+like to sit down beforehand. The set of intervals is per subscriber: fifteen
+minutes is enough for some, others need an hour to get to the television.
 
-Напоминание адресное: интервалы у подписчиков разные, поэтому событие идёт не
-всем, кого касается матч, а конкретному чату (`only_chat` в payload).
+A reminder is targeted: intervals differ between subscribers, so the event does
+not go to everyone the match concerns but to one specific chat (`only_chat` in
+the payload).
 """
 
 from __future__ import annotations
@@ -25,13 +26,13 @@ TICK_SECONDS = 30.0
 
 
 def humanize(minutes: int) -> str:
-    """15 → «15 минут», 60 → «час», 90 → «1 ч 30 мин»."""
+    """15 -> "15 min", 60 -> "1 h", 90 -> "1 h 30 min"."""
     if minutes < 60:
-        return f"{minutes} мин"
+        return f"{minutes} min"
     hours, rest = divmod(minutes, 60)
     if rest == 0:
-        return f"{hours} ч"
-    return f"{hours} ч {rest} мин"
+        return f"{hours} h"
+    return f"{hours} h {rest} min"
 
 
 class ReminderScheduler:
@@ -40,7 +41,7 @@ class ReminderScheduler:
         self.config = config
 
     def due(self, now: Optional[datetime] = None) -> List[Event]:
-        """Напоминания, которым пора уйти прямо сейчас."""
+        """Reminders that should go out right now."""
         now = now or utcnow()
         events: List[Event] = []
 
@@ -53,9 +54,10 @@ class ReminderScheduler:
                     continue
                 start = parse_iso(row["start_utc"])
                 for minutes in offsets:
-                    # Окно открывается ровно за N минут и закрывается стартом.
-                    # Повторно не выстрелит: ключ содержит матч и интервал, а
-                    # журнал отправленного не даст создать его дважды.
+                    # The window opens exactly N minutes before and closes at
+                    # the start. It will not fire twice: the key contains the
+                    # match and the interval, and the journal of what was sent
+                    # will not let it be created a second time.
                     if not (now < start <= now + timedelta(minutes=minutes)):
                         continue
                     events.append(self._event(chat_id, row, minutes, start, now))
@@ -64,7 +66,7 @@ class ReminderScheduler:
     def _is_theirs(self, chat_id: str, match_id: int) -> bool:
         tracked = self.storage.match_team_ids(match_id)
         if not tracked:
-            # Матч завели до появления подписчиков — напоминаем всем.
+            # The match was created before subscribers existed — remind everyone.
             return True
         return any(chat_id in self.storage.subscribers_tracking(team_id)
                    for team_id in tracked)
@@ -96,8 +98,8 @@ class ReminderScheduler:
             try:
                 for event in self.due():
                     notifier.enqueue(event)
-            except Exception:  # noqa: BLE001 - напоминания не роняют процесс
-                log.exception("сбой планировщика напоминаний")
+            except Exception:  # noqa: BLE001 - reminders do not bring the process down
+                log.exception("the reminder scheduler failed")
             try:
                 await asyncio.wait_for(stop.wait(), timeout=TICK_SECONDS)
             except asyncio.TimeoutError:

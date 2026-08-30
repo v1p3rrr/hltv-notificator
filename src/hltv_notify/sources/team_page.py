@@ -1,17 +1,18 @@
-"""Парсер страницы команды — источник расписания.
+"""Parser for the team page — the schedule source.
 
-Почему именно эта страница, а не /matches?team=<id>: последнее запрещено
-robots.txt (см. docs/recon/R5), а здесь лежат те же данные в разрешённой зоне.
+Why this page and not /matches?team=<id>: the latter is disallowed by
+robots.txt (see docs/recon/R5), while the same data sits here in the allowed
+area.
 
-Разметка (проверена на фикстуре, docs/recon/R3):
+Markup (verified against a saved fixture, docs/recon/R3):
     table.match-table
-      tr.event-header-cell         название турнира, действует до следующего
+      tr.event-header-cell         tournament name, in force until the next one
       tr.team-row
-        td.date-cell span[data-unix]      время старта, epoch в МИЛЛИсекундах
-        a.team-name.team-1 / .team-2      обе команды, href /team/<id>/<slug>
-        .score-cell .score  x2            "-" до игры, числа после
-        a.matchpage-button                предстоящий матч
-        a.stats-button                    сыгранный матч
+        td.date-cell span[data-unix]      start time, epoch in MILLIseconds
+        a.team-name.team-1 / .team-2      both teams, href /team/<id>/<slug>
+        .score-cell .score  x2            "-" before the game, numbers after
+        a.matchpage-button                an upcoming match
+        a.stats-button                    a played match
 """
 
 from __future__ import annotations
@@ -32,36 +33,39 @@ log = logging.getLogger(__name__)
 
 MATCH_ID_RE = re.compile(r"/matches/(\d+)/")
 TEAM_ID_RE = re.compile(r"/team/(\d+)/")
-# Хвост адреса матча. Набор символов узкий намеренно: ни слэша, ни точки,
-# ни собаки — то есть из него нельзя выбраться за пределы одного сегмента пути.
+# The tail of a match address. The character set is deliberately narrow: no
+# slash, no dot, no at-sign — meaning there is no way out of a single path
+# segment.
 MATCH_SLUG_RE = re.compile(r"/matches/\d+/([A-Za-z0-9_-]{1,120})")
 
 
 def match_url(match_id: int, href: str = "") -> str:
-    """Адрес страницы матча.
+    """The address of a match page.
 
-    Собирается ИЗ ПРОВЕРЕННОГО ЧИСЛА, а не склейкой базы с тем, что пришло со
-    страницы. Склейка была дырой: `HLTV_BASE` не заканчивается слэшем, поэтому
-    href вида `@10.0.0.1:8080/matches/1/x` давал
-    `https://www.hltv.org@10.0.0.1:8080/matches/1/x`, где `www.hltv.org` — это
-    userinfo, а запрос уходил на `10.0.0.1`. Проверено: libcurl идёт именно
-    туда. Вариант `.evil.example/matches/1/x` не требовал даже собаки.
+    Built FROM A VALIDATED NUMBER rather than by concatenating the base with
+    whatever came off the page. The concatenation was a hole: `HLTV_BASE` does
+    not end in a slash, so an href like `@10.0.0.1:8080/matches/1/x` produced
+    `https://www.hltv.org@10.0.0.1:8080/matches/1/x`, where `www.hltv.org` is
+    userinfo and the request went to `10.0.0.1`. Verified: libcurl goes exactly
+    there. The variant `.evil.example/matches/1/x` did not even need the
+    at-sign.
 
-    Хвост из href берётся только ради читаемости ссылки и только если он
-    состоит из безобидных символов; HLTV на сам хвост не смотрит.
+    The tail is taken from the href only for readability, and only if it
+    consists of harmless characters; HLTV does not look at the tail itself.
     """
     found = MATCH_SLUG_RE.search(href or "")
     return f"{HLTV_BASE}/matches/{match_id}/{found.group(1) if found else '-'}"
 
 
 class ParseError(RuntimeError):
-    """Разметка не та, что ожидалась. Трактуется как отказ источника, а не
-    как «матчей нет» — иначе редизайн выглядел бы как пустое расписание."""
+    """The markup is not what was expected. Treated as a source failure rather
+    than as "no matches" — otherwise a redesign would look like an empty
+    schedule."""
 
 
 def _team_ref(anchor) -> Tuple[Optional[int], str]:
-    """id и имя команды из ссылки. У плейсхолдера («Winner of match X») ссылки
-    нет, id остаётся None — матч всё равно отслеживается."""
+    """The team id and name out of a link. A placeholder ("Winner of match X")
+    has no link, so the id stays None — the match is still tracked."""
     if anchor is None:
         return None, ""
     name = anchor.get_text(strip=True)
@@ -82,11 +86,11 @@ def _score_pair(row) -> Tuple[Optional[int], Optional[int]]:
 
 
 def parse(html: str, team_id: int) -> List[ScheduleEntry]:
-    """Все матчи команды со страницы: и предстоящие, и сыгранные."""
+    """Every match of the team from the page: upcoming and played alike."""
     soup = BeautifulSoup(html, "lxml")
     tables = soup.select("table.match-table")
     if not tables:
-        raise ParseError("на странице команды нет table.match-table")
+        raise ParseError("no table.match-table on the team page")
 
     entries: List[ScheduleEntry] = []
     for table in tables:
@@ -109,7 +113,7 @@ def parse(html: str, team_id: int) -> List[ScheduleEntry]:
 
             time_el = row.select_one("[data-unix]")
             if time_el is None:
-                log.warning("матч %s без data-unix, пропускаем", match_id)
+                log.warning("match %s has no data-unix, skipping", match_id)
                 continue
             start_utc = datetime.fromtimestamp(int(time_el["data-unix"]) / 1000, tz=timezone.utc)
 
@@ -117,8 +121,8 @@ def parse(html: str, team_id: int) -> List[ScheduleEntry]:
             second_id, second_name = _team_ref(row.select_one("a.team-name.team-2"))
             score_first, score_second = _score_pair(row)
 
-            # Своя команда на странице команды идёт первой, но полагаться на
-            # порядок не будем: сверяемся по id.
+            # Our team comes first on its own page, but we will not rely on the
+            # ordering: match by id instead.
             if first_id == team_id:
                 opponent_id, opponent_name = second_id, second_name
                 score_team, score_opponent = score_first, score_second
@@ -126,7 +130,7 @@ def parse(html: str, team_id: int) -> List[ScheduleEntry]:
                 opponent_id, opponent_name = first_id, first_name
                 score_team, score_opponent = score_second, score_first
             else:
-                log.debug("матч %s без нашей команды, пропускаем", match_id)
+                log.debug("match %s does not involve our team, skipping", match_id)
                 continue
 
             entries.append(ScheduleEntry(
@@ -142,16 +146,16 @@ def parse(html: str, team_id: int) -> List[ScheduleEntry]:
             ))
 
     if not entries:
-        raise ParseError("ни одной строки матча не разобрано — похоже на смену вёрстки")
+        raise ParseError("not a single match row parsed — looks like a redesign")
     return entries
 
 
 def parse_team_name(html: str) -> Optional[str]:
-    """Каноничное имя команды со страницы.
+    """The canonical team name from the page.
 
-    Нужно при добавлении команды через бота: имя, выведенное из slug, будет
-    отличаться от того, что показывает HLTV («forze-reload» → «Forze Reload»
-    вместо «FORZE Reload»), а имя попадает в каждое уведомление.
+    Needed when a team is added through the bot: a name derived from the slug
+    differs from what HLTV shows ("forze-reload" -> "Forze Reload" instead of
+    "FORZE Reload"), and the name goes into every notification.
     """
     soup = BeautifulSoup(html, "lxml")
     heading = soup.select_one(".profile-team-name") or soup.select_one("h1")
@@ -164,9 +168,9 @@ def upcoming(entries: List[ScheduleEntry]) -> List[ScheduleEntry]:
 
 
 def snapshot_of(entry: ScheduleEntry) -> Dict[str, Any]:
-    """Снимок значимых полей. В хеш не должно попадать ничего, что меняется
-    само по себе (время получения ответа и подобное) — иначе дедупликация
-    сломается."""
+    """A snapshot of the meaningful fields. Nothing that changes on its own
+    (response time and the like) may end up in the hash — that would break
+    deduplication."""
     return {
         "match_id": entry.match_id,
         "start_utc": entry.start_utc.isoformat(),

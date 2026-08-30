@@ -1,10 +1,10 @@
-"""Машина состояний: единственное место, где рождаются события.
+"""The state machine: the only place where events are born.
 
-Событие возникает на ПЕРЕХОДЕ состояния, а не на факте получения данных.
-Источники только записывают наблюдения. Это принципиально: расписание
-опрашивается постоянно и присылает одно и то же, а живой фид (этап 4) вообще
-шлёт полное состояние много раз в секунду и заново после каждого реконнекта.
-Логика «увидели X — шлём уведомление» гарантированно даст дубли.
+An event arises on a TRANSITION of state, not on the fact that data arrived.
+Sources only record observations. This is fundamental: the schedule is polled
+constantly and returns the same thing, and the live feed sends the full state
+many times a second and again after every reconnect. "We saw X, so send a
+notification" is guaranteed to produce duplicates.
 """
 
 from __future__ import annotations
@@ -20,27 +20,28 @@ from .db import Storage, iso, parse_iso, utcnow
 
 log = logging.getLogger(__name__)
 
-def bootstrap_key(team_id: int) -> str:
-    """Флаг первого запуска — СВОЙ на каждую команду.
 
-    Команду можно добавить через бота посреди работы сервиса, и в этот момент
-    у неё найдутся десятки уже сыгранных матчей. Общий флаг сделал бы такое
-    добавление шумным: прилетел бы E1 по каждому матчу нового расписания.
+def bootstrap_key(team_id: int) -> str:
+    """The first-run flag is PER TEAM.
+
+    A team can be added through the bot while the service is running, and at
+    that moment it has dozens of already played matches. A shared flag would
+    make such an addition noisy: an E1 for every match of the new schedule.
     """
     return f"bootstrapped:{team_id}"
 
 
 def _key_time(dt: datetime) -> str:
-    """Время в ключе идемпотентности — всегда UTC и до секунд.
+    """Time in an idempotency key is always UTC and truncated to seconds.
 
-    Ключ обязан зависеть только от содержания события. Попади сюда время
-    получения ответа — дедупликация перестала бы работать.
+    The key must depend only on the event's content. Let the time the response
+    arrived get in here and deduplication stops working.
     """
     return dt.astimezone(dt.tzinfo).replace(microsecond=0).isoformat()
 
 
 class ScheduleMachine:
-    """Переходы, порождаемые наблюдениями расписания: E1, E2, E3."""
+    """Transitions born from schedule observations: E1, E2, E3."""
 
     def __init__(self, storage: Storage, config: Config):
         self.storage = storage
@@ -64,8 +65,8 @@ class ScheduleMachine:
         if bootstrap:
             self.storage.set_meta(bootstrap_key(team_id), iso(now))
             log.info(
-                "команда %s взята под наблюдение: %d матчей занесены молча, "
-                "уведомления по ним не шлются", team_id, len(entries),
+                "team %s taken under observation: %d matches recorded silently, "
+                "no notifications sent for them", team_id, len(entries),
             )
         return events
 
@@ -78,8 +79,8 @@ class ScheduleMachine:
         existing = self.storage.get_match(entry.match_id)
 
         if existing is None:
-            # Сыгранные матчи в базу заносим, но E1 по ним не шлём: «новый матч»
-            # про уже доигранное — мусор.
+            # Played matches are recorded but produce no E1: "new match" about
+            # something already finished is noise.
             self.storage.upsert_match(
                 match_id=entry.match_id, opponent_id=entry.opponent_id,
                 opponent_name=entry.opponent_name, event_name=entry.event_name,
@@ -108,8 +109,8 @@ class ScheduleMachine:
             if new_start is not None:
                 start_for_storage = new_start
 
-        # Матч мог быть заведён другой отслеживаемой командой — связь ставим
-        # в любом случае, а вот перспектива (matches.team_id) остаётся прежней.
+        # The match may have been created by another tracked team — the link is
+        # made regardless, but the perspective (matches.team_id) stays put.
         self.storage.link_match_team(entry.match_id, team_id)
         canonical = self.storage.canonical_team(entry.match_id)
         oriented = canonical is None or canonical == team_id
@@ -127,12 +128,12 @@ class ScheduleMachine:
 
     def _check_time_change(self, entry: ScheduleEntry, *, confirmed_start: datetime,
                            now: datetime, bootstrap: bool):
-        """E2 с порогом и дебаунсом.
+        """E2 with a threshold and a debounce.
 
-        Перенос туда-обратно — обычное дело. Уведомлять о каждой правке
-        раздражает, не уведомлять — теряется смысл. Поэтому: сдвиги меньше
-        порога проглатываются молча, а серия правок за короткое окно
-        схлопывается в одно событие по последнему значению.
+        Moving a match back and forth is routine. Notifying about every edit is
+        irritating; not notifying loses the point. So: shifts below the
+        threshold are swallowed silently, and a burst of edits within a short
+        window collapses into a single event carrying the last value.
         """
         observed = entry.start_utc
         if observed == confirmed_start:
@@ -141,7 +142,7 @@ class ScheduleMachine:
 
         shift = abs(observed - confirmed_start)
         if shift < timedelta(minutes=self.config.e2_min_shift_minutes):
-            # Мелкий сдвиг: тихо принимаем новое время, событием не считаем.
+            # A small shift: quietly accept the new time, do not call it an event.
             self._clear_pending(entry.match_id)
             return None, observed
 
@@ -150,7 +151,7 @@ class ScheduleMachine:
         pending_since = state["pending_since_utc"] if state else None
 
         if pending_start != iso(observed):
-            # Новое (или изменившееся) предложение о переносе — окно стартует заново.
+            # A new (or changed) proposal to move it — the window restarts.
             self.storage.set_pending_start(entry.match_id, observed, now)
             return None, None
 
@@ -160,7 +161,7 @@ class ScheduleMachine:
 
         held_for = now - parse_iso(pending_since)
         if held_for < timedelta(minutes=self.config.e2_debounce_minutes):
-            log.debug("матч %s: перенос выдерживается ещё %s", entry.match_id,
+            log.debug("match %s: holding the reschedule for another %s", entry.match_id,
                       timedelta(minutes=self.config.e2_debounce_minutes) - held_for)
             return None, None
 
@@ -178,14 +179,14 @@ class ScheduleMachine:
 
     def _detect_disappeared(self, seen: Dict[int, ScheduleEntry], team_id: int, *,
                             now: datetime, bootstrap: bool) -> List[Event]:
-        """E3: матч исчез со страницы команды.
+        """E3: the match vanished from the team page.
 
-        Осторожно: матч уходит из «Upcoming» и в норме — когда начинается и
-        переезжает в «Recent results». Такой остаётся виден на странице, то
-        есть попадает в `seen`. Настоящее исчезновение — это когда его нет
-        нигде. Если при этом плановый старт ещё впереди, трактуем как отмену
-        или перенос; если старт уже прошёл — молчим, разбираться будет
-        опрос страницы матча (этап 2).
+        Careful: a match also leaves "Upcoming" in the normal course of events —
+        when it starts and moves to "Recent results". Such a match stays
+        visible on the page, that is, it lands in `seen`. A real disappearance
+        is when it is nowhere. If the scheduled start is still ahead we read
+        that as a cancellation or a reschedule; if the start has already
+        passed, we stay quiet and let the match-page polling work it out.
         """
         events: List[Event] = []
         for match_id in self.storage.tracked_match_ids(team_id):
@@ -203,8 +204,8 @@ class ScheduleMachine:
             self.storage.mark_missing(match_id, now)
             if start <= now:
                 log.warning(
-                    "матч %s пропал со страницы, но его старт уже прошёл — E3 не шлём, "
-                    "состояние определит опрос страницы матча", match_id)
+                    "match %s vanished from the page but its start has already passed — "
+                    "no E3, the match-page polling will decide the state", match_id)
                 self.storage.set_state(match_id, MatchState.UNKNOWN, source="team_page")
                 continue
 

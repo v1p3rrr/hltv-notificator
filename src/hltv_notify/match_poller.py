@@ -1,8 +1,8 @@
-"""Опрос страниц матчей: фактический старт, ход серии, завершение.
+"""Polling match pages: the actual start, the course of the series, the finish.
 
-Живёт отдельно от опроса расписания и с другой частотой. Активен только
-вокруг матчей: команда может не играть неделями, и круглосуточный активный
-опрос был бы неуважением к источнику без всякой пользы.
+Lives separately from schedule polling and at a different frequency. Active
+only around matches: a team can go weeks without playing, and round-the-clock
+active polling would be disrespectful to the source for no benefit at all.
 """
 
 from __future__ import annotations
@@ -64,19 +64,20 @@ class MatchPoller:
             if rows:
                 try:
                     await self.poll_once(rows)
-                except Exception:  # noqa: BLE001 - опрос не имеет права уронить процесс
-                    log.exception("непредвиденный сбой опроса матчей")
-                # Ещё раз, уже по свежим состояниям: матч мог только что стать
-                # LIVE, и ждать целый круг, чтобы поднять фид, значит потерять
-                # минуту там, где вся затея ради скорости.
+                except Exception:  # noqa: BLE001 - polling must not bring the process down
+                    log.exception("unexpected failure while polling matches")
+                # Once more, now on fresh state: a match may have just gone
+                # LIVE, and waiting a whole cycle to bring the feed up would
+                # lose a minute where the entire point is speed.
                 self._reconcile_live_feed(self.active())
                 self.mode = self._mode_for(self.active())
                 delay = jittered(self.config.interval_for(self.mode))
             else:
-                # Матчей рядом нет — ни одного запроса, только дешёвая проверка базы.
+                # No matches nearby — not a single request, just a cheap look
+                # at the database.
                 delay = IDLE_RECHECK_SECONDS
 
-            log.debug("опрос матчей: режим %s, активных %d, следующий цикл через %.0fs",
+            log.debug("match polling: mode %s, %d active, next cycle in %.0fs",
                       self.mode, len(rows), delay)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=delay)
@@ -86,10 +87,10 @@ class MatchPoller:
     # ------------------------------------------------------------------
 
     def _reconcile_live_feed(self, rows) -> None:
-        """Живой фид поднимается только под идущие матчи.
+        """The live feed is only brought up for running matches.
 
-        Он же определяет режим опроса страницы: пока фид на связи, страница
-        нужна лишь для сверки и опрашивается заметно реже.
+        It also decides the page polling mode: while the feed is connected the
+        page is only needed for cross-checking and is polled far less often.
         """
         if self.supervisor is None:
             return
@@ -123,8 +124,8 @@ class MatchPoller:
             html = await self.http.get_text(url)
         except (SourceRejected, SourceUnavailable) as exc:
             self._last_poll_failed = True
-            log.error("страница матча %s не читается: %s", match_id, exc)
-            return self._degraded(f"Страница матча {match_id} не читается: {exc}")
+            log.error("match page %s cannot be read: %s", match_id, exc)
+            return self._degraded(f"Match page {match_id} cannot be read: {exc}")
 
         try:
             observation = match_page.parse(html, match_id)
@@ -132,8 +133,8 @@ class MatchPoller:
             self._last_poll_failed = True
             self.storage.log_raw("match_page", url, "200/parse-error", html[:20000],
                                  self.config.raw_log_days)
-            log.error("разбор страницы матча %s не удался: %s", match_id, exc)
-            return self._degraded(f"Страница матча {match_id} не разобралась: {exc}")
+            log.error("could not parse match page %s: %s", match_id, exc)
+            return self._degraded(f"Match page {match_id} could not be parsed: {exc}")
 
         feed_connected = bool(
             self.supervisor and self.supervisor.connected_matches().get(match_id))
@@ -141,10 +142,11 @@ class MatchPoller:
         for event in events:
             self.notifier.enqueue(event)
         if events:
-            log.info("матч %s: события %s", match_id, [e.type for e in events])
+            log.info("match %s: events %s", match_id, [e.type for e in events])
         else:
-            log.debug("матч %s: %s, серия %s", match_id, observation.status,
-                      observation.series_score(self.config.team_id))
+            log.debug("match %s: %s, series %s", match_id, observation.status,
+                      observation.series_score(
+                          self.storage.canonical_team(match_id) or self.config.team_id))
         return events
 
     # ------------------------------------------------------------------

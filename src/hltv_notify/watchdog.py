@@ -1,19 +1,22 @@
-"""Сторож: сообщить, что уведомления перестали работать.
+"""The watchdog: telling you that notifications have stopped working.
 
-Смысл ровно один — если сервис ослеп в каком угодно месте, пользователь должен
-об этом узнать и сходить посмотреть матч руками. Поэтому тревога поднимается
-не мгновенно (короткий сбой чинится ретраями сам), но и не «когда-нибудь».
+There is exactly one point to it — if the service has gone blind anywhere, the
+user must find out and go look at the match by hand. So the alarm is not
+raised instantly (a short failure fixes itself through retries), but neither is
+it raised "eventually".
 
-Срочность зависит от того, чем мы рискуем прямо сейчас:
+The urgency depends on what is at stake right now:
 
-* до старта матча меньше минуты, или на карте кому-то осталось три раунда до
-  победы, или идёт овертайм — ждать нельзя, тревога через минуту;
-* всё остальное — через `DEGRADED_ALERT_SECONDS` (по умолчанию 5 минут,
-  настраивается до 10).
+* less than a minute to the match start, or someone is three rounds from
+  winning the map, or an overtime is being played — no waiting, alarm after a
+  minute;
+* everything else — after `DEGRADED_ALERT_SECONDS` (5 minutes by default,
+  configurable up to 10).
 
-Одна тревога на один сбой: ключ идемпотентности содержит момент начала сбоя,
-поэтому повторные проверки того же сбоя ничего не шлют, а новый сбой сообщится
-заново. Восстановление сообщается отдельно — чтобы не гадать, прошло ли.
+One alarm per failure: the idempotency key contains the moment the failure
+started, so repeated checks of the same failure send nothing while a new
+failure is reported afresh. Recovery is reported separately — so nobody has to
+guess whether it passed.
 """
 
 from __future__ import annotations
@@ -29,24 +32,25 @@ from .state.db import Storage, iso, parse_iso, utcnow
 
 log = logging.getLogger(__name__)
 
-# Нижняя граница: даже в самой срочной ситуации даём минуту на ретраи, иначе
-# тревога полетит от любого одиночного таймаута.
+# The lower bound: even in the most urgent situation we allow a minute for
+# retries, otherwise the alarm would fire on any single timeout.
 URGENT_SECONDS = 60.0
-# Верхняя граница настройки: молчать дольше десяти минут бессмысленно, к этому
-# времени матч уже успеет пройти мимо.
+# The upper bound of the setting: staying quiet for more than ten minutes is
+# pointless, by then the match has already gone past.
 MAX_ALERT_SECONDS = 600.0
 
-# Сколько раундов до победы считается «вот-вот всё решится».
+# How many rounds to a win counts as "it is all about to be decided".
 DECISIVE_ROUNDS = 3
-# Сколько после планового старта матч считается «вот-вот начнётся». Дальше
-# этого окна молчащий матч перестаёт быть срочным: он мог и не состояться.
+# How long after the scheduled start a match still counts as "about to begin".
+# Beyond that window a silent match stops being urgent: it may not have
+# happened at all.
 START_GRACE_MINUTES = 30
 
 SUBSYSTEMS = {
-    "schedule": "Расписание не читается",
-    "match_page": "Страница матча не читается",
-    "live_feed": "Живой фид не поднимается",
-    "outbox": "Уведомления не уходят в Telegram",
+    "schedule": "The schedule cannot be read",
+    "match_page": "The match page cannot be read",
+    "live_feed": "The live feed will not come up",
+    "outbox": "Notifications are not reaching Telegram",
 }
 
 
@@ -71,7 +75,7 @@ class Watchdog:
                    MAX_ALERT_SECONDS)
 
     def urgency(self, now: Optional[datetime] = None) -> Tuple[float, str]:
-        """Через сколько поднимать тревогу и почему именно столько."""
+        """How long before raising the alarm, and why exactly that long."""
         now = now or utcnow()
 
         for row in self.storage.active_matches(now):
@@ -81,12 +85,13 @@ class Watchdog:
             if reason:
                 return URGENT_SECONDS, reason
 
-        # Окно вокруг старта, а не только «до старта». Самый неприятный случай
-        # — матч УЖЕ начался, а мы слепы и ещё не поняли, что он идёт: именно
-        # тогда молчать пять минут дороже всего.
+        # A window around the start, not just "before the start". The nastiest
+        # case is a match that has ALREADY begun while we are blind and have
+        # not yet realised it is running: that is when staying quiet for five
+        # minutes costs the most.
         for row in self.storage.active_matches(now):
-            # Идущий матч сюда не относится: его мы как раз видим, а его
-            # срочность уже оценена выше по счёту.
+            # A running match does not belong here: that one we do see, and its
+            # urgency has already been judged from the score above.
             if row["state"] in (MatchState.LIVE, MatchState.FINISHED):
                 continue
             start = parse_iso(row["start_utc"])
@@ -95,13 +100,13 @@ class Watchdog:
             if now - start > timedelta(minutes=START_GRACE_MINUTES):
                 continue
             if start > now:
-                return URGENT_SECONDS, "до старта матча меньше минуты"
-            return URGENT_SECONDS, "матч должен был начаться, а мы его не видим"
+                return URGENT_SECONDS, "less than a minute to the match start"
+            return URGENT_SECONDS, "the match should have started and we cannot see it"
 
-        return self.normal_delay, "матч не на решающей стадии"
+        return self.normal_delay, "the match is not at a decisive stage"
 
     def _match_urgency(self, match_id: int) -> Optional[str]:
-        """Срочность по счёту идущей карты."""
+        """Urgency judged from the running map's score."""
         state = self.storage.get_state(match_id)
         if state is None or not state["current_map_score"]:
             return None
@@ -113,13 +118,13 @@ class Watchdog:
         regulation = state["regulation_rounds"] or 12
         overtime = state["overtime_rounds"] or 3
 
-        # Овертайм: обе стороны добрались до конца регламента.
+        # Overtime: both sides made it to the end of regulation.
         if ours >= regulation and theirs >= regulation:
-            return f"идёт овертайм при счёте {ours}:{theirs}"
+            return f"an overtime is being played at {ours}:{theirs}"
 
         left = rounds_to_win(ours, theirs, regulation=regulation, overtime=overtime)
         if left <= DECISIVE_ROUNDS:
-            return f"до конца карты {left} раунд(ов) при счёте {ours}:{theirs}"
+            return f"{left} round(s) to the end of the map at {ours}:{theirs}"
         return None
 
     # ------------------------------------------------------------------
@@ -127,19 +132,20 @@ class Watchdog:
     def report_failure(self, subsystem: str, detail: str,
                        now: Optional[datetime] = None,
                        since: Optional[datetime] = None) -> List[Event]:
-        """Подсистема не работает. Тревога — только когда сбой продержался.
+        """The subsystem is not working. An alarm only once the failure has held.
 
-        `since` передаёт тот, кто знает НАСТОЯЩЕЕ начало сбоя. Для очереди это
-        момент создания старейшего застрявшего сообщения: заставлять её
-        отсчитывать заново значило бы молчать лишний порог сверх того, что она
-        уже простояла.
+        `since` is passed by whoever knows the REAL start of the failure. For
+        the queue that is the creation time of the oldest stuck message: making
+        it count from scratch would mean staying quiet for one more threshold
+        on top of everything it has already waited.
         """
         now = now or utcnow()
         since_raw = self.storage.get_meta(_since_key(subsystem))
         if not since_raw:
             self.storage.set_meta(_since_key(subsystem), iso(since or now))
             self.storage.set_meta(_detail_key(subsystem), detail)
-            log.warning("подсистема %s не отвечает, отсчёт пошёл: %s", subsystem, detail)
+            log.warning("subsystem %s is not responding, the clock starts: %s",
+                        subsystem, detail)
             since_raw = iso(since or now)
             if since is None:
                 return []
@@ -154,21 +160,21 @@ class Watchdog:
         minutes = max(1, int(broken_for.total_seconds() // 60))
         return [Event(
             type="E8",
-            # Ключ включает момент НАЧАЛА сбоя: одна тревога на один сбой,
-            # но новый сбой сообщится заново.
+            # The key includes the moment the failure STARTED: one alarm per
+            # failure, but a new failure is reported afresh.
             idempotency_key=f"E8:{subsystem}:down:{iso(since)}",
             match_id=None,
             payload={
                 "reason": SUBSYSTEMS.get(subsystem, subsystem),
-                "detail": (f"Не работает {minutes} мин и не починилось само. "
-                           f"Порог {int(delay)} с, потому что {reason}. {detail}"),
+                "detail": (f"Broken for {minutes} min and did not fix itself. "
+                           f"The threshold is {int(delay)} s because {reason}. {detail}"),
                 "url": self._match_url(),
             },
         )]
 
     def report_success(self, subsystem: str,
                        now: Optional[datetime] = None) -> List[Event]:
-        """Подсистема ожила. Если о сбое сообщали — сообщаем и о конце."""
+        """The subsystem came back. If the failure was reported, report the end."""
         since_raw = self.storage.get_meta(_since_key(subsystem))
         if not since_raw:
             return []
@@ -178,9 +184,9 @@ class Watchdog:
 
         since = parse_iso(since_raw)
         broken_for = now - since
-        # О сбое, который никто не увидел, молчим и на выходе.
+        # A failure nobody saw gets no announcement on the way out either.
         if broken_for < timedelta(seconds=URGENT_SECONDS):
-            log.info("подсистема %s ожила за %.0f с, тревоги не было",
+            log.info("subsystem %s came back in %.0f s, there was no alarm",
                      subsystem, broken_for.total_seconds())
             return []
 
@@ -191,18 +197,19 @@ class Watchdog:
             match_id=None,
             payload={
                 "reason": SUBSYSTEMS.get(subsystem, subsystem),
-                "detail": f"Снова работает. Простой составил {minutes} мин.",
+                "detail": f"Working again. The outage lasted {minutes} min.",
             },
         )]
 
     # ------------------------------------------------------------------
 
     def check_outbox(self, now: Optional[datetime] = None) -> List[Event]:
-        """Очередь не разгребается — значит Telegram не принимает.
+        """The queue is not draining — which means Telegram is not accepting.
 
-        Тревога об этом уйдёт в ту же застрявшую очередь, и это нормально: она
-        доедет, когда связь вернётся, а до тех пор видна в /status и в логах.
-        Молчать нельзя — иначе о немой доставке не узнает никто.
+        The alarm about it goes into that same stuck queue, and that is fine:
+        it will get through when the connection returns, and until then it is
+        visible in /status and in the logs. Staying quiet is not an option —
+        otherwise nobody learns about the mute delivery.
         """
         now = now or utcnow()
         oldest = self.storage.oldest_pending_utc()
@@ -213,12 +220,14 @@ class Watchdog:
         if stuck_for < timedelta(seconds=delay):
             return []
         return self.report_failure(
-            "outbox", f"старейшее сообщение ждёт {int(stuck_for.total_seconds() // 60)} мин",
+            "outbox",
+            f"the oldest message has been waiting {int(stuck_for.total_seconds() // 60)} min",
             now, since=parse_iso(oldest))
 
     def check_live_feed(self, connected: dict, now: Optional[datetime] = None) -> List[Event]:
-        """Идёт матч, а фида нет. Опрос страницы при этом работает, поэтому
-        это не потеря всего — но E5, мультикиллы и скорость E6 теряются."""
+        """A match is running and there is no feed. Page polling still works, so
+        this is not a total loss — but E5, multikills and the speed of E6 are
+        gone."""
         now = now or utcnow()
         live = [row for row in self.storage.active_matches(now)
                 if row["state"] == MatchState.LIVE]
@@ -227,11 +236,12 @@ class Watchdog:
         if any(connected.get(row["match_id"]) for row in live):
             return self.report_success("live_feed", now)
         return self.report_failure(
-            "live_feed", f"матчей идёт {len(live)}, ни к одному фид не подключён", now)
+            "live_feed", f"{len(live)} match(es) running, the feed is connected to none",
+            now)
 
     def _match_url(self) -> str:
-        """Ссылка на идущий матч, если он есть: чтобы из тревоги можно было
-        сразу пойти и посмотреть счёт глазами."""
+        """A link to a running match if there is one: so that from the alarm you
+        can go and look at the score with your own eyes."""
         for row in self.storage.active_matches():
             if row["state"] == MatchState.LIVE:
                 return row["url"]
@@ -239,10 +249,10 @@ class Watchdog:
         return upcoming[0]["url"] if upcoming else ""
 
     async def run(self, stop, notifier, interval: float = 60.0) -> None:
-        """Периодическая проверка того, что никто больше не проверяет.
+        """The periodic check of the thing nobody else checks.
 
-        Опрос расписания и опрос матчей сообщают о своих сбоях сами. Очередь
-        отправки — нет: она может тихо копиться, пока Telegram не принимает.
+        Schedule polling and match polling report their own failures. The
+        sending queue does not: it can quietly pile up while Telegram refuses.
         """
         import asyncio
 
@@ -250,8 +260,8 @@ class Watchdog:
             try:
                 for event in self.check_outbox():
                     notifier.enqueue(event)
-            except Exception:  # noqa: BLE001 - сторож не имеет права умирать
-                log.exception("сбой сторожа")
+            except Exception:  # noqa: BLE001 - the watchdog is not allowed to die
+                log.exception("watchdog failed")
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except asyncio.TimeoutError:

@@ -1,4 +1,4 @@
-"""Живое сообщение на карту: создание, троттлинг, заморозка, устойчивость."""
+"""The live message per map: creation, throttling, freezing, resilience."""
 
 import asyncio
 
@@ -10,7 +10,7 @@ from hltv_notify.notify.telegram import TelegramError
 from hltv_notify.state.db import Storage
 
 MATCH_ID = 42
-CHAT = "1"   # chat_id из live_config()
+CHAT = "1"   # the chat_id from live_config()
 
 
 class FakeTelegram:
@@ -76,15 +76,15 @@ def test_second_update_edits_instead_of_sending(messenger):
 
 
 def test_hard_minimum_interval_cannot_be_configured_away(messenger):
-    """Конфиг может просить обновлять хоть каждую секунду — Telegram этого не
-    любит, поэтому нижняя граница зашита в код."""
+    """The config may ask for an update every second — Telegram dislikes that,
+    so the lower bound is hardcoded."""
     m, telegram, _ = messenger
     assert m._interval == HARD_MIN_EDIT_SECONDS
     asyncio.run(m.update(MATCH_ID, snapshot(score=(1, 0))))
     for kills in range(2, 12):
         asyncio.run(m.update(MATCH_ID, snapshot(score=(kills, 0))))
     assert len(telegram.sent) == 1
-    assert telegram.edited == []      # всё отсеяно троттлингом
+    assert telegram.edited == []      # all filtered out by the throttle
 
 
 def test_unchanged_score_does_not_burn_the_limit(messenger):
@@ -102,11 +102,11 @@ def test_finalize_freezes_the_message(messenger):
     assert storage.live_message(CHAT, MATCH_ID, 1)["finalized"] == 1
 
     asyncio.run(m.update(MATCH_ID, snapshot(score=(99, 0)), force=True))
-    assert len(telegram.edited) == 1      # после заморозки правок больше нет
+    assert len(telegram.edited) == 1      # after freezing there are no more edits
 
 
 def test_message_id_survives_restart(tmp_path):
-    """Иначе после перезапуска на ту же карту завелось бы второе сообщение."""
+    """Otherwise a restart would start a second message for the same map."""
     from hltv_notify.state.db import utcnow
 
     path = tmp_path / "restart.db"
@@ -121,13 +121,13 @@ def test_message_id_survives_restart(tmp_path):
     second = Storage(path)
     asyncio.run(LiveMessenger(second, live_config(), telegram)
                 .update(MATCH_ID, snapshot(score=(9, 1)), force=True))
-    assert len(telegram.sent) == 1        # второе сообщение не заводилось
+    assert len(telegram.sent) == 1        # no second message was created
     assert len(telegram.edited) == 1
     second.close()
 
 
 def test_telegram_failure_does_not_break_the_worker(tmp_path):
-    """Живое сообщение вспомогательное: из-за него нельзя терять вехи."""
+    """The live message is auxiliary: milestones must not be lost over it."""
     from hltv_notify.state.db import utcnow
 
     storage = Storage(tmp_path / "fail.db")
@@ -137,7 +137,7 @@ def test_telegram_failure_does_not_break_the_worker(tmp_path):
     telegram = FakeTelegram(fail_edit=True)
     m = LiveMessenger(storage, live_config(), telegram)
     asyncio.run(m.update(MATCH_ID, snapshot(score=(1, 0))))
-    asyncio.run(m.update(MATCH_ID, snapshot(score=(2, 0)), force=True))   # не бросает
+    asyncio.run(m.update(MATCH_ID, snapshot(score=(2, 0)), force=True))   # does not raise
     storage.close()
 
 

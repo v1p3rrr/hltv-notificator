@@ -1,8 +1,8 @@
-"""Команды боту — интерфейс сервиса.
+"""Bot commands — the service's interface.
 
-Пользователь должен понимать, почему уведомление не пришло, не подключаясь по
-SSH. Поэтому проверяется не «команда не упала», а что в ответе есть то, по
-чему можно судить о состоянии.
+You should be able to work out why a notification did not arrive without
+opening an SSH session. So what is checked is not "the command did not crash"
+but that the reply contains something you can judge the state by.
 """
 
 import asyncio
@@ -102,9 +102,9 @@ def test_status_reports_what_matters(bot):
     storage_obj.add_team(CHAT, 12857, "forze-reload", "FORZE Reload")
     send(command_bot, "/status")
     reply = telegram.sent[-1][1]
-    assert "команд под наблюдением: 1" in reply
-    assert "Живой фид" in reply
-    assert "Матчей в базе" in reply
+    assert "teams watched: 1" in reply
+    assert "Live feed" in reply
+    assert "Matches in the database" in reply
 
 
 def test_status_shows_dry_run_state(bot):
@@ -114,8 +114,8 @@ def test_status_shows_dry_run_state(bot):
 
 
 def test_live_shows_score_and_source(bot):
-    """Когда уведомление не пришло, важно понять: счёт до сервиса вообще
-    дошёл, и от какого источника."""
+    """When a notification did not arrive, what matters is whether the score
+    reached the service at all, and from which source."""
     command_bot, telegram, _ = bot
     send(command_bot, "/live")
     reply = telegram.sent[-1][1]
@@ -130,7 +130,7 @@ def test_live_without_matches(tmp_path, bot):
     command_bot, telegram, storage = bot
     storage.set_state(MATCH_ID, MatchState.FINISHED, source="match_page")
     send(command_bot, "/live")
-    assert "Сейчас матчей нет" in telegram.sent[-1][1]
+    assert "No matches right now" in telegram.sent[-1][1]
 
 
 def test_check_forces_a_poll(bot):
@@ -142,28 +142,28 @@ def test_check_forces_a_poll(bot):
 def test_unknown_command_shows_help(bot):
     command_bot, telegram, _ = bot
     send(command_bot, "/somethingelse")
-    assert "Не знаю такой команды" in telegram.sent[-1][1]
+    assert "I do not know that command" in telegram.sent[-1][1]
 
 
 def test_commands_from_other_chats_are_ignored(bot):
-    """Бот отвечает только аккаунтам из белого списка. Чужому — молчание:
-    отвечать отказом значит подтверждать существование бота кому попало."""
+    """The bot answers only whitelisted accounts. A stranger gets silence:
+    answering with a refusal confirms the bot exists to anyone who probes."""
     command_bot, telegram, _ = bot
     send(command_bot, "/status", chat="999")
     assert telegram.sent == []
 
 
 def test_whoami_answers_anyone(bot):
-    """Единственное исключение: свой chat_id человек должен узнать, иначе его
-    некому внести в белый список."""
+    """The one exception: a person must be able to learn their own chat_id,
+    otherwise there is nobody to add them to the whitelist."""
     command_bot, telegram, _ = bot
     send(command_bot, "/whoami", chat="999")
     assert "999" in telegram.sent[-1][1]
 
 
 def test_allowed_chat_becomes_a_subscriber(bot):
-    """Разрешённый чат заводится подписчиком при первом обращении: иначе его
-    пришлось бы прописывать в базе руками."""
+    """An allowed chat becomes a subscriber on its first message: otherwise it
+    would have to be written into the database by hand."""
     command_bot, telegram, storage = bot
     assert storage.get_subscriber(CHAT) is None
     send(command_bot, "/status")
@@ -173,11 +173,11 @@ def test_allowed_chat_becomes_a_subscriber(bot):
 def test_verbose_toggles_and_reports(bot):
     command_bot, telegram, _ = bot
     send(command_bot, "/verbose on")
-    assert "включён" in telegram.sent[-1][1]
+    assert "Verbose mode on" in telegram.sent[-1][1]
     send(command_bot, "/verbose off")
-    assert "выключен" in telegram.sent[-1][1]
+    assert "Verbose mode off" in telegram.sent[-1][1]
     send(command_bot, "/verbose")
-    assert "Использование" in telegram.sent[-1][1]
+    assert "Usage" in telegram.sent[-1][1]
 
 
 def test_next_lists_upcoming(bot):
@@ -192,20 +192,20 @@ def test_next_lists_upcoming(bot):
 
 
 def test_failed_command_still_answers(bot, monkeypatch):
-    """Ответить надо в любом случае, иначе команда выглядит зависшей."""
+    """An answer has to go out regardless, otherwise the command looks hung."""
     command_bot, telegram, _ = bot
     monkeypatch.setattr(command_bot, "_status",
-                        lambda: (_ for _ in ()).throw(RuntimeError("боль")))
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("ouch")))
     send(command_bot, "/status")
-    assert "упала" in telegram.sent[-1][1]
+    assert "crashed" in telegram.sent[-1][1]
 
 
-# ---------------------------------------------------------------- свой ответ каждому
+# ---------------------------------------------------------------- per-chat answers
 
 
 def test_live_names_the_teams_of_that_match(bot):
-    """Имя команды берётся из матча, а не из конфига: отслеживаемых может быть
-    несколько, и значение из .env подошло бы только первой."""
+    """The team name comes from the match, not from the config: there can be
+    several tracked teams and the .env value would only fit the first."""
     command_bot, telegram, storage = bot
     storage.add_subscriber(CHAT)
     storage.add_team(CHAT, 4494, "mouz", "MOUZ")
@@ -217,7 +217,8 @@ def test_live_names_the_teams_of_that_match(bot):
 
 
 def test_next_shows_only_your_own_matches(bot):
-    """Аккаунты ведут свои списки команд, и /next не должен показывать чужие."""
+    """Accounts keep their own team lists, and /next must not show other
+    people's."""
     command_bot, telegram, storage = bot
     other_chat = "777"
     storage.add_subscriber(CHAT)
@@ -240,8 +241,8 @@ def test_next_shows_only_your_own_matches(bot):
 
 
 def test_next_uses_the_personal_timezone(bot):
-    """Уведомления приходят в личном поясе — /next обязан отвечать в нём же,
-    иначе один и тот же матч показан на разном времени."""
+    """Notifications arrive in the personal timezone — /next must answer in the
+    same one, otherwise the same match is shown at two different times."""
     command_bot, telegram, storage = bot
     storage.add_subscriber(CHAT)
     storage.add_team(CHAT, 12857, "forze-reload", "FORZE Reload")

@@ -1,8 +1,8 @@
-"""Переходы, порождаемые наблюдениями страницы матча: E4, E7 и детект зависания.
+"""Transitions born from match-page observations: E4, E7 and the stall detector.
 
-Как и в расписании, событие рождается на переходе состояния. Страница матча
-опрашивается раз в минуту и присылает одно и то же — «увидели LIVE, шлём E4»
-дало бы уведомление на каждом опросе.
+As with the schedule, an event is born on a transition. The match page is
+polled every minute and returns the same thing — "we saw LIVE, send E4" would
+mean a notification on every poll.
 """
 
 from __future__ import annotations
@@ -28,18 +28,18 @@ STATUS_TO_STATE = {
 
 TERMINAL = {MatchState.FINISHED, MatchState.CANCELLED}
 
-# Перерыв между картами — это нормальная пауза, и она бывает долгой: на LAN
-# между картами проходит и двадцать минут. Порог «матч завис» на это время
-# растягивается, иначе каждый перерыв давал бы ложную тревогу.
+# A break between maps is a normal pause, and it can be long: at a LAN twenty
+# minutes pass between maps. The "match stalled" threshold is stretched for
+# that time, otherwise every break would raise a false alarm.
 BREAK_THRESHOLD_MULTIPLIER = 3
 
 
 def _overtime(line: MapLine) -> bool:
-    """Овертайм — по числу половин, а не по арифметике счёта.
+    """Overtime is judged by the number of halves, not by score arithmetic.
 
-    Регламент овертаймов различается между турнирами, и завязываться на
-    «больше 13 раундов» значит сломаться на первом же нестандартном формате.
-    Половин больше двух — значит был овертайм.
+    Overtime rules differ between tournaments, and tying this to "more than 13
+    rounds" means breaking on the first non-standard format. More than two
+    halves means there was an overtime.
     """
     if not line.halves:
         return False
@@ -57,36 +57,39 @@ class MatchMachine:
               *, feed_connected: bool = False) -> List[Event]:
         now = now or utcnow()
         match_id = observation.match_id
-        # Перспектива берётся из матча, а не из конфига: отслеживаемых команд
-        # может быть несколько, и в матче двух из них счёт обязан считаться от
-        # ОДНОЙ и той же — иначе ключи идемпотентности получатся зеркальными.
+        # The perspective comes from the match, not from the config: there can
+        # be several tracked teams, and in a match between two of them the
+        # score must be counted from ONE of them — otherwise the idempotency
+        # keys come out mirrored.
         team_id = self.storage.canonical_team(match_id) or self.config.team_id
 
         if observation.our_side(team_id) is None:
-            # Страницу отдали не ту, либо разметка поменялась. Молча
-            # интерпретировать такое опасно: можно записать чужой счёт.
-            log.warning("на странице матча %s нет команды %s — наблюдение отброшено",
-                        match_id, team_id)
+            # We were served the wrong page, or the markup changed. Silently
+            # interpreting that is dangerous: we could record someone else's
+            # score.
+            log.warning("team %s is not on match page %s — observation discarded",
+                        team_id, match_id)
             return []
 
         row = self.storage.get_match(match_id)
         state_row = self.storage.get_state(match_id)
         previous = state_row["state"] if state_row else MatchState.SCHEDULED
-        # Именно первое наблюдение СО СТРАНИЦЫ МАТЧА, а не первое вообще:
-        # строку состояния заводит опрос расписания, поэтому проверка
-        # «state_row is None» здесь почти всегда ложна и карты, доигранные до
-        # начала наблюдения, получали бы E6 задним числом.
+        # Specifically the first observation FROM THE MATCH PAGE, not the first
+        # ever: the state row is created by the schedule polling, so a
+        # "state_row is None" check here is almost always false and maps played
+        # before we started watching would receive E6 retroactively.
         #
-        # Признак — отдельная отметка, а не last_source. Через last_source это
-        # не работало: живой фид переписывает его на каждом кадре, поэтому
-        # «страница матча ещё не смотрела» было истинным ВСЁ время работы фида,
-        # и E6 со страницы уходил в молчаливую ветку всегда. Страница переставала
-        # быть подтверждающим источником ровно тогда, когда фид что-то пропускал.
+        # The marker is a dedicated field, not last_source. Through last_source
+        # this did not work: the live feed rewrites it on every frame, so "the
+        # match page has not looked yet" was true THE WHOLE TIME the feed ran,
+        # and page-side E6 always went down the silent branch. The page stopped
+        # being a confirming source exactly when the feed missed something.
         first_observation = state_row is None or state_row["page_seen_utc"] is None
         target = STATUS_TO_STATE.get(observation.status, previous)
 
-        # Снимок ДО записи результатов: по нему видно, какие карты решились
-        # именно сейчас. Иначе сравнивать было бы уже не с чем.
+        # The snapshot is taken BEFORE the results are written: it shows which
+        # maps were decided just now. Otherwise there would be nothing to
+        # compare against.
         known_maps = {r["map_number"] for r in self.storage.map_results(match_id)}
         seen_live = previous in (MatchState.LIVE, MatchState.MAP_LIVE, MatchState.MAP_BREAK)
 
@@ -104,11 +107,11 @@ class MatchMachine:
         if observation.max_rounds_regulation and observation.max_rounds_overtime:
             self.storage.set_map_format(match_id, observation.max_rounds_regulation,
                                         observation.max_rounds_overtime)
-        # Отметку ставим ПОСЛЕ того, как first_observation уже вычислен: она
-        # относится к предыдущим наблюдениям, а не к текущему.
+        # The marker is set AFTER first_observation has been computed: it
+        # refers to the previous observations, not to this one.
         self.storage.mark_page_seen(match_id)
-        # Состав карт нужен живому фиду: он знает название карты, но не её
-        # номер в серии. Записываем, как только вето сыграно.
+        # The live feed needs the map lineup: it knows the map name but not its
+        # number in the series. Record it as soon as the veto has been played.
         lineup = [line.name for line in observation.maps]
         if any(name and name.upper() != "TBA" for name in lineup):
             self.storage.set_map_lineup(match_id, lineup)
@@ -123,9 +126,11 @@ class MatchMachine:
 
         if target == MatchState.FINISHED and previous not in TERMINAL:
             if not seen_live:
-                # Матч уже доигран, а «идёт» мы не застали. Слать E4 и E6
-                # задним числом бессмысленно — сразу итог.
-                log.info("матч %s обнаружен уже завершённым, E4 и E6 пропущены", match_id)
+                # The match is already over and we never saw it running.
+                # Sending E4 and E6 after the fact is pointless — go straight
+                # to the result.
+                log.info("match %s discovered already finished, E4 and E6 skipped",
+                         match_id)
             events.append(self._event_e7(observation, row, team_id, ours, theirs))
 
         events.extend(self._check_stall(observation, team_id, target, now,
@@ -135,7 +140,7 @@ class MatchMachine:
     # ------------------------------------------------------------------
 
     def _current_map(self, observation: MatchObservation) -> Optional[MapLine]:
-        """Текущая карта — первая нерешённая с известным названием."""
+        """The current map: the first undecided one with a known name."""
         live = observation.live_map()
         if live is not None:
             return live
@@ -147,21 +152,21 @@ class MatchMachine:
 
     def _map_events(self, observation: MatchObservation, row, team_id: int,
                     known_maps: set, *, silent: bool) -> List[Event]:
-        """E6 — на переходе карты из нерешённой в решённую.
+        """E6 — on a map's transition from undecided to decided.
 
-        Событие рождается один раз на карту: повторные опросы видят ту же
-        карту уже в known_maps. Ключ идемпотентности включает счёт, поэтому
-        даже исправление счёта на стороне HLTV не приведёт к молчанию.
+        The event is born once per map: later polls see the same map already in
+        known_maps. The idempotency key includes the score, so even a score
+        correction on HLTV's side will not lead to silence.
         """
         events: List[Event] = []
         for line in observation.final_maps():
             if line.number in known_maps:
                 continue
             if silent:
-                # Карта была сыграна до того, как мы начали смотреть за матчем.
-                # Это не переход, а состояние на момент знакомства.
-                log.info("матч %s: карта %d уже была сыграна к моменту наблюдения, E6 пропущен",
-                         observation.match_id, line.number)
+                # The map was played before we started watching this match.
+                # That is not a transition but the state at the moment we met.
+                log.info("match %s: map %d had already been played by the time we "
+                         "looked, E6 skipped", observation.match_id, line.number)
                 continue
             events.append(self._event_e6(observation, row, team_id, line))
         return events
@@ -180,21 +185,23 @@ class MatchMachine:
 
     def _check_stall(self, observation: MatchObservation, team_id: int,
                      state: str, now: datetime, *, feed_connected: bool = False) -> List[Event]:
-        """«Матч завис»: идёт, но ничего не меняется дольше порога.
+        """"The match has stalled": it is live but nothing changes past a threshold.
 
-        Смысл события — «я ослеп», а не «игроки долго не стреляют». Поэтому:
+        The point of the event is "I have gone blind", not "the players are
+        taking their time". Hence:
 
-        * пока живой фид на связи, тревоги нет вообще. Мы видим матч по фиду,
-          а его молчание в паузе — это не слепота. Здоровье самого фида
-          отслеживается отдельно;
-        * между картами порог растягивается: на LAN перерыв спокойно длится
-          двадцать минут, и на реальном матче это уже дало ложную тревогу.
+        * while the live feed is connected there is no alarm at all. We see the
+          match through the feed, and its silence during a pause is not
+          blindness. The feed's own health is tracked separately;
+        * between maps the threshold is stretched: at a LAN a break easily
+          lasts twenty minutes, and on a real match this already produced a
+          false alarm.
         """
         if state != MatchState.LIVE:
             return []
         if feed_connected:
-            # Таймер не копится, иначе после отключения фида тревога прилетела
-            # бы мгновенно за всё время, что он работал.
+            # The timer does not accumulate, otherwise the alarm would fire
+            # instantly after the feed disconnects, for all the time it worked.
             self.storage.set_progress(
                 observation.match_id, observation.progress_signature(team_id), now)
             return []
@@ -224,10 +231,10 @@ class MatchMachine:
             idempotency_key=f"E8:match:{observation.match_id}:stale:{digest}",
             match_id=observation.match_id,
             payload={
-                "reason": "Матч завис",
-                "detail": (f"Счёт и состояние не меняются {minutes} мин, "
-                           f"страница матча всё ещё показывает LIVE, "
-                           f"живого фида нет."),
+                "reason": "The match has stalled",
+                "detail": (f"The score and state have not changed for {minutes} min, "
+                           f"the match page still says LIVE, "
+                           f"there is no live feed."),
             },
         )]
 
@@ -255,9 +262,9 @@ class MatchMachine:
                   line: MapLine) -> Event:
         our_score, their_score = observation.map_score(line, team_id)
         opponent_id, opponent_name = observation.opponent(team_id)
-        # Счёт серии берётся на момент этой карты, а не итоговый: между двумя
-        # опросами могут завершиться сразу две карты, и в сообщении о первой
-        # итоговый счёт был бы враньём.
+        # The series score is taken as of this map, not the final one: two maps
+        # can finish between two polls, and the final score would be a lie in
+        # the message about the first of them.
         series_ours, series_theirs = observation.series_after(line.number, team_id)
         return Event(
             type="E6",
@@ -307,9 +314,10 @@ class MatchMachine:
                 "event_name": observation.event_name or (row["event_name"] if row else ""),
                 "series_team": ours,
                 "series_opponent": theirs,
-                # None — ничья: BO2 вполне заканчивается 1:1. Булево здесь
-                # означало бы поражение, а получателю за соперника orient
-                # перевернул бы его в победу — про один и тот же результат.
+                # None means a draw: a BO2 quite happily ends 1:1. A boolean
+                # here would mean a defeat, and for the recipient following the
+                # opponent orient() would flip it into a win — about one and
+                # the same result.
                 "won": None if ours == theirs else ours > theirs,
                 "maps": maps,
                 "url": row["url"] if row else "",

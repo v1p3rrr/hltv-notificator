@@ -1,4 +1,4 @@
-"""Конфигурация: только переменные окружения, никаких секретов в коде."""
+"""Configuration: environment variables only, never secrets in code."""
 
 from __future__ import annotations
 
@@ -12,30 +12,33 @@ from urllib.parse import urlparse
 
 from .proxy import ProxySettings
 
-# Потолок частоты, зашитый в код. Конфигом не поднимается — см. docs/operations.md.
+# The request-rate ceiling, hardcoded. Not raisable by config — see
+# docs/operations.md.
 HARD_MIN_REQUEST_INTERVAL_SECONDS = 30.0
 
 HLTV_BASE = "https://www.hltv.org"
 
-# Куда сервису вообще позволено ходить. Список закрытый и в коде, а не в
-# конфиге: адреса матчей приходят СО СТРАНИЦЫ HLTV, и без этой проверки
-# испорченная запись увела бы запрос на чужой хост — в том числе в локальную
-# сеть, из которой сервис работает. Проверка стоит на самом выходе в сеть,
-# чтобы сработать и на записи, попавшей в базу до починки разбора.
+# Where the service is allowed to go at all. The list is closed and lives in
+# code rather than config: match addresses come FROM THE HLTV PAGE, and without
+# this check a poisoned record would send the request to a foreign host — the
+# local network the service runs in included. The check sits at the network
+# egress itself so it also catches records written to the database before the
+# parser was fixed.
 ALLOWED_HOSTS = frozenset({"www.hltv.org", "hltv.org", "scorebot-lb.hltv.org"})
 
 log = logging.getLogger(__name__)
 
-# id чата в Telegram — число; у групп и каналов оно отрицательное.
+# A Telegram chat id is a number; for groups and channels it is negative.
 _CHAT_ID_RE = re.compile(r"^-?\d+$")
 
 
 def url_allowed(url: str) -> bool:
-    """Разрешён ли адрес к запросу.
+    """Whether this address may be requested.
 
-    Схема обязана быть https, хост — из ALLOWED_HOSTS. Сравнивается именно
-    `hostname` из разбора URL, а не начало строки: `https://www.hltv.org@evil/`
-    начинается «правильно», но ведёт на evil — это userinfo, а не хост.
+    The scheme must be https and the host must be in ALLOWED_HOSTS. What is
+    compared is the `hostname` from the parsed URL, not the start of the
+    string: `https://www.hltv.org@evil/` starts out "correctly" yet leads to
+    evil — that part is userinfo, not the host.
     """
     try:
         parts = urlparse(url or "")
@@ -63,7 +66,7 @@ def _str(name: str, default: str) -> str:
 
 @dataclass(frozen=True)
 class Config:
-    # что отслеживаем
+    # what we follow
     team_id: int = field(default_factory=lambda: _int("TEAM_ID", 12857))
     team_slug: str = field(default_factory=lambda: _str("TEAM_SLUG", "forze-reload"))
     team_name: str = field(default_factory=lambda: _str("TEAM_NAME", "FORZE Reload"))
@@ -71,22 +74,22 @@ class Config:
     # Telegram
     bot_token: str = field(default_factory=lambda: _str("TELEGRAM_BOT_TOKEN", ""))
 
-    # Кому разрешено пользоваться ботом. ОДНА переменная, id через запятую:
+    # Who may use the bot. ONE variable, ids separated by commas:
     #     TELEGRAM_CHAT_ID=123456789,987654321
-    # Первый в списке — основной чат: в него садится команда из TEAM_ID при
-    # первом запуске и уходят сообщения, если подписчиков в базе ещё нет.
-    # По умолчанию список закрытый: у бота публичный адрес, и без него команду
-    # ему сможет отдать кто угодно, кто его найдёт.
+    # The first one is the main chat: the team from TEAM_ID is seeded there on
+    # the first run, and messages go there while there are no subscribers yet.
+    # The list is closed by default: the bot has a public address, and without
+    # it anyone who finds the bot could command it.
     chat_id: str = field(default_factory=lambda: _str("TELEGRAM_CHAT_ID", ""))
     whitelist_only: bool = field(default_factory=lambda: _bool("TELEGRAM_WHITELIST_ONLY", True))
 
-    # режим
+    # mode
     dry_run: bool = field(default_factory=lambda: _bool("DRY_RUN", True))
     timezone: str = field(default_factory=lambda: _str("TZ_DISPLAY", "Europe/Moscow"))
     log_level: str = field(default_factory=lambda: _str("LOG_LEVEL", "INFO"))
     db_path: Path = field(default_factory=lambda: Path(_str("DB_PATH", "data/hltv.db")))
 
-    # частоты (секунды)
+    # polling intervals (seconds)
     poll_idle: int = field(default_factory=lambda: _int("POLL_IDLE_SECONDS", 1800))
     poll_prematch: int = field(default_factory=lambda: _int("POLL_PREMATCH_SECONDS", 180))
     poll_live: int = field(default_factory=lambda: _int("POLL_LIVE_SECONDS", 60))
@@ -95,42 +98,43 @@ class Config:
     prematch_window_minutes: int = field(
         default_factory=lambda: _int("PREMATCH_WINDOW_MINUTES", 30))
 
-    # живое сообщение со счётом по ходу карты
+    # the live score message kept up to date during a map
     live_message: bool = field(default_factory=lambda: _bool("LIVE_MESSAGE", True))
     live_edit_seconds: int = field(default_factory=lambda: _int("LIVE_EDIT_SECONDS", 10))
 
-    # через сколько сообщать, что сервис ослеп. В срочных ситуациях (до старта
-    # меньше минуты, три раунда до конца карты, овертайм) порог всё равно
-    # минута — см. hltv_notify.watchdog.
+    # how long before we report that the service has gone blind. In urgent
+    # situations (under a minute to the start, three rounds left on a map,
+    # overtime) the threshold is a minute regardless — see hltv_notify.watchdog.
     degraded_alert_seconds: int = field(
         default_factory=lambda: _int("DEGRADED_ALERT_SECONDS", 300))
 
-    # пауза после 403 на живом фиде: источник просит отойти, и секунды тут
-    # не помогают. На это время сервис живёт опросом страницы матча.
+    # pause after a 403 on the live feed: the source is asking us to back off,
+    # and seconds will not help. The service lives on match-page polling then.
     live_feed_cooldown: int = field(
         default_factory=lambda: _int("LIVE_FEED_COOLDOWN_SECONDS", 600))
 
-    # алерт о мультикилле игрока НАШЕЙ команды, чтобы успеть клипануть
+    # alert on a multikill by a player of OUR team, so a highlight can be clipped
     multikill_alerts: bool = field(default_factory=lambda: _bool("MULTIKILL_ALERTS", True))
     multikill_threshold: int = field(default_factory=lambda: _int("MULTIKILL_THRESHOLD", 4))
 
-    # Напоминания перед матчем: значения по умолчанию для нового подписчика,
-    # дальше он правит их сам через /remind.
+    # Pre-match reminders: the defaults handed to a new subscriber, who then
+    # edits them via /remind.
     default_reminders: str = field(default_factory=lambda: _str("REMINDERS", "15"))
 
-    # Сколько хранить историю. Журнал событий — это защита от повторной
-    # рассылки, поэтому чистится куда осторожнее очереди.
+    # How long history is kept. The event journal is the protection against
+    # re-sending, so it is pruned far more cautiously than the queue.
     outbox_keep_days: int = field(default_factory=lambda: _int("OUTBOX_KEEP_DAYS", 90))
     events_keep_days: int = field(default_factory=lambda: _int("EVENTS_KEEP_DAYS", 365))
 
-    # пороги событий
+    # event thresholds
     e2_min_shift_minutes: int = field(default_factory=lambda: _int("E2_MIN_SHIFT_MINUTES", 5))
     e2_debounce_minutes: int = field(default_factory=lambda: _int("E2_DEBOUNCE_MINUTES", 10))
     stale_minutes: int = field(default_factory=lambda: _int("STALE_MINUTES", 15))
 
     # HTTP
-    # Прокси берётся из стандартных HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY —
-    # своих переменных для этого не заводим, см. hltv_notify.proxy.
+    # The proxy comes from the standard HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/
+    # NO_PROXY — we deliberately do not invent our own variables, see
+    # hltv_notify.proxy.
     proxy: ProxySettings = field(default_factory=ProxySettings.from_env)
     impersonate: str = field(default_factory=lambda: _str("HTTP_IMPERSONATE", "chrome"))
     http_retries: int = field(default_factory=lambda: _int("HTTP_RETRIES", 3))
@@ -143,11 +147,11 @@ class Config:
         return f"{HLTV_BASE}/team/{self.team_id}/{self.team_slug}"
 
     def proxies_for(self, url: str) -> Dict[str, str]:
-        """Прокси для конкретного адреса — в том виде, в каком его ждёт curl_cffi."""
+        """The proxy for one address, in the shape curl_cffi expects."""
         return self.proxy.for_url(url)
 
     def interval_for(self, mode: str) -> int:
-        """Интервал опроса с учётом потолка: конфиг не может его пробить."""
+        """Polling interval, ceiling included: config cannot break through it."""
         base = {
             "idle": self.poll_idle,
             "prematch": self.poll_prematch,
@@ -168,10 +172,11 @@ class Config:
         return sorted(set(values), reverse=True)
 
     def allowed_chat_ids(self) -> List[str]:
-        """Разрешённые чаты в порядке объявления, без повторов.
+        """Allowed chats in declaration order, without duplicates.
 
-        Источник один — `TELEGRAM_CHAT_ID`, где id перечисляются через запятую
-        (точка с запятой и пробелы тоже принимаются).
+        There is a single source, `TELEGRAM_CHAT_ID`, where ids are listed
+        separated by commas (semicolons and surrounding spaces are accepted
+        too).
         """
         ids: List[str] = []
         for part in self.chat_id.replace(";", ",").split(","):
@@ -179,20 +184,20 @@ class Config:
             if not part or part in ids:
                 continue
             if not _CHAT_ID_RE.match(part):
-                # Не роняем запуск: остальные id рабочие, а этот всё равно
-                # ничего не получит — Telegram адресуется числом.
-                log.warning("в списке чатов пропущено значение %r: "
-                            "нужен числовой id, его подскажет /whoami", part)
+                # Do not fail the startup: the other ids work, and this one
+                # would receive nothing anyway — Telegram is addressed by number.
+                log.warning("skipping %r in the chat list: a numeric id is "
+                            "required, /whoami will tell you yours", part)
                 continue
             ids.append(part)
         return ids
 
     @property
     def main_chat_id(self) -> str:
-        """Основной чат: первый в списке.
+        """The main chat: the first one in the list.
 
-        Он же адресат первого посева команды из TEAM_ID и запасной получатель,
-        пока подписчиков в базе нет.
+        It is also where the first team from TEAM_ID is seeded and the fallback
+        recipient while there are no subscribers in the database.
         """
         ids = self.allowed_chat_ids()
         return ids[0] if ids else ""

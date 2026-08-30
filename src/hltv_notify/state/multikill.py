@@ -1,14 +1,15 @@
-"""Мультикиллы игроков отслеживаемой команды — алерт, чтобы успеть клипануть.
+"""Multikills by players of a tracked team — an alert so a highlight can be clipped.
 
-Считается по кадрам scoreboard, а НЕ по событиям Kill из лога. Причина та же,
-по которой лог не используется нигде: при каждом подключении фид проигрывает
-бэклог заново, и алерты посыпались бы за давно сыгранные раунды. В кадре у
-каждого игрока лежат накопленные за карту фраги — значит достаточно запомнить
-их на старте раунда и следить за приростом. Заодно это даёт алерт в момент
-четвёртого фрага, а не в конце раунда.
+Computed from scoreboard frames, NOT from the Kill events in the log. The
+reason is the same one that keeps the log unused everywhere: on every connect
+the feed replays its backlog, and alerts would rain down for long-finished
+rounds. In a frame every player carries the kills accumulated over the map, so
+it is enough to remember them at the start of a round and watch the increment.
+That also gives the alert at the fourth kill rather than at the end of the
+round.
 
-Направление ошибок безопасное: после переподключения посреди раунда база
-берётся заново, поэтому мультикилл может быть ПРОПУЩЕН, но не выдуман.
+Errors lean the safe way: after a reconnect mid-round the baseline is taken
+afresh, so a multikill may be MISSED but never invented.
 """
 
 from __future__ import annotations
@@ -25,10 +26,11 @@ WARMUP = "warmup"
 
 
 class MultikillTracker:
-    """Состояние на один матч. Живёт в памяти воркера.
+    """State for one match. Lives in the worker's memory.
 
-    В базу не пишется намеренно: это данные одного раунда, они бессмысленны
-    после рестарта, а защита от повторов и так стоит на ключе события.
+    Deliberately not written to the database: this is one round's data, it is
+    meaningless after a restart, and the protection against repeats already
+    sits on the event key.
     """
 
     def __init__(self, threshold: int = 4):
@@ -39,27 +41,28 @@ class MultikillTracker:
 
     @property
     def levels(self) -> List[int]:
-        """Пороги, на которых стоит дёрнуть: сам порог и эйс.
+        """The thresholds worth pinging on: the threshold itself and an ace.
 
-        Между ними не сообщаем: два сообщения на раунд — это уже шум, а вот
-        «стало эйсом» посмотреть стоит.
+        Nothing in between: two messages per round is already noise, whereas
+        "it became an ace" is worth a look.
         """
         return sorted({self.threshold, ACE})
 
     def observe(self, map_name: str, round_number: int, round_state: str,
                 players: Iterable[PlayerLine]) -> List[Tuple[PlayerLine, int]]:
-        """Игроки, которые ТОЛЬКО ЧТО взяли мультикилл, и число фрагов в раунде."""
+        """Players who JUST took a multikill, and their kills in this round."""
         players = list(players)
         key = (map_name, round_number)
 
         if key != self._key:
-            # Новый раунд: фиксируем точку отсчёта и забываем прошлые алерты.
+            # A new round: fix the baseline and forget the previous alerts.
             self._key = key
             self._baseline = {p.steam_id: p.kills for p in players}
             self._alerted = set()
             return []
 
-        # В разминке фраги идут из дезматча и к раунду отношения не имеют.
+        # During warmup the kills come from deathmatch and have nothing to do
+        # with the round.
         if round_state == WARMUP:
             self._baseline = {p.steam_id: p.kills for p in players}
             return []
@@ -68,8 +71,9 @@ class MultikillTracker:
         for player in players:
             base = self._baseline.get(player.steam_id)
             if base is None:
-                # Игрок появился в кадре посреди раунда (замена, реконнект).
-                # Считать все его фраги за раунд нельзя — берём точку отсчёта.
+                # The player appeared in the frame mid-round (a substitution, a
+                # reconnect). Counting all their kills as this round's would be
+                # wrong — take a baseline instead.
                 self._baseline[player.steam_id] = player.kills
                 continue
             in_round = player.kills - base
@@ -79,8 +83,8 @@ class MultikillTracker:
                        if in_round >= level and (player.steam_id, level) not in self._alerted]
             if not crossed:
                 continue
-            # Отмечаем ВСЕ взятые пороги, а сообщаем один раз: игрок мог
-            # прыгнуть с трёх сразу до эйса между двумя кадрами.
+            # Mark ALL crossed thresholds but report once: a player can jump
+            # from three straight to an ace between two frames.
             for level in crossed:
                 self._alerted.add((player.steam_id, level))
             found.append((player, in_round))

@@ -1,9 +1,9 @@
-"""Обновление старой базы.
+"""Upgrading an old database.
 
-Схема менялась много раз, и база — не кэш: в ней журнал отправленного. Если
-миграция потеряет его, сервис сочтёт новым всё подряд и разошлёт уведомления
-повторно. Поэтому здесь собирается база ПЕРВОЙ версии и открывается текущим
-кодом.
+The schema changed many times, and the database is not a cache: it holds the
+journal of what was sent. If a migration loses it, the service treats
+everything as new and sends the notifications again. So here a database of the
+FIRST version is assembled and opened with the current code.
 """
 
 import sqlite3
@@ -12,8 +12,8 @@ import pytest
 
 from hltv_notify.state.db import Storage
 
-# Схема ровно та, что была на первом этапе: ни команд, ни подписчиков,
-# ни приватных памяток машин.
+# Exactly the schema of stage one: no teams, no subscribers, none of the
+# machines' private memos.
 LEGACY_SCHEMA = """
 CREATE TABLE matches (
     match_id       INTEGER PRIMARY KEY,
@@ -111,7 +111,7 @@ def test_old_database_opens(legacy_db):
 
 
 def test_journal_of_sent_events_survives(legacy_db):
-    """Самое важное: без журнала сервис разошлёт всё заново."""
+    """The most important part: without the journal the service resends it all."""
     storage = Storage(legacy_db)
     keys = [row["idempotency_key"] for row in
             storage.conn.execute("SELECT idempotency_key FROM sent_events")]
@@ -123,7 +123,7 @@ def test_matches_and_results_survive(legacy_db):
     storage = Storage(legacy_db)
     match = storage.get_match(1)
     assert match["opponent_name"] == "Color"
-    assert match["team_id"] is None          # колонка появилась, значение пустое
+    assert match["team_id"] is None          # the column appeared, the value is empty
     results = storage.map_results(1)
     assert (results[0]["map_name"], results[0]["score_team"]) == ("Mirage", 13)
     storage.close()
@@ -148,7 +148,7 @@ def test_new_tables_appear(legacy_db):
 
 
 def test_service_works_on_a_migrated_database(legacy_db, config):
-    """Не «открылась», а «работает»: заводим подписчика, команду и событие."""
+    """Not "it opened" but "it works": create a subscriber, a team and an event."""
     from hltv_notify.models import Event
     from hltv_notify.notify.outbox import Notifier
 
@@ -167,14 +167,15 @@ def test_service_works_on_a_migrated_database(legacy_db, config):
 
 
 def test_already_sent_event_is_not_resent_after_upgrade(legacy_db, config):
-    """Главная опасность обновления. Ключи в старой базе записаны без адресата,
-    а новый код добавляет к ним префикс чата. Без разовой миграции ключей
-    сервис при первом запуске счёл бы новым ВСЁ, что уже отправлял."""
+    """The main danger of an upgrade. Keys in the old database were written
+    without a recipient, and the new code prefixes them with the chat. Without
+    a one-off key migration the service would treat EVERYTHING it had already
+    sent as new on the first run."""
     from hltv_notify.models import Event
     from hltv_notify.notify.outbox import Notifier
 
     storage = Storage(legacy_db)
-    storage.adopt_legacy_event_keys("111")      # то, что делает __main__ при старте
+    storage.adopt_legacy_event_keys("111")      # what __main__ does at startup
     storage.add_subscriber("111")
     storage.add_team("111", 12857, "forze-reload", "FORZE Reload")
     storage.link_match_team(1, 12857)
@@ -192,7 +193,7 @@ def test_already_sent_event_is_not_resent_after_upgrade(legacy_db, config):
 def test_key_adoption_runs_only_once(legacy_db):
     storage = Storage(legacy_db)
     assert storage.adopt_legacy_event_keys("111") == 1
-    assert storage.adopt_legacy_event_keys("111") == 0   # флаг в meta
+    assert storage.adopt_legacy_event_keys("111") == 0   # the flag in meta
     keys = [row["idempotency_key"] for row in
             storage.conn.execute("SELECT idempotency_key FROM sent_events")]
     assert keys == ["111|E6:1:map:1:result:13-10"]

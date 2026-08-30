@@ -1,4 +1,4 @@
-"""Несколько подписчиков: свои команды, свои глушения, свой разворот счёта."""
+"""Several subscribers: own teams, own mutes, own orientation of the score."""
 
 import pytest
 
@@ -50,13 +50,13 @@ def bodies(storage):
     return {row["chat_id"]: row["body"] for row in storage.due_outbox(limit=50)}
 
 
-# ---------------------------------------------------------------- адресация
+# ---------------------------------------------------------------- addressing
 
 
 def test_event_reaches_only_those_who_track_a_participant(store, config):
     store.add_team(ILYA, MOUZ, "mouz", "MOUZ")
     store.link_match_team(MATCH, MOUZ)
-    store.add_team(FRIEND, 1, "other", "Other")     # чужая команда
+    store.add_team(FRIEND, 1, "other", "Other")     # someone else's team
 
     Notifier(store, config, telegram=None).enqueue(e6())
     assert set(bodies(store)) == {ILYA}
@@ -69,7 +69,7 @@ def test_both_subscribers_of_the_same_team_get_it(store, config):
 
     Notifier(store, config, telegram=None).enqueue(e6())
     assert set(bodies(store)) == {ILYA, FRIEND}
-    assert store.sent_event_count() == 2       # по одному ключу на адресата
+    assert store.sent_event_count() == 2       # one key per recipient
 
 
 def test_the_same_event_is_not_sent_twice_to_the_same_chat(store, config):
@@ -82,13 +82,13 @@ def test_the_same_event_is_not_sent_twice_to_the_same_chat(store, config):
     assert store.sent_event_count() == 1
 
 
-# ---------------------------------------------------------------- разворот счёта
+# ---------------------------------------------------------------- score orientation
 
 
 def test_opponent_follower_sees_the_score_flipped(store, config):
-    """Событие ориентировано на каноническую команду. Тому, кто следит за её
-    соперником, надо показать зеркальный счёт — иначе он увидит 13:10 там,
-    где для него это 10:13."""
+    """The event is oriented on the canonical team. Someone following its
+    opponent must be shown the mirrored score — otherwise they read 13:10
+    where for them it is 10:13."""
     store.add_team(ILYA, MOUZ, "mouz", "MOUZ")
     store.add_team(FRIEND, FORZE, "forze-reload", "FORZE Reload")
     store.link_match_team(MATCH, MOUZ)
@@ -100,7 +100,7 @@ def test_opponent_follower_sees_the_score_flipped(store, config):
     assert "10:13" in texts[FRIEND] and "FORZE Reload" in texts[FRIEND]
 
 
-# ---------------------------------------------------------------- глушение
+# ---------------------------------------------------------------- muting
 
 
 def test_muted_type_does_not_reach_that_subscriber(store, config):
@@ -123,9 +123,9 @@ def test_other_types_still_reach_a_partially_muted_subscriber(store, config):
 
 
 def test_one_muted_team_does_not_silence_the_other(store, config):
-    """Матч двух отслеживаемых команд: подписчик заглушил одну из них, но
-    следит и за второй. Событие про матч он получить должен — иначе одна
-    команда молча глушила бы уведомления про другую."""
+    """A match between two tracked teams: the subscriber muted one of them but
+    follows the second as well. They must still receive the event — otherwise
+    one team would silently mute notifications about the other."""
     store.add_team(ILYA, MOUZ, "mouz", "MOUZ")
     store.add_team(ILYA, FORZE, "forze-reload", "FORZE Reload")
     store.link_match_team(MATCH, MOUZ)
@@ -148,7 +148,7 @@ def test_muting_both_teams_does_silence_the_match(store, config):
     assert store.pending_count() == 0
 
 
-# ---------------------------------------------------------------- мультикилл и служебное
+# ---------------------------------------------------------------- multikill and service
 
 
 def test_multikill_reaches_only_that_players_team(store, config):
@@ -166,12 +166,12 @@ def test_multikill_reaches_only_that_players_team(store, config):
 
 
 def test_service_alerts_go_to_everyone(store, config):
-    """«Сервис ослеп» касается всех, независимо от того, за кем они следят."""
+    """"The service has gone blind" concerns everyone, whoever they follow."""
     store.add_team(ILYA, MOUZ, "mouz", "MOUZ")
     store.add_team(FRIEND, 1, "other", "Other")
 
     event = Event(type="E8", idempotency_key="E8:schedule:down:x", match_id=None,
-                  payload={"reason": "Расписание не читается", "detail": "таймаут"})
+                  payload={"reason": "The schedule cannot be read", "detail": "timeout"})
     Notifier(store, config, telegram=None).enqueue(event)
     assert set(bodies(store)) == {ILYA, FRIEND}
 
@@ -186,7 +186,7 @@ def test_disabled_subscriber_gets_nothing(store, config):
     assert set(bodies(store)) == {ILYA}
 
 
-# ---------------------------------------------------------------- белый список
+# ---------------------------------------------------------------- the whitelist
 
 
 def test_whitelist_blocks_unknown_chats(config):
@@ -201,13 +201,14 @@ def test_whitelist_can_be_switched_off():
 
 
 def test_a_single_id_is_a_valid_list():
-    """Один аккаунт — это просто список из одного id."""
+    """A single account is simply a list of one id."""
     assert Config(chat_id=ILYA).chat_allowed(ILYA) is True
     assert Config(chat_id=ILYA).chat_allowed(FRIEND) is False
 
 
 def test_single_user_mode_still_works(tmp_path):
-    """Подписчиков нет вовсе — шлём в чат из конфига, как раньше."""
+    """There are no subscribers at all — send to the chat from the config, as
+    before."""
     storage = Storage(tmp_path / "single.db")
     storage.upsert_match(match_id=MATCH, opponent_id=1, opponent_name="X",
                          event_name="E", start_utc=utcnow(), url="u",
@@ -218,18 +219,18 @@ def test_single_user_mode_still_works(tmp_path):
     storage.close()
 
 
-# ---------------------------------------------------------------- один список чатов
+# ---------------------------------------------------------------- one chat list
 
 
 def test_chat_ids_are_listed_through_commas():
-    """Одна переменная, id через запятую. Точка с запятой и пробелы тоже."""
+    """One variable, ids separated by commas. Semicolons and spaces too."""
     cfg = Config(chat_id="111, 222;333")
     assert cfg.allowed_chat_ids() == ["111", "222", "333"]
     assert cfg.chat_allowed("333") is True
 
 
 def test_main_chat_is_the_first_in_the_list():
-    """Первый — основной: посев команды и одиночный режим адресуются ему."""
+    """The first is the main one: the team seed and single-user mode go there."""
     assert Config(chat_id="111,222").main_chat_id == "111"
 
 
@@ -244,33 +245,34 @@ def test_duplicates_and_junk_are_dropped():
     assert cfg.allowed_chat_ids() == ["111", "-1001234567890"]
 
 
-# ---------------------------------------------------------------- пауза
+# ---------------------------------------------------------------- pause
 
 
 def test_pause_covers_a_match_without_team_links(store, config):
-    """Матч ещё не связан с командами — так выглядит база сразу после
-    обновления. Раньше такое событие уходило владельцу из конфига напрямую,
-    мимо и списка подписчиков, и паузы."""
+    """The match is not linked to any team yet — that is what the database
+    looks like right after an upgrade. Such an event used to go to the config
+    owner directly, past both the subscriber list and the pause."""
     assert store.match_team_ids(MATCH) == []
     store.set_subscriber_paused(ILYA, True)
     Notifier(store, config, telegram=None).enqueue(e6())
     assert set(bodies(store)) == {FRIEND}
 
 
-# ---------------------------------------------------------------- отзыв доступа
+# ---------------------------------------------------------------- revoking access
 
 
 def test_removing_a_chat_from_the_whitelist_stops_delivery(tmp_path):
-    """Белый список закрывал только вход. Убрать чат из TELEGRAM_CHAT_ID
-    значило отобрать управление ботом, но не отписать от уведомлений: доставка
-    шла по таблице подписчиков, а она про конфиг ничего не знает."""
+    """The whitelist only closed the way in. Removing a chat from
+    TELEGRAM_CHAT_ID took away control of the bot but did not unsubscribe it
+    from notifications: delivery went by the subscribers table, which knows
+    nothing about the config."""
     from hltv_notify.__main__ import _revoke_removed_subscribers
 
     storage = Storage(tmp_path / "revoke.db")
     storage.add_subscriber(ILYA)
     storage.add_subscriber(FRIEND)
 
-    _revoke_removed_subscribers(storage, Config(chat_id=ILYA))   # FRIEND убрали
+    _revoke_removed_subscribers(storage, Config(chat_id=ILYA))   # FRIEND removed
 
     assert storage.subscriber_ids() == [ILYA]
     assert storage.get_subscriber(FRIEND)["enabled"] == 0
@@ -278,8 +280,8 @@ def test_removing_a_chat_from_the_whitelist_stops_delivery(tmp_path):
 
 
 def test_open_mode_and_empty_list_revoke_nobody(tmp_path):
-    """В открытом режиме списка нет вовсе, а пустой список — почти наверняка
-    недозаполненный .env, а не намерение всех отписать."""
+    """In open mode there is no list at all, and an empty list is almost
+    certainly an unfinished .env rather than an intent to unsubscribe everyone."""
     from hltv_notify.__main__ import _revoke_removed_subscribers
 
     storage = Storage(tmp_path / "revoke2.db")
@@ -301,6 +303,6 @@ def test_returning_a_chat_to_the_whitelist_restores_it(tmp_path):
     _revoke_removed_subscribers(storage, Config(chat_id=ILYA))
     assert storage.subscriber_ids() == [ILYA]
 
-    storage.add_subscriber(FRIEND)          # снова внесли — add_subscriber включает
+    storage.add_subscriber(FRIEND)          # added back — add_subscriber re-enables
     assert sorted(storage.subscriber_ids()) == [ILYA, FRIEND]
     storage.close()

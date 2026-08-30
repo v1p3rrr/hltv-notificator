@@ -1,9 +1,9 @@
-"""Таймзоны и потолок частоты запросов.
+"""Timezones and the request-rate ceiling.
 
-Отображение идёт в Europe/Moscow (перехода на летнее время там нет с 2014
-года). Europe/Riga оставлена в тестах намеренно: на ней проверяется, что
-механизм переживает переход — если пояс отображения когда-нибудь сменят,
-наивная арифметика со смещением всплывёт сразу.
+Display happens in Europe/Moscow (which has had no DST since 2014).
+Europe/Riga is kept in the tests deliberately: it is where the mechanism is
+checked to survive a DST switch — if the display zone is ever changed, naive
+offset arithmetic would surface immediately.
 """
 
 import asyncio
@@ -22,8 +22,8 @@ MOSCOW = "Europe/Moscow"
 
 
 def test_dst_start_shifts_offset_by_an_hour():
-    """Летнее время в ЕС наступает в последнее воскресенье марта в 01:00 UTC.
-    До него Рига +2, после +3."""
+    """EU summer time starts on the last Sunday of March at 01:00 UTC. Before
+    it Riga is +2, after it +3."""
     before = to_local(datetime(2026, 3, 29, 0, 30, tzinfo=timezone.utc), RIGA)
     after = to_local(datetime(2026, 3, 29, 1, 30, tzinfo=timezone.utc), RIGA)
     assert before.utcoffset() == timedelta(hours=2)
@@ -33,12 +33,12 @@ def test_dst_start_shifts_offset_by_an_hour():
 
 
 def test_match_a_month_ahead_does_not_drift():
-    """Матч, запланированный до перехода на летнее время, при наивной работе
-    со смещением уехал бы на час. Храним UTC — не уезжает."""
+    """A match scheduled before the DST switch would drift by an hour under
+    naive offset arithmetic. We store UTC — it does not drift."""
     utc = datetime(2026, 4, 15, 16, 0, tzinfo=timezone.utc)
-    assert human_time(utc, RIGA).endswith("19:00")   # +3, летнее время
+    assert human_time(utc, RIGA).endswith("19:00")   # +3, summer time
     winter = datetime(2026, 2, 15, 16, 0, tzinfo=timezone.utc)
-    assert human_time(winter, RIGA).endswith("18:00")  # +2, зимнее
+    assert human_time(winter, RIGA).endswith("18:00")  # +2, winter time
 
 
 def test_dst_end_is_handled():
@@ -49,7 +49,7 @@ def test_dst_end_is_handled():
 
 
 def test_config_cannot_lower_the_ceiling(monkeypatch):
-    """Потолок зашит в код: конфигом его не пробить."""
+    """The ceiling is hardcoded: config cannot break through it."""
     monkeypatch.setenv("POLL_LIVE_SECONDS", "1")
     config = Config()
     assert config.poll_live == 1
@@ -57,7 +57,7 @@ def test_config_cannot_lower_the_ceiling(monkeypatch):
 
 
 def test_requests_are_spaced_by_the_ceiling(monkeypatch):
-    """Два запроса подряд не могут уйти чаще потолка."""
+    """Two consecutive requests cannot go out faster than the ceiling."""
     monkeypatch.setattr(http_module, "HARD_MIN_REQUEST_INTERVAL_SECONDS", 0.3)
 
     class FakeResponse:
@@ -85,8 +85,8 @@ def test_requests_are_spaced_by_the_ceiling(monkeypatch):
 
 
 def test_long_poll_is_exempt_from_the_ceiling(monkeypatch):
-    """Удерживаемое соединение живого фида — это не частый опрос, и под
-    потолок оно попадать не должно."""
+    """The live feed's held connection is not frequent polling and must not
+    fall under the ceiling."""
     monkeypatch.setattr(http_module, "HARD_MIN_REQUEST_INTERVAL_SECONDS", 5.0)
 
     class FakeResponse:
@@ -116,7 +116,7 @@ def test_long_poll_is_exempt_from_the_ceiling(monkeypatch):
 def test_jitter_stays_within_bounds():
     values = [http_module.jittered(100) for _ in range(200)]
     assert all(80 <= v <= 120 for v in values)
-    assert len(set(values)) > 1  # запросы не идут ровно по сетке
+    assert len(set(values)) > 1  # requests do not land exactly on a grid
 
 
 def test_moscow_is_the_default_display_timezone():
@@ -125,8 +125,8 @@ def test_moscow_is_the_default_display_timezone():
 
 
 def test_moscow_does_not_observe_dst():
-    """У Москвы перехода нет: матч не должен «уезжать» в даты, когда Европа
-    переводит часы."""
+    """Moscow has no DST: a match must not drift on the dates when Europe
+    changes its clocks."""
     march = to_local(datetime(2026, 3, 29, 0, 30, tzinfo=timezone.utc), MOSCOW)
     october = to_local(datetime(2026, 10, 25, 1, 30, tzinfo=timezone.utc), MOSCOW)
     assert march.utcoffset() == timedelta(hours=3)
@@ -135,6 +135,6 @@ def test_moscow_does_not_observe_dst():
 
 
 def test_match_time_in_moscow_matches_hltv():
-    """Матч 2397053: data-unix 1787994300000. По Москве это 12:05."""
+    """Match 2397053: data-unix 1787994300000. In Moscow that is 12:05."""
     utc = datetime.fromtimestamp(1787994300000 / 1000, tz=timezone.utc)
-    assert human_time(utc, MOSCOW) == "сб 29 авг, 12:05"
+    assert human_time(utc, MOSCOW) == "Sat 29 Aug, 12:05"

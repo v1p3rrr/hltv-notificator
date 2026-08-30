@@ -1,4 +1,4 @@
-"""Поведение Live Worker на молчании и обрывах фида."""
+"""How the Live Worker behaves on feed silence and disconnects."""
 
 import asyncio
 
@@ -10,8 +10,7 @@ from hltv_notify.sources.scorebot import FeedIdle, FeedUnavailable
 
 
 class FakeClient:
-    """Отдаёт заранее заданную последовательность: строки — пакеты,
-    исключения — бросаются."""
+    """Serves a predefined sequence: strings are packets, exceptions are raised."""
 
     def __init__(self, script):
         self.script = list(script)
@@ -37,23 +36,23 @@ def worker(storage, config) -> LiveWorker:
 
 
 def test_idle_does_not_tear_down_the_connection(storage, config):
-    """Молчание фида — норма: в перерыве между картами так проходит вся пауза.
-    Считать это обрывом значит переподключаться каждые 45 секунд."""
+    """Feed silence is normal: the whole break between maps passes like this.
+    Treating it as a disconnect means reconnecting every 45 seconds."""
     w = worker(storage, config)
-    client = FakeClient([FeedIdle("тишина"), FeedIdle("тишина"), []])
+    client = FakeClient([FeedIdle("silence"), FeedIdle("silence"), []])
     stop = asyncio.Event()
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(w._consume(client, stop))
 
-    assert client.polls == 4          # три из скрипта плюс попытка после него
-    assert client.closed is False     # соединение не закрывали
+    assert client.polls == 4          # three from the script plus one attempt after
+    assert client.closed is False     # the connection was not closed
 
 
 def test_real_failure_propagates_for_reconnect(storage, config):
-    """Настоящий сбой обязан всплыть наружу — там backoff и переподключение."""
+    """A real failure has to surface — backoff and reconnect live out there."""
     w = worker(storage, config)
-    client = FakeClient([FeedIdle("тишина"), FeedUnavailable("сеть отвалилась")])
+    client = FakeClient([FeedIdle("silence"), FeedUnavailable("network dropped")])
     stop = asyncio.Event()
 
     with pytest.raises(FeedUnavailable):
@@ -61,8 +60,8 @@ def test_real_failure_propagates_for_reconnect(storage, config):
 
 
 def test_idle_is_a_kind_of_unavailable():
-    """FeedIdle наследует FeedUnavailable: если его где-то не поймали явно,
-    поведение деградирует до обычного переподключения, а не до падения."""
+    """FeedIdle inherits FeedUnavailable: if it is not caught explicitly
+    somewhere, the behaviour degrades to an ordinary reconnect, not a crash."""
     assert issubclass(FeedIdle, FeedUnavailable)
 
 
@@ -76,8 +75,8 @@ def test_stop_event_ends_consumption(storage, config):
 
 
 def test_rejection_cooldown_has_a_floor(monkeypatch, storage):
-    """403 — это «отойди». Конфиг может попросить паузу в секунду, но такая
-    пауза означала бы долбёжку источника, поэтому есть нижняя граница."""
+    """403 means "back off". The config may ask for a one-second pause, but
+    such a pause would mean hammering the source, hence the lower bound."""
     from hltv_notify.config import Config
     from hltv_notify.live_worker import MIN_REJECTED_COOLDOWN_SECONDS
 

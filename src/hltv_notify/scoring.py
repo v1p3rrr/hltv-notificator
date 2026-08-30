@@ -1,24 +1,25 @@
-"""Определение конца карты по счёту.
+"""Deciding that a map is over, from the score alone.
 
-Зачем это нужно отдельно от страницы матча. Секция карт на HLTV обновляется с
-задержкой — наблюдение на матче 2397091: при реальном счёте 12:11 в секции
-стояло 5:7, то есть результат предыдущей половины. Уведомление «карта
-закончилась» по странице приходит не в момент победного раунда, а когда HLTV
-обновит статусы. Живой фид знает счёт по раундам сразу, поэтому решение о
-конце карты принимается по счёту, а страница остаётся подтверждением.
+Why this is separate from the match page. The maps section on HLTV updates
+late — observed on match 2397091: the real score was 12:11 while the section
+still showed 5:7, the result of the previous half. A "map over" notification
+driven by the page therefore arrives not at the winning round but whenever
+HLTV gets around to updating its statuses. The live feed knows the round score
+immediately, so the map-over decision is made from the score and the page is
+left as confirmation.
 
-Никаких «13 раундов» в коде. Формат приходит из самого источника:
-`regulationHalfLength` и `overtimeHalfLength` в кадре scoreboard (наблюдалось
-12 и 3), они же — в атрибутах `data-max-rounds-regulation` и
-`data-max-rounds-overtime` на странице матча. Поэтому правило одинаково
-работает и для MR12, и для устаревшего MR15, и для коротких форматов.
+No hardcoded "13 rounds" anywhere. The format comes from the source itself:
+`regulationHalfLength` and `overtimeHalfLength` in the scoreboard frame
+(observed 12 and 3), and the same values in the `data-max-rounds-regulation`
+and `data-max-rounds-overtime` attributes on the match page. That is why the
+rule works equally for MR12, for the retired MR15 and for short formats.
 
-Как считается. Половина длится `regulation` раундов, значит регламент — это
-2*regulation раундов, и победа в нём наступает на `regulation + 1`, если
-соперник не добрал до `regulation`. Если оба дошли до `regulation` (12:12),
-начинается овертайм: каждый овертайм — это две половины по `overtime`
-раундов, и выиграть его значит взять `overtime + 1` из них. Отсюда пороги
-13, затем 16, затем 19 и так далее.
+How it is computed. A half lasts `regulation` rounds, so regulation time is
+2*regulation rounds and a win there happens at `regulation + 1`, provided the
+opponent did not reach `regulation`. If both reached `regulation` (12:12),
+overtime starts: each overtime is two halves of `overtime` rounds, and winning
+it means taking `overtime + 1` of them. Hence the thresholds 13, then 16, then
+19 and so on.
 """
 
 from __future__ import annotations
@@ -40,15 +41,15 @@ class MapVerdict:
 
 
 def _overtime_number(low: int, regulation: int, overtime: int) -> int:
-    """Какой овертайм идёт сейчас, судя по счёту отстающей стороны.
+    """Which overtime is being played, judging by the trailing side's score.
 
-    Считаем по меньшему счёту, а не по большему: победитель овертайма
-    опережает соперника, и по большему номер определился бы неверно.
+    Counted from the lower score, not the higher one: the winner of an overtime
+    is ahead of the opponent, so the higher score would give the wrong number.
 
-    Отстающий за один овертайм может набрать не больше `overtime` раундов,
-    поэтому его счёт и говорит, сколько овертаймов позади. Граничный случай —
-    ничья на потолке овертайма (15:15 при MR12/MR3): овертайм закончен
-    вничью, идёт следующий, и цель уже 19, а не 16.
+    The trailing side can take at most `overtime` rounds per overtime, so its
+    score is what tells you how many overtimes are behind us. The edge case is
+    a tie at the overtime ceiling (15:15 under MR12/MR3): that overtime ended
+    level, the next one is running, and the target is already 19, not 16.
     """
     if low < regulation:
         return 0
@@ -58,10 +59,10 @@ def _overtime_number(low: int, regulation: int, overtime: int) -> int:
 def map_completed(score_a: Optional[int], score_b: Optional[int], *,
                   regulation: int = DEFAULT_REGULATION,
                   overtime: int = DEFAULT_OVERTIME) -> MapVerdict:
-    """Закончена ли карта при таком счёте.
+    """Whether the map is over at this score.
 
-    Возвращает вердикт, а не голый bool, чтобы вызывающий мог отличить победу
-    в регламенте от победы в овертайме, не пересчитывая то же самое заново.
+    Returns a verdict rather than a bare bool so the caller can tell a win in
+    regulation from a win in overtime without recomputing the same thing.
     """
     if score_a is None or score_b is None:
         return MapVerdict(False)
@@ -72,15 +73,15 @@ def map_completed(score_a: Optional[int], score_b: Optional[int], *,
     if low < 0 or high < 0:
         return MapVerdict(False)
 
-    # Никто ещё не взял решающий раунд регламента.
+    # Nobody has taken the deciding round of regulation yet.
     if high < regulation + 1:
         return MapVerdict(False)
 
-    # Победа в регламенте: соперник не дотянул до regulation.
+    # Win in regulation: the opponent fell short of `regulation`.
     if low < regulation:
         return MapVerdict(True, 0)
 
-    # Оба дошли до regulation — идут овертаймы.
+    # Both reached `regulation` — overtimes are being played.
     played = _overtime_number(low, regulation, overtime)
     threshold = regulation + played * overtime + 1
     if high >= threshold and low <= threshold - 2:
@@ -91,13 +92,14 @@ def map_completed(score_a: Optional[int], score_b: Optional[int], *,
 def rounds_to_win(score_a: int, score_b: int, *,
                   regulation: int = DEFAULT_REGULATION,
                   overtime: int = DEFAULT_OVERTIME) -> int:
-    """Сколько раундов лидеру осталось до победы на карте.
+    """How many rounds the leader still needs to win the map.
 
-    Нужно для сообщений вида «матчпоинт»: величина считается по тем же
-    порогам, что и сам конец карты, поэтому расходиться они не могут.
+    Needed for "match point"-style judgements: it is computed from the same
+    thresholds as map completion itself, so the two cannot drift apart.
     """
-    # Та же защита, что и в map_completed: без неё формат с overtime=0 (поле
-    # пропало в кадре и подставился ноль) уронил бы вызов делением на ноль.
+    # The same guard as in map_completed: without it a format with overtime=0
+    # (the field went missing in a frame and zero was substituted) would crash
+    # the call with a division by zero.
     if regulation < 1 or overtime < 1:
         return 0
     high, low = max(score_a, score_b), min(score_a, score_b)

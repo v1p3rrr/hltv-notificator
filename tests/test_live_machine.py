@@ -1,4 +1,4 @@
-"""Переходы по кадрам живого фида: E5 и мгновенный E6."""
+"""Transitions driven by live-feed frames: E5 and an immediate E6."""
 
 import pytest
 
@@ -23,8 +23,8 @@ def add_match(storage, lineup=("Mirage", "Dust2", "Ancient")):
 
 def frame(map_name="de_mirage", *, ours=0, theirs=0, rnd=1, state="started",
           live=True, we_are_ct=True, regulation=12, overtime=3) -> LiveFrame:
-    """Наша команда по умолчанию за CT. Стороны в фиде меняются после
-    перерыва, поэтому счёт привязан к id, а не к стороне."""
+    """Our team is on CT by default. Sides swap in the feed after the break,
+    so the score is tied to the id, not to the side."""
     if we_are_ct:
         ct_id, ct_score, t_id, t_score = TEAM_ID, ours, FOE_ID, theirs
     else:
@@ -36,15 +36,15 @@ def frame(map_name="de_mirage", *, ours=0, theirs=0, rnd=1, state="started",
         regulation=regulation, overtime=overtime)
 
 
-# ---------------------------------------------------------------- имена карт
+# ---------------------------------------------------------------- map names
 
 @pytest.mark.parametrize("raw,expected", [
     ("de_mirage", "Mirage"), ("de_nuke", "Nuke"), ("cs_office", "Office"),
     ("Mirage", "Mirage"), ("", ""),
 ])
 def test_map_name_normalisation(raw, expected):
-    """Фид даёт de_mirage, страница — Mirage. Сравнивать надо в одном виде,
-    иначе смена источника выглядела бы как смена карты."""
+    """The feed gives de_mirage, the page gives Mirage. They must be compared
+    in one shape, otherwise a change of source would look like a change of map."""
     assert normalize_map_name(raw) == expected
 
 
@@ -54,7 +54,7 @@ def test_e5_when_map_changes(storage, config):
     add_match(storage)
     m = LiveMachine(storage, config)
     m.apply(MATCH_ID, frame("de_mirage", rnd=1))
-    m.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=5, rnd=18))  # карта взята
+    m.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=5, rnd=18))  # map taken
     events = m.apply(MATCH_ID, frame("de_dust2", rnd=1, state="warmup", live=False))
     assert [e.type for e in events] == ["E5"]
     assert events[0].idempotency_key == "E5:777:map:2:started:Dust2"
@@ -62,7 +62,7 @@ def test_e5_when_map_changes(storage, config):
 
 
 def test_no_e5_when_connecting_in_the_middle_of_a_map(storage, config):
-    """Подключились посреди карты — объявлять «карта началась» поздно."""
+    """We connected mid-map — too late to announce that the map has started."""
     add_match(storage)
     m = LiveMachine(storage, config)
     assert m.apply(MATCH_ID, frame("de_mirage", ours=7, theirs=5, rnd=13)) == []
@@ -77,7 +77,7 @@ def test_e5_on_the_very_first_map_if_caught_from_the_start(storage, config):
 
 
 def test_e5_not_repeated_on_every_frame(storage, config):
-    """Кадр scoreboard приходит по нескольку раз в секунду."""
+    """A scoreboard frame arrives several times a second."""
     add_match(storage)
     m = LiveMachine(storage, config)
     m.apply(MATCH_ID, frame("de_mirage", rnd=1))
@@ -88,8 +88,8 @@ def test_e5_not_repeated_on_every_frame(storage, config):
 # ---------------------------------------------------------------- E6
 
 def test_e6_at_the_winning_round(storage, config):
-    """Ради этого всё и делается: событие в момент победного раунда, а не
-    когда HLTV обновит секцию карт."""
+    """This is what the whole thing is for: the event at the winning round,
+    not when HLTV gets around to updating its maps section."""
     add_match(storage)
     m = LiveMachine(storage, config)
     m.apply(MATCH_ID, frame("de_mirage", rnd=1))
@@ -112,7 +112,7 @@ def test_e6_not_repeated_while_feed_keeps_sending_final_score(storage, config):
 
 
 def test_e6_survives_mr3_overtime(storage, config):
-    """12:12 картой не считается, 16:14 — считается."""
+    """12:12 does not count as a finished map, 16:14 does."""
     add_match(storage)
     m = LiveMachine(storage, config)
     m.apply(MATCH_ID, frame("de_mirage", rnd=1))
@@ -134,8 +134,8 @@ def test_e6_survives_second_overtime(storage, config):
 
 
 def test_score_follows_the_team_not_the_side(storage, config):
-    """После перерыва стороны меняются местами. Привязка к ctTeamId/tTeamId,
-    а не к стороне, иначе счёт перевернётся на половине карты."""
+    """After the break the sides swap. Tie to ctTeamId/tTeamId rather than to
+    the side, otherwise the score flips halfway through the map."""
     add_match(storage)
     m = LiveMachine(storage, config)
     m.apply(MATCH_ID, frame("de_mirage", rnd=1))
@@ -143,7 +143,7 @@ def test_score_follows_the_team_not_the_side(storage, config):
     assert (events[0].payload["score_team"], events[0].payload["score_opponent"]) == (13, 4)
 
 
-# ---------------------------------------------------------------- защита
+# ---------------------------------------------------------------- guards
 
 def test_frame_without_our_team_is_dropped(storage, config):
     add_match(storage)
@@ -157,16 +157,17 @@ def test_frame_without_our_team_is_dropped(storage, config):
 
 
 def test_empty_map_name_frame_is_ignored():
-    """В переходных кадрах mapName бывает пустым — по нему нельзя объявлять
-    начало карты."""
+    """In transitional frames mapName can be empty — a map start must not be
+    announced from it."""
     assert parse_scoreboard({"mapName": "", "currentRound": 1}) is None
     assert parse_scoreboard({"currentRound": 1}) is None
 
 
 def test_map_number_comes_from_the_page_lineup(storage, config):
-    """Фид знает только название карты. Если бы номер считался как «записано
-    плюс один», подключение посреди серии дало бы второй карте номер первой —
-    страница обновляется с задержкой и могла ещё не записать первую."""
+    """The feed only knows the map name. If the number were counted as
+    "recorded plus one", connecting mid-series would give the second map the
+    first one's number — the page updates late and may not have recorded the
+    first one yet."""
     add_match(storage, lineup=("Mirage", "Dust2", "Ancient"))
     m = LiveMachine(storage, config)
     events = m.apply(MATCH_ID, frame("de_dust2", rnd=1))

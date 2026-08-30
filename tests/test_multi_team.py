@@ -1,9 +1,9 @@
-"""Несколько отслеживаемых команд.
+"""Several tracked teams.
 
-Главная опасность — матч, в котором отслеживаемые команды играют ДРУГ ПРОТИВ
-ДРУГА. Матч один, значит и уведомления о нём должны прийти по одному разу,
-несмотря на то что каждая команда видит его со своей стороны. Исключение —
-мультикиллы: четвёрка игрока каждой команды это отдельный хайлайт.
+The main danger is a match where tracked teams play EACH OTHER. There is one
+match, so notifications about it must arrive once each, even though each team
+sees it from its own side. The exception is multikills: a 4k by a player of
+either team is its own highlight.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -20,7 +20,7 @@ from hltv_notify.state.db import utcnow
 from hltv_notify.state.live_machine import LiveMachine
 from hltv_notify.state.machine import ScheduleMachine
 
-ALPHA = 4494        # меньший id — станет канонической перспективой
+ALPHA = 4494        # the lower id — it becomes the canonical perspective
 BETA = 12857
 MATCH = 500
 
@@ -33,7 +33,7 @@ def both(storage):
 
 
 def entry_for(team_id, *, start=None, match_id=MATCH):
-    """Одна и та же встреча глазами каждой из команд."""
+    """One and the same fixture through each team's eyes."""
     opponent = BETA if team_id == ALPHA else ALPHA
     names = {ALPHA: "MOUZ", BETA: "FORZE Reload"}
     return ScheduleEntry(
@@ -73,46 +73,48 @@ def test_canonical_perspective_is_the_smaller_id(both, config):
 
 
 def test_canonical_perspective_never_flips(both, config):
-    """Даже если первой матч увидела команда с БОЛЬШИМ id, перспектива, раз
-    выбранная, не меняется: иначе ключи идемпотентности стали бы зеркальными
-    и всё уже отправленное разослалось бы заново.
+    """Even if the team with the HIGHER id saw the match first, the
+    perspective, once chosen, does not change: otherwise the idempotency keys
+    would become mirrored and everything already sent would go out again.
 
-    Проверять надо ИМЕННО canonical_team: по нему работают все машины. Пока
-    здесь стоял только matches.team_id, тест был зелёным, а перспектива при
-    этом переворачивалась.
+    What must be asserted on is canonical_team SPECIFICALLY: that is what all
+    the machines work from. While only matches.team_id was checked here, the
+    test was green while the perspective flipped.
     """
     m = ScheduleMachine(both, config)
-    m.apply([entry_for(BETA)], BETA)          # первой пришла BETA
+    m.apply([entry_for(BETA)], BETA)          # BETA came first
     assert both.get_match(MATCH)["team_id"] == BETA
     assert both.canonical_team(MATCH) == BETA
 
-    m.apply([entry_for(ALPHA)], ALPHA)        # затем ALPHA с меньшим id
+    m.apply([entry_for(ALPHA)], ALPHA)        # then ALPHA with the lower id
     assert both.get_match(MATCH)["team_id"] == BETA
     assert both.canonical_team(MATCH) == BETA
 
 
 def test_adding_a_smaller_id_team_mid_match_keeps_the_score_orientation(both, config):
-    """Команду добавляют через бота посреди идущего матча — и она оказывается
-    соперником. Счёт по уже сыгранным картам не должен поменяться местами."""
+    """A team is added through the bot in the middle of a running match, and
+    it turns out to be the opponent. The scores of already played maps must not
+    swap over."""
     m = ScheduleMachine(both, config)
     m.apply([entry_for(BETA)], BETA)
     live = LiveMachine(both, config)
     live.apply(MATCH, frame(rnd=1))
     live.apply(MATCH, frame(alpha_score=7, beta_score=13, rnd=20))
     before = both.map_results(MATCH)[0]
-    assert (before["score_team"], before["score_opponent"]) == (13, 7)   # глазами BETA
+    assert (before["score_team"], before["score_opponent"]) == (13, 7)   # BETA's view
 
-    m.apply([entry_for(ALPHA)], ALPHA)        # ALPHA с меньшим id — уже по ходу матча
+    m.apply([entry_for(ALPHA)], ALPHA)        # ALPHA, lower id, mid-match
     assert both.canonical_team(MATCH) == BETA
     after = both.map_results(MATCH)[0]
     assert (after["score_team"], after["score_opponent"]) == (13, 7)
 
 
 def test_multikill_of_the_second_team_is_shown_from_its_own_side(both, config):
-    """Событие про игрока BETA обязано быть целиком от лица BETA.
+    """An event about a BETA player must be entirely from BETA's point of view.
 
-    Если взять контекст канонической команды и подменить только имя, соперником
-    окажется она же сама («FORZE — FORZE»), а счёт останется перевёрнутым.
+    Take the canonical team's context and swap only the name, and the opponent
+    turns out to be that same team ("FORZE — FORZE") while the score stays
+    mirrored.
     """
     m = ScheduleMachine(both, config)
     m.apply([entry_for(ALPHA)], ALPHA)
@@ -127,16 +129,16 @@ def test_multikill_of_the_second_team_is_shown_from_its_own_side(both, config):
     assert e9.payload["team_id"] == BETA
     assert e9.payload["opponent_id"] == ALPHA
     assert e9.payload["opponent"] == "MOUZ"
-    # счёт глазами BETA: она проигрывает 4:7, а не ведёт 7:4
+    # the score through BETA's eyes: it is losing 4:7, not leading 7:4
     assert (e9.payload["score_team"], e9.payload["score_opponent"]) == (4, 7)
 
 
 def test_one_new_match_notification_for_both_teams(both, config):
-    """E1 про общий матч приходит один раз, а не по разу на команду."""
+    """E1 about a shared match arrives once, not once per team."""
     m = ScheduleMachine(both, config)
     n = Notifier(both, config, telegram=None)
 
-    # обе команды уже под наблюдением, обе видят НОВЫЙ матч
+    # both teams are already watched, both see a NEW match
     m.apply([], ALPHA)
     m.apply([], BETA)
     for team in (ALPHA, BETA):
@@ -148,30 +150,30 @@ def test_one_new_match_notification_for_both_teams(both, config):
 
 
 def test_adding_a_team_later_is_silent(both, config):
-    """Команду добавляют через бота посреди работы, и у неё найдётся полтора
-    десятка матчей. Прилететь E1 по каждому из них не должно."""
+    """A team is added through the bot while the service runs, and it has a
+    dozen and a half matches. An E1 for each of them must not arrive."""
     m = ScheduleMachine(both, config)
-    m.apply([], ALPHA)                              # ALPHA уже наблюдается
+    m.apply([], ALPHA)                              # ALPHA is already watched
 
     schedule = [entry_for(BETA, match_id=600 + i) for i in range(5)]
-    assert m.apply(schedule, BETA) == []             # первый прогон новой команды
+    assert m.apply(schedule, BETA) == []             # the new team's first pass
     assert len(both.all_matches()) == 5
 
 
 def test_one_team_page_does_not_cancel_another_teams_match(both, config):
-    """Матч команды ALPHA не должен считаться исчезнувшим лишь потому, что
-    его нет на странице команды BETA."""
+    """ALPHA's match must not be considered vanished merely because it is not
+    on BETA's page."""
     m = ScheduleMachine(both, config)
     m.apply([entry_for(ALPHA, match_id=700)], ALPHA)
     m.apply([], BETA)
 
-    events = m.apply([], BETA)                       # у BETA пусто — и это норма
+    events = m.apply([], BETA)                       # BETA has nothing, and that is fine
     assert events == []
     assert both.get_match(700)["missing_since_utc"] is None
 
 
 # ----------------------------------------------------------------------
-# Мультикиллы — наоборот, от обеих команд
+# Multikills, conversely, come from both teams
 # ----------------------------------------------------------------------
 
 
@@ -203,11 +205,11 @@ def test_multikill_keys_do_not_collide_between_teams(both, config):
                                          beta_kills=[("Kaide", 12)])):
         n.enqueue(event)
 
-    assert both.sent_event_count() == 2      # два игрока, два разных ключа
+    assert both.sent_event_count() == 2      # two players, two different keys
 
 
 def test_map_end_of_a_shared_match_notifies_once(both, config):
-    """Конец карты в матче двух отслеживаемых команд — одно уведомление."""
+    """The end of a map in a match between two tracked teams: one notification."""
     m = ScheduleMachine(both, config)
     m.apply([entry_for(ALPHA)], ALPHA)
     m.apply([entry_for(BETA)], BETA)
@@ -221,5 +223,5 @@ def test_map_end_of_a_shared_match_notifies_once(both, config):
     keys = [row["idempotency_key"] for row in both.due_outbox(limit=50)]
     e6 = [k for k in keys if k.startswith("E6:")]
     assert len(e6) == 1
-    # счёт ориентирован на каноническую команду (ALPHA), а не на обе сразу
+    # the score is oriented on the canonical team (ALPHA), not on both at once
     assert e6[0] == "E6:500:map:1:result:13-7"

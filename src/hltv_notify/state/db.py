@@ -1,9 +1,10 @@
-"""SQLite: состояние, журнал отправленных событий и очередь исходящих.
+"""SQLite: state, the journal of sent events and the outgoing queue.
 
-Ядро защиты от дублей — уникальный индекс на sent_events.idempotency_key.
-Проверка «есть ли уже в базе» отдельным запросом была бы гонкой, вставка —
-нет. Запись события и постановка сообщения в очередь идут одной транзакцией,
-иначе падение между ними потеряло бы уведомление.
+The core of the anti-duplicate protection is the unique index on
+sent_events.idempotency_key. Checking "is it already in the database" with a
+separate query would be a race; an insert is not. Recording the event and
+queueing the message happen in one transaction, otherwise a crash between them
+would lose the notification.
 """
 
 from __future__ import annotations
@@ -15,27 +16,27 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 SCHEMA = """
--- Кому вообще шлём. Разные аккаунты Telegram ведут свои списки команд.
+-- Who we send to at all. Different Telegram accounts keep their own team lists.
 CREATE TABLE IF NOT EXISTS subscribers (
     chat_id   TEXT PRIMARY KEY,
     added_utc TEXT NOT NULL,
     enabled   INTEGER NOT NULL DEFAULT 1,
     note      TEXT,
-    -- Пояс отображения у каждого свой: подписчики могут жить в разных.
+    -- The display timezone is per person: subscribers may live in different ones.
     timezone  TEXT,
-    -- Общий тумблер «молчи»: перекрывает глушение отдельных типов.
+    -- The global "be quiet" switch: it overrides per-type muting.
     paused    INTEGER NOT NULL DEFAULT 0
 );
 
--- За сколько до матча напоминать. Список свой у каждого подписчика.
+-- How long before a match to remind. The list is per subscriber.
 CREATE TABLE IF NOT EXISTS reminders (
     chat_id        TEXT NOT NULL,
     minutes_before INTEGER NOT NULL,
     PRIMARY KEY (chat_id, minutes_before)
 );
 
--- Команды — СВОИ у каждого подписчика: один и тот же матч может быть интересен
--- двоим, и заглушить его для одного нельзя, не заглушив для другого.
+-- Teams are PER SUBSCRIBER: the same match can interest two people, and muting
+-- it for one must not mute it for the other.
 CREATE TABLE IF NOT EXISTS teams (
     chat_id      TEXT NOT NULL,
     team_id      INTEGER NOT NULL,
@@ -47,9 +48,9 @@ CREATE TABLE IF NOT EXISTS teams (
     PRIMARY KEY (chat_id, team_id)
 );
 
--- Какие ОТСЛЕЖИВАЕМЫЕ команды участвуют в матче. Их может быть две: если
--- отслеживаемые команды играют друг против друга, матч всё равно один, и
--- уведомления о нём должны прийти по одному разу.
+-- Which TRACKED teams take part in a match. There can be two: if tracked teams
+-- play each other the match is still one match, and notifications about it
+-- must arrive once each.
 CREATE TABLE IF NOT EXISTS match_teams (
     match_id INTEGER NOT NULL,
     team_id  INTEGER NOT NULL,
@@ -58,10 +59,11 @@ CREATE TABLE IF NOT EXISTS match_teams (
 
 CREATE TABLE IF NOT EXISTS matches (
     match_id       INTEGER PRIMARY KEY,
-    -- Каноническая перспектива: от лица какой команды считается счёт и от
-    -- чьего имени пишется сообщение. Берётся детерминированно (меньший id),
-    -- иначе матч двух отслеживаемых команд породил бы два зеркальных ключа
-    -- идемпотентности и, значит, два уведомления вместо одного.
+    -- The canonical perspective: which team the score is counted from and in
+    -- whose name the message is written. Chosen deterministically (the team
+    -- that saw the match first), otherwise a match between two tracked teams
+    -- would produce two mirrored idempotency keys and therefore two
+    -- notifications instead of one.
     team_id        INTEGER,
     opponent_id    INTEGER,
     opponent_name  TEXT NOT NULL,
@@ -89,13 +91,13 @@ CREATE TABLE IF NOT EXISTS match_state (
     pending_since_utc  TEXT,
     progress_hash      TEXT,
     progress_since_utc TEXT,
-    -- current_map_name — поле ДЛЯ ОТОБРАЖЕНИЯ, его пишут обе машины, и «кто
-    -- писал последним» там не определено. Решения по нему принимать нельзя.
-    -- Ниже — приватные памятки: каждую пишет и читает ровно одна машина.
-    live_map_name      TEXT,   -- последняя карта, которую видел ЖИВОЙ ФИД
-    page_seen_utc      TEXT,   -- когда СТРАНИЦА МАТЧА впервые увидела матч
-    regulation_rounds  INTEGER,-- формат карты: половина регламента (обычно 12)
-    overtime_rounds    INTEGER -- половина овертайма (обычно 3)
+    -- current_map_name is a DISPLAY field, written by both machines, and "who
+    -- wrote last" is undefined there. Decisions must not be made from it.
+    -- Below are private memos: each is written and read by exactly one machine.
+    live_map_name      TEXT,   -- the last map the LIVE FEED saw
+    page_seen_utc      TEXT,   -- when the MATCH PAGE first saw this match
+    regulation_rounds  INTEGER,-- map format: half of regulation (usually 12)
+    overtime_rounds    INTEGER -- half of an overtime (usually 3)
 );
 
 CREATE TABLE IF NOT EXISTS map_results (
@@ -178,20 +180,20 @@ class Storage:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
-        # Соединение в автокоммите, то есть каждый INSERT — отдельная
-        # транзакция. С synchronous=FULL это fsync на каждую запись: в
-        # контейнере первичное заполнение базы занимало 21 секунду вместо
-        # полусекунды. В режиме WAL значение NORMAL безопасно относительно
-        # падения процесса и теряет данные только при отключении питания —
-        # для журнала уведомлений это приемлемый размен.
+        # The connection is in autocommit, so every INSERT is its own
+        # transaction. With synchronous=FULL that is an fsync per write: in a
+        # container the initial fill of the database took 21 seconds instead of
+        # half a second. In WAL mode the value NORMAL is safe against a process
+        # crash and only loses data on a power cut — an acceptable trade for a
+        # notification journal.
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
         self._migrate()
 
     def _migrate(self) -> None:
-        """Колонки, добавленные позже: CREATE TABLE IF NOT EXISTS их не
-        дотянет на уже существующей базе, а терять базу нельзя — в ней журнал
-        отправленных событий."""
+        """Columns added later: CREATE TABLE IF NOT EXISTS will not reach them
+        on an existing database, and the database must not be lost — it holds
+        the journal of sent events."""
         added = {
             "match_state": {
                 "progress_hash": "TEXT",
@@ -218,16 +220,16 @@ class Storage:
                 if column not in existing:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
-        # Таблицы, у которых сменился первичный ключ. ALTER TABLE такое не
-        # умеет, поэтому пересоздаём. Живые сообщения — состояние одной карты,
-        # потерять их не страшно: заведётся новое.
+        # Tables whose primary key changed. ALTER TABLE cannot do that, so we
+        # recreate them. Live messages are one map's state; losing them is not
+        # a problem, a new one will be created.
         if "chat_id" not in {row["name"] for row in
                              self.conn.execute("PRAGMA table_info(live_messages)")}:
             self.conn.execute("DROP TABLE IF EXISTS live_messages")
             self.conn.executescript(SCHEMA)
 
-        # teams до появления подписчиков был без chat_id. Переносить некуда:
-        # владельца определит первый посев из конфига.
+        # Before subscribers existed, `teams` had no chat_id. There is nowhere
+        # to migrate it to: the owner is decided by the first seed from config.
         team_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(teams)")}
         if team_columns and "chat_id" not in team_columns:
             self.conn.execute("ALTER TABLE teams RENAME TO teams_without_owner")
@@ -236,10 +238,10 @@ class Storage:
     def close(self) -> None:
         self.conn.close()
 
-    # ---------- подписчики ----------
+    # ---------- subscribers ----------
 
     def add_subscriber(self, chat_id: str, note: str = "") -> bool:
-        """True — подписчик появился впервые."""
+        """True means the subscriber appeared for the first time."""
         existed = self.get_subscriber(chat_id) is not None
         self.conn.execute(
             """
@@ -272,10 +274,11 @@ class Storage:
         return (row["timezone"] if row and row["timezone"] else fallback)
 
     def set_subscriber_paused(self, chat_id: str, paused: bool) -> None:
-        """Общий тумблер «молчи».
+        """The global "be quiet" switch.
 
-        Пока он включён, уведомления НЕ КОПЯТСЯ, а просто не создаются: смысл
-        паузы в тишине, а не в том, чтобы вывалить всё разом при снятии.
+        While it is on, notifications are NOT ACCUMULATED, they are simply not
+        created: the point of the pause is silence, not dumping everything at
+        once when it is lifted.
         """
         self.conn.execute("UPDATE subscribers SET paused = ? WHERE chat_id = ?",
                           (1 if paused else 0, str(chat_id)))
@@ -284,10 +287,10 @@ class Storage:
         row = self.get_subscriber(chat_id)
         return bool(row and row["paused"])
 
-    # ---------- напоминания перед матчем ----------
+    # ---------- pre-match reminders ----------
 
     def add_reminder(self, chat_id: str, minutes_before: int) -> bool:
-        """False — такое напоминание уже было."""
+        """False means that reminder already existed."""
         cur = self.conn.execute(
             "INSERT OR IGNORE INTO reminders (chat_id, minutes_before) VALUES (?, ?)",
             (str(chat_id), int(minutes_before)))
@@ -309,10 +312,10 @@ class Storage:
                                 (1 if enabled else 0, str(chat_id)))
         return cur.rowcount > 0
 
-    # ---------- отслеживаемые команды ----------
+    # ---------- tracked teams ----------
 
     def add_team(self, chat_id: str, team_id: int, slug: str, name: str) -> bool:
-        """True — команда добавлена этому подписчику впервые."""
+        """True means the team was added for this subscriber for the first time."""
         existed = self.get_team(chat_id, team_id) is not None
         self.conn.execute(
             """
@@ -333,7 +336,7 @@ class Storage:
 
     def teams(self, chat_id: Optional[str] = None, *,
               enabled_only: bool = True) -> List[sqlite3.Row]:
-        """Команды подписчика, а без chat_id — все записи всех подписчиков."""
+        """A subscriber's teams, or without chat_id every row of everyone."""
         clauses = []
         params: List[Any] = []
         if chat_id is not None:
@@ -347,11 +350,10 @@ class Storage:
         return list(self.conn.execute(query + " ORDER BY team_id", params))
 
     def tracked_teams(self) -> List[sqlite3.Row]:
-        """Уникальные команды по всем подписчикам — их и надо опрашивать.
+        """Unique teams across all subscribers — those are the ones to poll.
 
-        Одну и ту же команду могут отслеживать несколько человек, а страница
-        у неё одна: опрашивать её по разу на подписчика значило бы дёргать
-        источник вхолостую.
+        Several people may follow the same team, and it has one page: polling
+        it once per subscriber would mean pestering the source for nothing.
         """
         return list(self.conn.execute(
             "SELECT team_id, MIN(slug) AS slug, MIN(name) AS name FROM teams "
@@ -361,7 +363,7 @@ class Storage:
         return [row["team_id"] for row in self.tracked_teams()]
 
     def subscribers_tracking(self, team_id: int) -> List[str]:
-        """Кому интересна эта команда. Только включённые подписчики."""
+        """Who cares about this team. Enabled subscribers only."""
         return [row["chat_id"] for row in self.conn.execute(
             "SELECT t.chat_id FROM teams t "
             "JOIN subscribers s ON s.chat_id = t.chat_id "
@@ -386,14 +388,14 @@ class Storage:
         return [part for part in row["muted_events"].split(",") if part]
 
     def team_name(self, team_id: Optional[int], fallback: str = "") -> str:
-        """Имя команды — общее, не зависит от подписчика."""
+        """The team name is shared; it does not depend on the subscriber."""
         if team_id is None:
             return fallback
         row = self.conn.execute(
             "SELECT name FROM teams WHERE team_id = ? LIMIT 1", (team_id,)).fetchone()
         return row["name"] if row else fallback
 
-    # ---------- связь матча с отслеживаемыми командами ----------
+    # ---------- linking a match to tracked teams ----------
 
     def link_match_team(self, match_id: int, team_id: int) -> None:
         self.conn.execute(
@@ -406,22 +408,23 @@ class Storage:
             (match_id,))]
 
     def canonical_team(self, match_id: int) -> Optional[int]:
-        """Команда, от лица которой описывается матч.
+        """The team the match is described from.
 
-        Берётся ЗАПОМНЕННАЯ в `matches.team_id` — та, что увидела матч первой.
-        Выбор произволен, но обязан быть не только детерминированным, а ещё и
-        неизменным: от него зависит ориентация счёта, а значит и ключ
-        идемпотентности.
+        Taken from what is REMEMBERED in `matches.team_id` — the team that saw
+        the match first. The choice is arbitrary, but it has to be not only
+        deterministic but also unchanging: the orientation of the score, and
+        therefore the idempotency key, depends on it.
 
-        Раньше здесь возвращался просто меньший id из участников, и это
-        переворачивалось на ровном месте: стоило посреди матча добавить через
-        бота команду с меньшим id — и счёт по уже сыгранным картам менялся
-        местами, а следующие сообщения о том же матче противоречили
-        предыдущим. Защита `COALESCE` в `upsert_match` стояла на столбце,
-        который никто не читал; теперь читает.
+        This used to return simply the lower id among the participants, and it
+        flipped out of nowhere: add a team with a lower id through the bot
+        mid-match, and the scores of already played maps swapped over while the
+        next messages about the same match contradicted the previous ones. The
+        `COALESCE` guard in `upsert_match` was protecting a column nobody read;
+        now it is read.
 
-        Меньший id остаётся запасным ответом: для матчей, заведённых до
-        появления столбца, и для тех, что попали в базу мимо расписания.
+        The lower id remains the fallback answer: for matches created before
+        the column existed, and for those that entered the database outside the
+        schedule path.
         """
         ids = self.match_team_ids(match_id)
         row = self.conn.execute(
@@ -431,7 +434,7 @@ class Storage:
             return chosen
         return ids[0] if ids else None
 
-    # ---------- матчи ----------
+    # ---------- matches ----------
 
     def get_match(self, match_id: int) -> Optional[sqlite3.Row]:
         cur = self.conn.execute("SELECT * FROM matches WHERE match_id = ?", (match_id,))
@@ -441,11 +444,11 @@ class Storage:
         return list(self.conn.execute("SELECT * FROM matches ORDER BY start_utc"))
 
     def tracked_match_ids(self, team_id: Optional[int] = None) -> List[int]:
-        """Матчи, которые сервис считает актуальными: ещё не пропавшие.
+        """Matches the service still considers current: not yet vanished.
 
-        С team_id — только матчи этой команды. Это обязательно: матч команды А
-        не должен считаться исчезнувшим лишь потому, что его нет на странице
-        команды Б.
+        With team_id, only that team's matches. This is essential: team A's
+        match must not be counted as vanished merely because it is not on team
+        B's page.
         """
         if team_id is None:
             return [row["match_id"] for row in self.conn.execute(
@@ -456,11 +459,12 @@ class Storage:
             "WHERE m.missing_since_utc IS NULL AND t.team_id = ?", (team_id,))]
 
     def visible_match_ids(self, chat_id: str) -> set:
-        """Матчи, которые вправе видеть этот подписчик.
+        """Matches this subscriber is entitled to see.
 
-        Нужно для /next и /live: аккаунты ведут свои списки команд, и матчи
-        чужих команд в чужом чате — лишнее. Матч, ещё не связанный ни с одной
-        командой, виден всем: спрятать его значило бы потерять совсем.
+        Needed for /next and /live: accounts keep their own team lists, and
+        other people's teams' matches are noise in someone else's chat. A match
+        not yet linked to any team is visible to everyone: hiding it would mean
+        losing it entirely.
         """
         mine = {row["match_id"] for row in self.conn.execute(
             "SELECT DISTINCT mt.match_id FROM match_teams mt "
@@ -494,11 +498,11 @@ class Storage:
                                  first_seen_utc, updated_utc)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(match_id) DO UPDATE SET
-                -- Порядок именно такой: уже выбранная перспектива НЕ меняется.
-                -- Если бы новая перезаписывала старую, добавление второй
-                -- отслеживаемой команды перевернуло бы счёт у идущего матча,
-                -- ключи идемпотентности стали бы зеркальными и всё уже
-                -- отправленное разослалось бы заново.
+                -- The order is exactly this: an already chosen perspective is
+                -- NOT changed. If a new one overwrote the old, adding a second
+                -- tracked team would flip the score of a running match, the
+                -- idempotency keys would become mirrored and everything
+                -- already sent would go out again.
                 team_id       = COALESCE(matches.team_id, excluded.team_id),
                 opponent_id   = excluded.opponent_id,
                 opponent_name = excluded.opponent_name,
@@ -523,7 +527,7 @@ class Storage:
             (iso(when or utcnow()), match_id),
         )
 
-    # ---------- состояние ----------
+    # ---------- state ----------
 
     def get_state(self, match_id: int) -> Optional[sqlite3.Row]:
         cur = self.conn.execute("SELECT * FROM match_state WHERE match_id = ?", (match_id,))
@@ -554,10 +558,11 @@ class Storage:
 
     def set_pending_start(self, match_id: int, start: Optional[datetime],
                           since: Optional[datetime]) -> None:
-        """Кандидат на новое время начала.
+        """A candidate for a new start time.
 
-        E2 не шлётся сразу: серия правок за короткое окно схлопывается, а
-        возврат к исходному времени внутри окна событием не считается.
+        E2 is not sent immediately: a burst of edits within a short window
+        collapses, and a return to the original time inside the window is not
+        an event at all.
         """
         self.conn.execute(
             "UPDATE match_state SET pending_start_utc = ?, pending_since_utc = ? "
@@ -566,15 +571,16 @@ class Storage:
         )
 
     def set_map_format(self, match_id: int, regulation: int, overtime: int) -> None:
-        """Формат карты из источника. Нужен, чтобы понять «сколько раундов до
-        победы» — от этого зависит срочность алертов о деградации."""
+        """The map format from the source. Needed to work out "how many rounds
+        to a win" — the urgency of degradation alerts depends on it."""
         self.conn.execute(
             "UPDATE match_state SET regulation_rounds = ?, overtime_rounds = ? "
             "WHERE match_id = ?", (regulation, overtime, match_id))
 
     def set_progress(self, match_id: int, signature: str, since: datetime) -> None:
-        """Отпечаток продвижения матча и момент, когда он последний раз менялся.
-        По нему отличается «матч на технической паузе» от «сервис ослеп»."""
+        """A fingerprint of the match moving forward and the moment it last
+        changed. It is how "the match is on a technical pause" is told apart
+        from "the service has gone blind"."""
         self.conn.execute(
             "UPDATE match_state SET progress_hash = ?, progress_since_utc = ? WHERE match_id = ?",
             (signature, iso(since), match_id),
@@ -604,11 +610,12 @@ class Storage:
     def active_matches(self, now: Optional[datetime] = None, *,
                        lookahead_minutes: int = 30,
                        lookbehind_hours: int = 12) -> List[sqlite3.Row]:
-        """Матчи, которые имеет смысл опрашивать постранично.
+        """Matches worth polling page by page.
 
-        Окно назад нужно, потому что матч запросто начинается позже расписания;
-        окно вперёд — чтобы поймать фактический старт. Круглосуточно активный
-        опрос не ведётся: команда может не играть неделями.
+        The window backwards is needed because a match easily starts later than
+        scheduled; the window forwards is there to catch the actual start.
+        Active polling is not done around the clock: a team can go weeks
+        without playing.
         """
         now = now or utcnow()
         return list(self.conn.execute(
@@ -622,14 +629,15 @@ class Storage:
              iso(now - timedelta(hours=lookbehind_hours))),
         ))
 
-    # ---------- события и очередь ----------
+    # ---------- events and the queue ----------
 
     def record_event(self, *, idempotency_key: str, event_type: str,
                      match_id: Optional[int], body: str, chat_id: str = "") -> bool:
-        """Одной транзакцией: журнал + очередь. False — событие уже отправлялось.
+        """Journal plus queue in one transaction. False means the event has
+        already been sent.
 
-        Ключ журнала включает адресата: одно и то же событие может касаться
-        нескольких подписчиков, и каждому оно должно уйти ровно один раз.
+        The journal key includes the recipient: one and the same event can
+        concern several subscribers, and each of them must get it exactly once.
         """
         now = iso(utcnow())
         idempotency_key = f"{chat_id}|{idempotency_key}" if chat_id else idempotency_key
@@ -646,13 +654,14 @@ class Storage:
                 (chat_id, idempotency_key, body, now, now),
             )
         except sqlite3.IntegrityError:
-            # Ключ уже есть — событие отправлялось. Это штатный исход.
+            # The key already exists — the event was sent. A normal outcome.
             self.conn.execute("ROLLBACK")
             return False
         except Exception:
-            # Любой другой сбой (диск, блокировка) обязан закрыть транзакцию.
-            # Соединение в автокоммите живёт всё время работы сервиса: незакрытая
-            # транзакция сломала бы КАЖДУЮ следующую отправку до перезапуска.
+            # Any other failure (disk, lock) is obliged to close the
+            # transaction. The connection is in autocommit and lives for the
+            # whole run of the service: a transaction left open would break
+            # EVERY subsequent send until a restart.
             self.conn.execute("ROLLBACK")
             raise
         self.conn.execute("COMMIT")
@@ -679,11 +688,11 @@ class Storage:
         )
 
     def oldest_pending_utc(self) -> Optional[str]:
-        """Когда создано старейшее неотправленное сообщение.
+        """When the oldest unsent message was created.
 
-        Если оно висит долго — значит Telegram не принимает, и об этом надо
-        сказать: молчащая доставка выглядит точно так же, как отсутствие
-        событий.
+        If it has been hanging for a long time, Telegram is not accepting, and
+        that has to be said: silent delivery looks exactly like an absence of
+        events.
         """
         row = self.conn.execute(
             "SELECT MIN(created_utc) AS oldest FROM outbox WHERE status = 'pending'"
@@ -697,7 +706,7 @@ class Storage:
     def sent_event_count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM sent_events").fetchone()[0]
 
-    # ---------- сырые ответы ----------
+    # ---------- raw responses ----------
 
     def log_raw(self, source: str, url: str, status: str, body: str, keep_days: int) -> None:
         self.conn.execute(
@@ -710,30 +719,30 @@ class Storage:
         )
 
     def set_live_map(self, match_id: int, map_name: str) -> None:
-        """Карта, которую видит живой фид. Пишет только живая машина.
+        """The map the live feed sees. Written only by the live machine.
 
-        Отдельно от current_map_name намеренно: то поле пишут обе машины, и
-        страница матча кладёт туда ПРЕДСТОЯЩУЮ карту (первую несыгранную).
-        Живая машина, читая его как «предыдущую карту», не видела перехода и
-        не рождала E5 вовсе.
+        Deliberately separate from current_map_name: that field is written by
+        both machines, and the match page puts the UPCOMING map (the first
+        undecided one) there. Reading it as "the previous map", the live
+        machine never saw a transition and never produced E5 at all.
         """
         self.conn.execute(
             "UPDATE match_state SET live_map_name = ? WHERE match_id = ?",
             (map_name, match_id))
 
     def mark_page_seen(self, match_id: int) -> None:
-        """Отметка «страница матча этот матч уже наблюдала». Ставится один раз.
+        """A marker: "the match page has already observed this match". Set once.
 
-        Раньше это выводилось из last_source, но живой фид переписывает его на
-        каждом кадре, и признак был вечно истинным: E6 со страницы уходил в
-        молчаливую ветку всё время, пока фид на связи.
+        This used to be derived from last_source, but the live feed rewrites it
+        on every frame, so the marker was permanently true: page-side E6 went
+        down the silent branch the whole time the feed was up.
         """
         self.conn.execute(
             "UPDATE match_state SET page_seen_utc = ? "
             "WHERE match_id = ? AND page_seen_utc IS NULL",
             (iso(utcnow()), match_id))
 
-    # ---------- живое сообщение на карту ----------
+    # ---------- the live message for one map ----------
 
     def live_message(self, chat_id: str, match_id: int,
                      map_number: int) -> Optional[sqlite3.Row]:
@@ -744,8 +753,8 @@ class Storage:
     def save_live_message(self, chat_id: str, match_id: int, map_number: int, *,
                           telegram_message_id: Optional[int], text: str,
                           finalized: bool = False) -> None:
-        """Id сообщения переживает рестарт: иначе после перезапуска сервис
-        завёл бы на ту же карту второе живое сообщение."""
+        """The message id survives a restart: otherwise, after a restart, the
+        service would start a second live message for the same map."""
         self.conn.execute(
             """
             INSERT INTO live_messages (chat_id, match_id, map_number, telegram_message_id,
@@ -761,11 +770,12 @@ class Storage:
             (str(chat_id), match_id, map_number, telegram_message_id, text, iso(utcnow()),
              1 if finalized else 0))
 
-    # ---------- состав карт ----------
+    # ---------- the map lineup ----------
 
     def set_map_lineup(self, match_id: int, names: List[str]) -> None:
-        """Порядок карт со страницы матча: по нему живой фид узнаёт НОМЕР
-        карты в серии. Сам фид присылает только её название."""
+        """The order of maps from the match page: it is how the live feed
+        learns a map's NUMBER in the series. The feed itself only sends the
+        name."""
         self.set_meta(f"maps:{match_id}", json.dumps(names, ensure_ascii=False))
 
     def map_lineup(self, match_id: int) -> List[str]:
@@ -780,12 +790,13 @@ class Storage:
     # ---------- meta ----------
 
     def adopt_legacy_event_keys(self, chat_id: str) -> int:
-        """Приписать адресата ключам, записанным до появления подписчиков.
+        """Prefix the recipient onto keys written before subscribers existed.
 
-        Ключ журнала стал включать чат (`<chat>|<ключ>`). Старые записи без
-        префикса перестали бы совпадать, и при первом же запуске после
-        обновления сервис счёл бы новым всё, что уже отправлял, — то есть
-        разослал бы историю заново. Делается один раз, под флагом в meta.
+        The journal key came to include the chat (`<chat>|<key>`). Old records
+        without the prefix would stop matching, and on the first run after an
+        upgrade the service would consider everything it had already sent to be
+        new — that is, it would send the whole history again. Done once, under
+        a flag in meta.
         """
         if not chat_id or self.get_meta("legacy_keys_adopted"):
             return 0
@@ -800,11 +811,12 @@ class Storage:
         return cur.rowcount
 
     def prune(self, *, sent_days: int = 90, events_days: int = 365) -> None:
-        """Убрать то, что уже никому не нужно.
+        """Remove what nobody needs any more.
 
-        Отправленные строки очереди — просто мусор. Журнал событий трогаем
-        осторожнее и только по давним матчам: он и есть защита от повторной
-        рассылки, и удалить его слишком рано значит разослать всё заново.
+        Sent queue rows are simply rubbish. The event journal is treated far
+        more carefully and only for long-past matches: it is the protection
+        against re-sending, and deleting it too early means sending everything
+        again.
         """
         self.conn.execute(
             "DELETE FROM outbox WHERE status = 'sent' AND sent_utc < ?",
