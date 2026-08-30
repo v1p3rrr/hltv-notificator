@@ -15,7 +15,7 @@ from typing import Optional
 
 from curl_cffi.requests import AsyncSession
 
-from .config import HARD_MIN_REQUEST_INTERVAL_SECONDS, Config
+from .config import HARD_MIN_REQUEST_INTERVAL_SECONDS, Config, url_allowed
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +26,15 @@ class SourceRejected(RuntimeError):
 
 class SourceUnavailable(RuntimeError):
     """Таймаут, 5xx, сеть. Обычный повод для повтора с backoff."""
+
+
+class BlockedTarget(SourceRejected):
+    """Адрес не из разрешённых. Повторять бессмысленно — отсюда наследование.
+
+    Последний заслон: адрес матча приходит со страницы HLTV, и если разбор
+    когда-нибудь снова позволит увести его на чужой хост, запрос всё равно не
+    уйдёт. Срабатывает и на записях, попавших в базу раньше.
+    """
 
 
 class HltvHttp:
@@ -68,6 +77,10 @@ class HltvHttp:
     async def get_text(self, url: str, *, timeout: int = 30, exempt_from_ceiling: bool = False) -> str:
         """GET с повторами. `exempt_from_ceiling` — для удерживаемых соединений
         (long-poll живого фида): это не частый опрос, а одно соединение."""
+        if not url_allowed(url):
+            log.error("запрос на посторонний адрес отклонён: %s", url)
+            raise BlockedTarget(f"адрес не из списка разрешённых: {url}")
+
         attempts = max(1, self._config.http_retries)
         last_error: Optional[Exception] = None
 

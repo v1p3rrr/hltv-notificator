@@ -77,8 +77,8 @@ def test_requests_are_spaced_by_the_ceiling(monkeypatch):
 
     async def scenario():
         started = time.monotonic()
-        await client.get_text("https://example.test/1")
-        await client.get_text("https://example.test/2")
+        await client.get_text("https://www.hltv.org/1")
+        await client.get_text("https://www.hltv.org/2")
         return time.monotonic() - started
 
     assert asyncio.run(scenario()) >= 0.3
@@ -106,8 +106,8 @@ def test_long_poll_is_exempt_from_the_ceiling(monkeypatch):
 
     async def scenario():
         started = time.monotonic()
-        await client.get_text("https://example.test/1", exempt_from_ceiling=True)
-        await client.get_text("https://example.test/2", exempt_from_ceiling=True)
+        await client.get_text("https://www.hltv.org/1", exempt_from_ceiling=True)
+        await client.get_text("https://www.hltv.org/2", exempt_from_ceiling=True)
         return time.monotonic() - started
 
     assert asyncio.run(scenario()) < 1.0

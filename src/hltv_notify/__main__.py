@@ -49,6 +49,32 @@ def load_dotenv(path: Path) -> None:
 SHUTDOWN_DRAIN_SECONDS = 8.0
 
 
+def _revoke_removed_subscribers(storage, config) -> None:
+    """Убрать из рассылки тех, кого больше нет в белом списке.
+
+    Белый список закрывал только ВХОД: команды и кнопки. Доставка шла по
+    таблице подписчиков, а она про конфиг ничего не знает и строки из неё
+    никогда не удаляются. Поэтому убрать чат из TELEGRAM_CHAT_ID значило
+    отобрать управление ботом, но не отписать от уведомлений — и починить это
+    можно было только руками в базе.
+
+    В открытом режиме (TELEGRAM_WHITELIST_ONLY=false) не трогаем ничего: там
+    списка попросту нет. Пустой список тоже не повод разотписывать всех — это
+    почти наверняка недозаполненный .env, а не намерение.
+    """
+    if not config.whitelist_only:
+        return
+    allowed = set(config.allowed_chat_ids())
+    if not allowed:
+        return
+    for row in storage.subscribers():
+        chat = row["chat_id"]
+        if chat not in allowed:
+            storage.set_subscriber_enabled(chat, False)
+            log.warning("чат %s больше не в TELEGRAM_CHAT_ID — уведомления ему "
+                        "отключены", chat)
+
+
 def _warn_about_retired_variables(config) -> None:
     """Убранные переменные обязаны сообщать о себе.
 
@@ -107,6 +133,8 @@ async def run() -> int:
             for minutes in config.reminder_minutes():
                 storage.add_reminder(chat, minutes)
     main_chat = config.main_chat_id
+    _revoke_removed_subscribers(storage, config)
+
     if not storage.teams(enabled_only=False) and config.team_id and main_chat:
         storage.add_team(main_chat, config.team_id, config.team_slug, config.team_name)
         log.info("первая отслеживаемая команда взята из конфига: %s (id %s) для чата %s",

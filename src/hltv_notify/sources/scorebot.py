@@ -32,6 +32,7 @@ from typing import List, Optional, Tuple
 
 from curl_cffi.requests import AsyncSession
 
+from ..config import url_allowed
 from ..proxy import ProxySettings
 
 log = logging.getLogger(__name__)
@@ -212,6 +213,12 @@ class ScorebotClient:
                  impersonate: str = "chrome",
                  proxy: Optional[ProxySettings] = None):
         self.match_id = str(match_id)
+        # Referer приходит из базы, а туда — со страницы HLTV. По нему идёт
+        # настоящий запрос (прогрев куками), поэтому посторонний адрес не берём
+        # вовсе: фид от этого не ломается, теряется только прогрев.
+        if referer and not url_allowed(referer):
+            log.warning("посторонний адрес матча пропущен, прогрев без него: %s", referer)
+            referer = None
         self.referer = referer
         self._impersonate = impersonate
         # Настройки прокси, а не готовый словарь: клиент ходит на ДВА хоста —

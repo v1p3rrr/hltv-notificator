@@ -32,6 +32,26 @@ log = logging.getLogger(__name__)
 
 MATCH_ID_RE = re.compile(r"/matches/(\d+)/")
 TEAM_ID_RE = re.compile(r"/team/(\d+)/")
+# Хвост адреса матча. Набор символов узкий намеренно: ни слэша, ни точки,
+# ни собаки — то есть из него нельзя выбраться за пределы одного сегмента пути.
+MATCH_SLUG_RE = re.compile(r"/matches/\d+/([A-Za-z0-9_-]{1,120})")
+
+
+def match_url(match_id: int, href: str = "") -> str:
+    """Адрес страницы матча.
+
+    Собирается ИЗ ПРОВЕРЕННОГО ЧИСЛА, а не склейкой базы с тем, что пришло со
+    страницы. Склейка была дырой: `HLTV_BASE` не заканчивается слэшем, поэтому
+    href вида `@10.0.0.1:8080/matches/1/x` давал
+    `https://www.hltv.org@10.0.0.1:8080/matches/1/x`, где `www.hltv.org` — это
+    userinfo, а запрос уходил на `10.0.0.1`. Проверено: libcurl идёт именно
+    туда. Вариант `.evil.example/matches/1/x` не требовал даже собаки.
+
+    Хвост из href берётся только ради читаемости ссылки и только если он
+    состоит из безобидных символов; HLTV на сам хвост не смотрит.
+    """
+    found = MATCH_SLUG_RE.search(href or "")
+    return f"{HLTV_BASE}/matches/{match_id}/{found.group(1) if found else '-'}"
 
 
 class ParseError(RuntimeError):
@@ -115,7 +135,7 @@ def parse(html: str, team_id: int) -> List[ScheduleEntry]:
                 opponent_id=opponent_id,
                 opponent_name=opponent_name or "TBD",
                 event_name=event_name,
-                url=HLTV_BASE + link["href"],
+                url=match_url(match_id, link["href"]),
                 finished=score_team is not None and score_opponent is not None,
                 score_team=score_team,
                 score_opponent=score_opponent,

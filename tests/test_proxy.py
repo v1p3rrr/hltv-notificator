@@ -163,3 +163,25 @@ def test_feed_and_its_warmup_are_decided_separately():
     s = settings(ALL_PROXY="socks5h://p:1", NO_PROXY="scorebot-lb.hltv.org")
     assert s.for_url(SCOREBOT_BASE) == {"all": ""}
     assert s.for_url("https://www.hltv.org/matches/1/x") == {"all": "socks5h://p:1"}
+
+
+# ---------------------------------------------------------------- куда вообще ходим
+
+
+@pytest.mark.parametrize("url, ok", [
+    ("https://www.hltv.org/team/12857/forze-reload", True),
+    ("https://scorebot-lb.hltv.org/socket.io/?EIO=3", True),
+    # userinfo: строка НАЧИНАЕТСЯ правильно, а хост чужой
+    ("https://www.hltv.org@10.0.0.1:8080/matches/1/x", False),
+    ("https://www.hltv.org@192.168.1.1/matches/1/x", False),
+    # продолжение домена — собака не нужна вовсе
+    ("https://www.hltv.org.evil.example/matches/1/x", False),
+    ("https://evil.example/matches/1/x", False),
+    ("http://www.hltv.org/team/1/x", False),          # схема обязана быть https
+    ("https://127.0.0.1:8080/", False),
+    ("", False),
+])
+def test_only_hltv_hosts_are_reachable(url, ok):
+    from hltv_notify.config import url_allowed
+
+    assert url_allowed(url) is ok

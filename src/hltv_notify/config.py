@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .proxy import ProxySettings
 
@@ -16,10 +17,31 @@ HARD_MIN_REQUEST_INTERVAL_SECONDS = 30.0
 
 HLTV_BASE = "https://www.hltv.org"
 
+# Куда сервису вообще позволено ходить. Список закрытый и в коде, а не в
+# конфиге: адреса матчей приходят СО СТРАНИЦЫ HLTV, и без этой проверки
+# испорченная запись увела бы запрос на чужой хост — в том числе в локальную
+# сеть, из которой сервис работает. Проверка стоит на самом выходе в сеть,
+# чтобы сработать и на записи, попавшей в базу до починки разбора.
+ALLOWED_HOSTS = frozenset({"www.hltv.org", "hltv.org", "scorebot-lb.hltv.org"})
+
 log = logging.getLogger(__name__)
 
 # id чата в Telegram — число; у групп и каналов оно отрицательное.
 _CHAT_ID_RE = re.compile(r"^-?\d+$")
+
+
+def url_allowed(url: str) -> bool:
+    """Разрешён ли адрес к запросу.
+
+    Схема обязана быть https, хост — из ALLOWED_HOSTS. Сравнивается именно
+    `hostname` из разбора URL, а не начало строки: `https://www.hltv.org@evil/`
+    начинается «правильно», но ведёт на evil — это userinfo, а не хост.
+    """
+    try:
+        parts = urlparse(url or "")
+    except ValueError:
+        return False
+    return parts.scheme == "https" and (parts.hostname or "").lower() in ALLOWED_HOSTS
 
 
 def _int(name: str, default: int) -> int:

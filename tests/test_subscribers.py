@@ -255,3 +255,52 @@ def test_pause_covers_a_match_without_team_links(store, config):
     store.set_subscriber_paused(ILYA, True)
     Notifier(store, config, telegram=None).enqueue(e6())
     assert set(bodies(store)) == {FRIEND}
+
+
+# ---------------------------------------------------------------- отзыв доступа
+
+
+def test_removing_a_chat_from_the_whitelist_stops_delivery(tmp_path):
+    """Белый список закрывал только вход. Убрать чат из TELEGRAM_CHAT_ID
+    значило отобрать управление ботом, но не отписать от уведомлений: доставка
+    шла по таблице подписчиков, а она про конфиг ничего не знает."""
+    from hltv_notify.__main__ import _revoke_removed_subscribers
+
+    storage = Storage(tmp_path / "revoke.db")
+    storage.add_subscriber(ILYA)
+    storage.add_subscriber(FRIEND)
+
+    _revoke_removed_subscribers(storage, Config(chat_id=ILYA))   # FRIEND убрали
+
+    assert storage.subscriber_ids() == [ILYA]
+    assert storage.get_subscriber(FRIEND)["enabled"] == 0
+    storage.close()
+
+
+def test_open_mode_and_empty_list_revoke_nobody(tmp_path):
+    """В открытом режиме списка нет вовсе, а пустой список — почти наверняка
+    недозаполненный .env, а не намерение всех отписать."""
+    from hltv_notify.__main__ import _revoke_removed_subscribers
+
+    storage = Storage(tmp_path / "revoke2.db")
+    storage.add_subscriber(ILYA)
+    storage.add_subscriber(FRIEND)
+
+    _revoke_removed_subscribers(storage, Config(chat_id="", whitelist_only=False))
+    _revoke_removed_subscribers(storage, Config(chat_id=""))
+    assert sorted(storage.subscriber_ids()) == [ILYA, FRIEND]
+    storage.close()
+
+
+def test_returning_a_chat_to_the_whitelist_restores_it(tmp_path):
+    from hltv_notify.__main__ import _revoke_removed_subscribers
+
+    storage = Storage(tmp_path / "revoke3.db")
+    storage.add_subscriber(ILYA)
+    storage.add_subscriber(FRIEND)
+    _revoke_removed_subscribers(storage, Config(chat_id=ILYA))
+    assert storage.subscriber_ids() == [ILYA]
+
+    storage.add_subscriber(FRIEND)          # снова внесли — add_subscriber включает
+    assert sorted(storage.subscriber_ids()) == [ILYA, FRIEND]
+    storage.close()

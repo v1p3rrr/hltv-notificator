@@ -589,7 +589,7 @@ class CommandBot:
             for result in self.storage.map_results(row["match_id"]):
                 block.append(f"   {fmt.escape(result['map_name'])} — "
                              f"{result['score_team']}:{result['score_opponent']}")
-            block.append(row["url"])
+            block.append(fmt.escape(row["url"]))
             blocks.append("\n".join(block))
         return "\n\n".join(blocks)
 
@@ -607,7 +607,7 @@ class CommandBot:
             lines.append(
                 f"{when} — {fmt.escape(row['opponent_name'])}\n"
                 f"    {fmt.escape(row['event_name'])}\n"
-                f"    {row['url']}")
+                f"    {fmt.escape(row['url'])}")
         return "\n".join(lines)
 
     async def _check(self) -> str:

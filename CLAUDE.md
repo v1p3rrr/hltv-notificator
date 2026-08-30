@@ -213,6 +213,13 @@ CGI. А в `compose.yaml` пишут именно так, поэтому пер�
 `NO_PROXY` прокси выставляется в ПУСТУЮ СТРОКУ, а не «не выставляется» — иначе
 libcurl подхватит переменную окружения сам и обход не сработает.
 
+**Не склеивать базовый адрес со строкой из источника.** `HLTV_BASE + href` —
+это была настоящая SSRF: база не кончается слэшем, поэтому `href` с `@` или с
+точки уводил запрос на чужой хост (`www.hltv.org` становился userinfo), а
+сервис потом ходил туда каждую минуту. Адреса собираются из проверенных чисел,
+а `config.ALLOWED_HOSTS` проверяет хост на самом выходе в сеть. Проверять
+`hostname` из `urlparse`, а не `startswith` — атака строится ровно на нём.
+
 **Логи на русском под Windows роняют обработчик.** Консоль в cp1252.
 `setup_logging` принудительно переводит потоки в UTF-8; в скриптах —
 `PYTHONIOENCODING=utf-8`.
@@ -224,7 +231,7 @@ libcurl подхватит переменную окружения сам и о�
 ## Команды
 
 ```bash
-python -m pytest                                    # 311 тестов
+python -m pytest                                    # 330 тестов
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <дамп.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # пересобрать HTML-фикстуры
