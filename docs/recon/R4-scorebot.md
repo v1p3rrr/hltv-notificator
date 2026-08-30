@@ -1,11 +1,11 @@
-# R4 — Живой фид (scorebot)
+# R4 — The live feed (scorebot)
 
-Дата наблюдения: 2026-08-29. Всё ниже получено собственными подключениями к
-живым матчам, не из статей и не из старых README.
+Date of observation: 2026-08-29. Everything below came from our own connections
+to live matches, not from articles and not from old READMEs.
 
-## Точка входа
+## The entry point
 
-На **live**-странице матча есть элемент:
+On a **live** match page there is an element:
 
 ```html
 <div id="scoreboardElement"
@@ -18,236 +18,250 @@
      data-team2-id="…" data-team2-name="…">
 ```
 
-Наблюдение: **`data-scorebot-id` равен id матча** (совпало на 2396935 и 2397053).
-Значит скрейпить его не обязательно — `listId` берётся из id матча. Это важно
-ещё и потому, что на upcoming- и на finished-страницах `#scoreboardElement`
-**отсутствует**, то есть узнать его заранее нельзя в принципе.
+Observation: **`data-scorebot-id` equals the match id** (matched on 2396935 and
+2397053). So scraping it is not required — `listId` is taken from the match id.
+That also matters because `#scoreboardElement` is **absent** on upcoming and
+finished pages, meaning it cannot be learned in advance at all.
 
-Исторический адрес `scorebot.hltv.org:10022` из статей 2015–2018 — неактуален.
-Актуальный хост: `scorebot-lb.hltv.org`, обычный HTTPS/WSS без нестандартного порта.
+The historical address `scorebot.hltv.org:10022` from 2015-2018 articles is
+stale. The current host is `scorebot-lb.hltv.org`, ordinary HTTPS/WSS with no
+non-standard port.
 
-## Протокол
+## The protocol
 
-**Engine.IO v3** (`EIO=3`), то есть socket.io v2. Версия критична: клиенты для
-EIO v3 и v4 несовместимы, `python-socketio` 5.x говорит на EIO4 и с этим
-сервером работать не будет.
+**Engine.IO v3** (`EIO=3`), that is, socket.io v2. The version is critical:
+clients for EIO v3 and v4 are incompatible, and `python-socketio` 5.x speaks
+EIO4 and will not work with this server.
 
-### Транспорт: только polling, websocket закрыт
+### The transport: polling only, websocket is closed
 
-Это главный практический вывод разведки, и он не выводится из наблюдения за
-браузером. Замеры:
+This is the recon's main practical conclusion, and it does not follow from
+watching a browser. The measurements:
 
-| Клиент | Транспорт | Результат |
+| Client | Transport | Result |
 |---|---|---|
-| Браузер на странице hltv.org | websocket | OK |
-| `websockets`, без заголовков | websocket | **403** |
+| A browser on an hltv.org page | websocket | OK |
+| `websockets`, no headers | websocket | **403** |
 | `websockets` + `Origin: https://www.hltv.org` | websocket | **403** |
-| `websockets` + Origin + браузерный `User-Agent` | websocket | **403** |
+| `websockets` + Origin + a browser `User-Agent` | websocket | **403** |
 | `curl_cffi.ws_connect(impersonate="chrome")` + Origin + Referer | websocket | **403** |
-| то же, на сессии с прогретыми куками Cloudflare | websocket | **403** |
-| `curl_cffi` GET, **холодная сессия без куков** | polling | **200** |
-| `curl_cffi` GET/POST, прогретая сессия | polling | **200**, кадры идут |
+| the same, on a session with warmed Cloudflare cookies | websocket | **403** |
+| `curl_cffi` GET, **a cold session with no cookies** | polling | **200** |
+| `curl_cffi` GET/POST, a warmed session | polling | **200**, frames flow |
 
-То есть websocket-апгрейд к `scorebot-lb.hltv.org` не проходит ни при каких
-заголовках, куках и профилях impersonation, а polling проходит даже без куков.
-Браузер и сам начинает сессию с polling (в его трафике видны
-`?EIO=3&transport=polling` до апгрейда), так что polling — штатный транспорт
-того же протокола, а не обходной манёвр.
+That is, the websocket upgrade to `scorebot-lb.hltv.org` does not get through
+under any headers, cookies or impersonation profiles, while polling gets through
+even without cookies. A browser starts its session with polling itself (its
+traffic shows `?EIO=3&transport=polling` before the upgrade), so polling is a
+regular transport of the same protocol, not a workaround.
 
-**Следствие для архитектуры:** живой фид работает через тот же impersonated
-HTTP-клиент, что и остальной проект. Отдельного websocket-стека и отдельной
-библиотеки socket.io не нужно вовсе. Реализация — `scripts/eio3.py`.
+**The architectural consequence:** the live feed works through the same
+impersonated HTTP client as the rest of the project. No separate websocket stack
+and no separate socket.io library is needed at all. The implementation is
+`scripts/eio3.py`.
 
-### Последовательность
+### The sequence
 
 ```
 GET  /socket.io/?EIO=3&transport=polling&t=<ms>
   <- 0{"sid":"…","upgrades":["websocket"],"pingInterval":25000,"pingTimeout":60000}
   <- 40
 POST /socket.io/?EIO=3&transport=polling&t=<ms>&sid=<sid>
-     тело: <len>:42["readyForMatch","{\"token\":\"\",\"listId\":\"<match_id>\"}"]
+     body: <len>:42["readyForMatch","{\"token\":\"\",\"listId\":\"<match_id>\"}"]
   <- ok
-GET  /socket.io/?EIO=3&transport=polling&t=<ms>&sid=<sid>     (long-poll)
+GET  /socket.io/?EIO=3&transport=polling&t=<ms>&sid=<sid>     (long poll)
   <- 42["log",...] / 42["scoreboard",{...}]
 ```
 
-Заголовки: `Origin: https://www.hltv.org`, `Referer` на страницу матча.
-Keep-alive: POST с телом `1:2` (пакет `2` = ping) не реже `pingInterval` (25 с),
-сервер отвечает `3` в потоке. Авторизации нет, токен пустой.
+Headers: `Origin: https://www.hltv.org`, `Referer` pointing at the match page.
+Keep-alive: a POST with the body `1:2` (packet `2` = ping) at least every
+`pingInterval` (25 s), to which the server answers `3` in the stream. There is
+no authorisation, the token is empty.
 
-### Framing polling-ответа
+### Framing of a polling response
 
-Пакеты идут подряд, каждый: байт `0x00` (строковый) или `0x01` (бинарный),
-затем длина **по одной цифре в байте** (значение 0..9, не ASCII), затем `0xff`,
-затем тело. Встречается и текстовый вариант `<len>:<тело>`. Декодер обязан
-работать по `response.content` (байтам): при декодировании в текст цифры длины
-превращаются в `�` и разбор ломается.
+Packets follow one another, each being: the byte `0x00` (string) or `0x01`
+(binary), then the length **one digit per byte** (the value 0..9, not ASCII),
+then `0xff`, then the body. A textual variant `<len>:<body>` also occurs. The
+decoder must work on `response.content` (bytes): decoding to text turns the
+length digits into `�` and breaks the parsing.
 
-### Главная деталь, которой нет в старых README
+### The key detail missing from old READMEs
 
-Аргумент `readyForMatch` обязан быть **JSON-строкой**, а не объектом. Проверены
-оба варианта на одном и том же матче:
+The `readyForMatch` argument must be a **JSON string**, not an object. Both
+variants were tested on the same match:
 
-| Отправлено | Результат |
+| Sent | Result |
 |---|---|
-| `42["readyForMatch","{\"token\":\"\",\"listId\":\"2396935\"}"]` | поток пошёл |
-| `42["readyForMatch",{"token":"","listId":"2396935"}]` | **тишина**, ошибки нет |
+| `42["readyForMatch","{\"token\":\"\",\"listId\":\"2396935\"}"]` | the stream started |
+| `42["readyForMatch",{"token":"","listId":"2396935"}]` | **silence**, no error |
 
-Отказ молчаливый — сервер не отвечает ошибкой, соединение живо, данных просто
-нет. Легко принять за «у этого матча нет фида».
+The refusal is silent — the server does not answer with an error, the connection
+is alive, there is simply no data. Easy to mistake for "this match has no feed".
 
-## События
+## The events
 
-Приходят два типа.
+Two kinds arrive.
 
-### `scoreboard` — полное состояние табло
+### `scoreboard` — the full scoreboard state
 
-Идёт часто (порядка 4 кадров/с на активной карте), **каждый раз целиком**.
-Поля:
+It comes often (roughly 4 frames/s on an active map), **in full every time**.
+The fields:
 
-| Поле | Смысл |
+| Field | Meaning |
 |---|---|
 | `mapName` | `de_mirage`, `de_nuke`, … |
-| `currentRound` | номер текущего раунда |
+| `currentRound` | the current round number |
 | `currentRoundState` | `warmup` / `freezePeriod` / `started` / `ended` |
-| `live`, `frozen`, `bombPlanted` | флаги |
-| `ctTeamScore` / `tTeamScore` | счёт **текущей карты** по сторонам |
-| `counterTerroristScore` / `terroristScore` | дубль того же |
-| `ctTeamId` / `tTeamId` | кто сейчас за какую сторону |
-| `ctTeamName` / `terroristTeamName` | имена команд по сторонам (именно так, асимметрично) |
-| `startingCt` / `startingT` | id команд по стартовым сторонам |
+| `live`, `frozen`, `bombPlanted` | flags |
+| `ctTeamScore` / `tTeamScore` | the **current map's** score by side |
+| `counterTerroristScore` / `terroristScore` | a duplicate of the same |
+| `ctTeamId` / `tTeamId` | who is on which side right now |
+| `ctTeamName` / `terroristTeamName` | team names by side (asymmetric, exactly so) |
+| `startingCt` / `startingT` | team ids by starting side |
 | `regulationHalfLength` / `overtimeHalfLength` | 12 / 3 |
 | `ctMatchHistory` / `terroristMatchHistory` | `{firstHalf:[…], secondHalf:[…]}` |
-| `roundTimeRemainingMS` | остаток раунда |
-| `CT` / `TERRORIST` | массивы по 5 игроков (ник, K/D/A, hp, деньги, ADR…) |
-| `matchFacts`, `ctTeamFacts`, `tTeamFacts` | во всех наблюдениях пустые |
+| `roundTimeRemainingMS` | time left in the round |
+| `CT` / `TERRORIST` | arrays of 5 players (nick, K/D/A, hp, money, ADR…) |
+| `matchFacts`, `ctTeamFacts`, `tTeamFacts` | empty in every observation |
 
-Элемент истории раундов:
+A round-history element:
 
 ```json
 { "roundOrdinal": 3, "survivingPlayers": 3, "type": "Target_Bombed" }
 ```
 
-Наблюдавшиеся `type`: `Target_Bombed`, `Target_Saved`, `CTs_Win`,
-`Terrorists_Win`, `lost` (`lost` — с точки зрения той стороны, чью историю читаем).
+The `type` values observed: `Target_Bombed`, `Target_Saved`, `CTs_Win`,
+`Terrorists_Win`, `lost` (`lost` from the point of view of whichever side's
+history is being read).
 
-Стороны меняются местами после перерыва, поэтому **привязывать счёт к команде
-надо через `ctTeamId`/`tTeamId`, а не через сторону.**
+The sides swap after the break, so **the score must be tied to a team through
+`ctTeamId`/`tTeamId`, not through the side.**
 
-### `log` — игровые события
+### `log` — game events
 
-Payload — JSON-**строка** с `{"log":[ {<Тип>: {...}}, … ]}`. Наблюдавшиеся типы:
-`MatchStarted`, `RoundStart`, `RoundEnd`, `Restart`, `Kill`, `Assist`,
-`BombPlanted`, `Suicide`, `PlayerJoin`, `PlayerQuit`.
+The payload is a JSON **string** with `{"log":[ {<Type>: {...}}, … ]}`. The
+types observed: `MatchStarted`, `RoundStart`, `RoundEnd`, `Restart`, `Kill`,
+`Assist`, `BombPlanted`, `Suicide`, `PlayerJoin`, `PlayerQuit`.
 
-**`MatchStarted` несёт имя карты и срабатывает на старте каждой карты серии**,
-а не один раз на матч. Поймано на переходе матча FORZE со второй карты:
+**`MatchStarted` carries the map name and fires at the start of every map in the
+series**, not once per match. Caught on FORZE's match moving to its second map:
 
 ```json
 {"log":[{"RoundStart":{}},{"MatchStarted":{"map":"de_dust2"}}, …]}
 ```
 
-Это прямой сигнал для E5 («карта началась») и маркер границы карт в дампе.
+That is the direct signal for E5 ("the map has started") and the marker of a map
+boundary in the dump.
 
-## Эксплуатационные особенности polling (замерено на записи живого матча)
+## Operational quirks of polling (measured while recording a live match)
 
-Запись матча FORZE `2397053` дала три вещи, которых не видно на коротком пробном
-подключении.
+The recording of FORZE's match `2397053` produced three things that a short trial
+connection does not reveal.
 
-**1. Подписываться можно только после пакета `40`.** При первом подключении
-`0{…}` и `40` приходят одним ответом, и подписка сразу работает. На реконнекте
-`40` пришёл **следующим** poll'ом — а `readyForMatch`, отправленный до него,
-сервер молча проигнорировал: соединение живо, `40` получен, кадров нет. Тот же
-молчаливый отказ, что и при неверном типе payload. Клиент обязан дождаться `40`.
+**1. You may only subscribe after packet `40`.** On the first connect `0{…}` and
+`40` arrive in one response and the subscription works immediately. On a
+reconnect `40` arrived on the **next** poll — and `readyForMatch` sent before it
+was silently ignored by the server: the connection is alive, `40` was received,
+there are no frames. The same silent refusal as with the wrong payload type. The
+client is obliged to wait for `40`.
 
-**2. Сессия выгорает: polling начинает отдавать 403.** Последовательность на
-записи: ~2 минуты нормальных кадров → `HTTP 520` → реконнект → poll с таймаутом
-45 с без данных → далее устойчивые **403** на все попытки. Реконнекты с обычным
-backoff (2, 4, 8, 16, 30 с) ситуацию не чинили и только долбили источник.
+**2. The session burns out: polling starts returning 403.** The sequence in the
+recording: ~2 minutes of normal frames → `HTTP 520` → reconnect → a poll timing
+out after 45 s with no data → then steady **403** on every attempt. Reconnects
+with the usual backoff (2, 4, 8, 16, 30 s) did not fix anything and only
+hammered the source.
 
-Вывод для Live Worker: `403` — это не сетевой сбой, а «отойди». Обрабатывать
-отдельно от таймаутов: новая сессия **с прогревом** (GET страницы матча ставит
-куки Cloudflare), пауза минутами, а не секундами, и переход на Live Poller как
-основной источник. Реализовано в `scripts/eio3.py` (`SessionRejected`) и в
+The conclusion for the Live Worker: `403` is not a network failure but a "back
+off". Handle it separately from timeouts: a new session **with a warm-up** (a
+GET of the match page sets the Cloudflare cookies), a pause measured in minutes
+rather than seconds, and a switch to the Live Poller as the primary source.
+Implemented in `scripts/eio3.py` (`SessionRejected`) and in
 `scripts/record_scorebot.py`.
 
-**3. Долгий long-poll без данных — норма.** `curl: (28) timed out after 45000ms`
-приходит штатно, когда на карте пауза. Это не повод считать фид умершим;
-признак смерти — 403 или тишина при том, что страница матча говорит `LIVE`.
+**3. A long poll with no data is normal.** `curl: (28) timed out after 45000ms`
+arrives routinely when the map is paused. It is no reason to consider the feed
+dead; the sign of death is a 403, or silence while the match page says `LIVE`.
 
-## Что критично для дедупликации
+## What is critical for deduplication
 
-**При подключении сервер немедленно присылает полное текущее состояние**, и
-только потом дельты. После каждого реконнекта состояние прилетает заново с нуля.
-Плюс `scoreboard` и так шлётся много раз в секунду с одинаковым содержимым.
+**On connecting, the server immediately sends the full current state**, and only
+then deltas. After every reconnect the state arrives again from scratch. On top
+of that `scoreboard` is sent many times a second with identical content anyway.
 
-Хуже того: **в `log` при подключении приезжает бэклог уже случившегося**.
-Полная запись матча `2397053` (`fixtures/scorebot-2397053-forze.jsonl.gz`,
-2150 записей, 1977 кадров) это показывает во весь рост: за прогон случилось
-**15 подключений и 14 обрывов**, и на серии всего из двух карт накопилось
-**150 событий `MatchStarted`**:
+Worse: **on connecting, the `log` delivers a backlog of what has already
+happened**. The full recording of match `2397053`
+(`fixtures/scorebot-2397053-forze.jsonl.gz`, 2150 records, 1977 frames) shows
+this in full: over the run there were **15 connects and 14 disconnects**, and
+across a series of just two maps **150 `MatchStarted` events** piled up:
 
 ```
 MatchStarted: de_dust2 ×90, de_mirage ×60
 ```
 
-То есть каждый реконнект заново проигрывает всю историю матча, включая карту,
-доигранную задолго до подключения. Обрывы при этом — норма, а не авария.
+That is, every reconnect replays the match's whole history, including a map
+played out long before the connection. Disconnects, meanwhile, are normal rather
+than an emergency.
 
-Наивное «пришёл MatchStarted — шлём E5» дало бы шквал уведомлений о начале
-карт, часть из них — о картах, давно доигранных. E5 обязан рождаться на
-**переходе** состояния матча (сменился номер текущей карты), а не на факте
-получения события.
+A naive "a MatchStarted arrived, send E5" would have produced a barrage of
+map-start notifications, some of them about maps finished long ago. E5 must be
+born on a **transition** of the match state (the current map number changed),
+not on the fact that an event arrived.
 
-Это ровно та ловушка, о которой предупреждает ТЗ: логика «пришёл счёт 13 — шлём
-E6» даст дубли гарантированно. Событие рождается только на **переходе**
-состояния, ключ идемпотентности пишется в `sent_events` под уникальным индексом.
+This is exactly the trap the spec warns about: the logic "a score of 13 arrived,
+send E6" is guaranteed to produce duplicates. An event is born only on a
+**transition** of state, and the idempotency key is written to `sent_events`
+under a unique index.
 
-## Граница карт: фид её показывает
+## The map boundary: the feed does show it
 
-Проверено на матче 2397091 в момент перехода Mirage → Inferno. Сразу после
-смены карты подключение к фиду отдало:
+Verified on match 2397091 at the moment of the Mirage → Inferno transition.
+Right after the map changed, a connection to the feed returned:
 
 ```json
 { "mapName": "de_inferno", "currentRound": 1, "currentRoundState": "warmup",
   "live": false, "ctTeamScore": 0, "tTeamScore": 0 }
 ```
 
-То есть смена карты видна сразу по нескольким признакам: меняется `mapName`,
-номер раунда сбрасывается в 1, состояние уходит в `warmup`, счёт обнуляется.
-Плюс в `log` приходит `MatchStarted` с именем новой карты.
+So the map change is visible through several signals at once: `mapName` changes,
+the round number resets to 1, the state goes to `warmup`, the score is zeroed.
+Plus `MatchStarted` with the new map's name arrives in the `log`.
 
-Заодно уточняется смысл `live`: это **не** «матч идёт», а «карта в игре».
-В конце карты он оставался `true` при `currentRoundState: "ended"`, а в
-разминке следующей карты стал `false`.
+This also pins down the meaning of `live`: it is **not** "the match is running"
+but "the map is in play". At the end of a map it stayed `true` with
+`currentRoundState: "ended"`, and during the next map's warmup it became
+`false`.
 
-Прошлая запись (матч 2397053) смены `mapName` не показала не потому, что фид
-её не сообщает, а потому что запись велась на последней карте серии.
+The earlier recording (match 2397053) showed no `mapName` change not because the
+feed does not report it but because the recording was made on the series' last
+map.
 
-**В перерыве между картами фид молчит.** Long-poll возвращается по таймауту
-без данных — 45 секунд тишины здесь норма, а не признак смерти фида.
+**During the break between maps the feed goes quiet.** The long poll returns on
+a timeout with no data — 45 seconds of silence is normal here, not a sign that
+the feed has died.
 
-## Чего фид не даёт
+## What the feed does not give
 
-- **Сигнала об окончании карты.** Пойман момент конца карты на матче FORZE:
-  `currentRound:23`, счёт 13:10, `currentRoundState:"ended"`, `frozen:true`, но
-  `live` остаётся `true`. `ended` — состояние раунда, оно же бывает в конце
-  любого обычного раунда.
-- **Счёта серии по картам.** В фиде только счёт текущей карты. Границу карт
-  видно по `MatchStarted` и по сбросу `mapName`/счёта, но сколько карт уже
-  выиграно каждой командой — фид не сообщает.
-- **Конца матча.** На записи `2397053` матч завершился, а фид просто перестал
-  присылать изменения: ни отдельного события, ни смены флага. Отличить «матч
-  закончился» от «идёт долгая пауза» по одному лишь фиду нельзя — это делает
-  страница матча.
+- **A signal that a map has ended.** The moment a map ended was caught on
+  FORZE's match: `currentRound:23`, the score 13:10,
+  `currentRoundState:"ended"`, `frozen:true`, but `live` stays `true`. `ended`
+  is the round's state, and it also occurs at the end of any ordinary round.
+- **The series score by maps.** The feed only has the current map's score. The
+  map boundary is visible through `MatchStarted` and through the reset of
+  `mapName`/the score, but how many maps each team has already won is not
+  reported.
+- **The end of the match.** In the `2397053` recording the match finished and
+  the feed simply stopped sending changes: no separate event, no flag change.
+  "The match has finished" cannot be told from "there is a long pause" by the
+  feed alone — the match page does that.
 
-Поэтому источник истины по E6/E7 — страница матча ([R3](R3-schedule-source.md)),
-а фид даёт скорость и E5.
+That is why the source of truth for E6/E7 is the match page
+([R3](R3-schedule-source.md)), while the feed provides the speed and E5.
 
-## Фикстуры
+## Fixtures
 
-- `fixtures/scorebot-2397053-forze.jsonl.gz` — сырые кадры живого матча FORZE,
-  gzip-JSONL, пишется скриптом `scripts/record_scorebot.py`. Подряд идущие
-  байт-идентичные кадры схлопнуты в `{"kind":"repeat","n":N}`; обрывы и
-  переподключения помечены `disconnect`/`connect` — replay-тест на дедупликацию
-  использует именно их.
+- `fixtures/scorebot-2397053-forze.jsonl.gz` — raw frames of FORZE's live match,
+  gzip JSONL, written by `scripts/record_scorebot.py`. Consecutive
+  byte-identical frames are collapsed into `{"kind":"repeat","n":N}`;
+  disconnects and reconnects are marked `disconnect`/`connect` — the
+  deduplication replay test uses exactly those.

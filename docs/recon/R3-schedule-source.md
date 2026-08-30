@@ -1,42 +1,45 @@
-# R3 — Источник расписания
+# R3 — The schedule source
 
-Дата наблюдения: 2026-08-29. Выбран **вариант Б (HTML)**: решением пользователя
-разведка мобильного эндпоинта (проксирование трафика приложения через mitmproxy)
-отложена. Мобильный API остаётся кандидатом на второй источник, если HTML
-окажется хрупким.
+Date of observation: 2026-08-29. **Variant B (HTML)** was chosen: by the
+owner's decision, recon of the mobile endpoint (proxying the app's traffic
+through mitmproxy) is deferred. The mobile API remains a candidate for a second
+source should the HTML turn out to be brittle.
 
-## Доступ: TLS-фингерпринт подтверждён как реальная преграда
+## Access: the TLS fingerprint is confirmed as a real barrier
 
-Замер по четырём страницам, один и тот же URL, подряд:
+Measured over four pages, the same URL, back to back:
 
-| Страница | `urllib` (обычный клиент) | `curl_cffi` (`impersonate="chrome"`) |
+| Page | `urllib` (an ordinary client) | `curl_cffi` (`impersonate="chrome"`) |
 |---|---|---|
-| `/team/12857/forze-reload` | **403** | **200** (1 149 545 байт) |
-| `/matches/2397053/...` (live) | **403** | **200** (547 715 байт) |
-| `/matches/2397340/...` (upcoming) | **403** | **200** (482 958 байт) |
-| `/matches/2397047/...` (finished) | **403** | **200** (475 727 байт) |
+| `/team/12857/forze-reload` | **403** | **200** (1,149,545 bytes) |
+| `/matches/2397053/...` (live) | **403** | **200** (547,715 bytes) |
+| `/matches/2397340/...` (upcoming) | **403** | **200** (482,958 bytes) |
+| `/matches/2397047/...` (finished) | **403** | **200** (475,727 bytes) |
 
-Заголовки в контрольном запросе выглядели корректно — дело не в них. Перебирать
-`User-Agent` и прочие заголовки бесполезно, отсев идёт по TLS-фингерпринту
-клиента. Воспроизводится скриптом `scripts/fetch_fixtures.py`.
+The headers in the control request looked correct — they are not the issue.
+Permuting `User-Agent` and other headers is useless, the filtering is by the
+client's TLS fingerprint. Reproducible with `scripts/fetch_fixtures.py`.
 
-**Cloudflare-челленджей и капчи при этом не наблюдалось** — с корректным
-фингерпринтом страница отдаётся сразу. Решатели капчи и ротация прокси не нужны
-и не применяются.
+**No Cloudflare challenges or captchas were observed** — with the right
+fingerprint the page is served straight away. Captcha solvers and proxy rotation
+are neither needed nor used.
 
-## Страница команды — расписание
+## The team page — the schedule
 
-`https://www.hltv.org/team/12857/forze-reload` рендерится на сервере, всё нужное
-есть в HTML (не строится JS). Структура:
+`https://www.hltv.org/team/12857/forze-reload` is server-rendered, everything
+needed is in the HTML (not built by JS). The structure:
 
-- две таблицы `table.match-table` — «Upcoming matches for …» и «Recent results for …»
-  (различать по ближайшему предшествующему `.standard-headline`);
-- строки матчей — `tr.team-row`; строки-разделители турниров — `tr.event-header-cell`;
-- время — атрибут **`data-unix`, epoch в миллисекундах** (не текст!), поэтому
-  таймзоны и переход на летнее время решаются без парсинга человекочитаемых дат;
-- ссылка на матч — `a[href*="/matches/"]`, id вынимается регуляркой `/matches/(\d+)/`.
+- two `table.match-table` tables — "Upcoming matches for …" and "Recent results
+  for …" (tell them apart by the nearest preceding `.standard-headline`);
+- match rows are `tr.team-row`; tournament separator rows are
+  `tr.event-header-cell`;
+- the time is the **`data-unix` attribute, epoch in milliseconds** (not the
+  text!), so timezones and DST are resolved without parsing human-readable
+  dates;
+- the match link is `a[href*="/matches/"]`, the id is extracted with the regex
+  `/matches/(\d+)/`.
 
-Проверенная выборка (фикстура `fixtures/team-12857-forze-reload.html`):
+The verified sample (fixture `fixtures/team-12857-forze-reload.html`):
 
 ```
 -- Upcoming matches for FORZE Reload
@@ -47,58 +50,69 @@
    unix=1787412600000 id=2397026 teams=['FORZE Reload', 'Nemiga']    score=0:2  event=GLuck Moscow Cyber Games 2026 Closed Qual…
 ```
 
-Два полезных свойства, подтверждённых на выборке: **своя команда всегда идёт
-первой** в строке независимо от того, team1 она или team2 на странице матча, и
-**счёт даётся с её точки зрения** (`0:2` в проигранном Nemiga матче). На это
-можно опираться, но парсер всё равно сверяет соперника по id.
+Two useful properties confirmed on the sample: **our own team always comes
+first** in the row regardless of whether it is team1 or team2 on the match page,
+and **the score is given from its point of view** (`0:2` in the match lost to
+Nemiga). Those can be relied on, but the parser still matches the opponent by
+id.
 
-Глубина «Recent results» — заметно больше двух недель (в выборке видны матчи
-конца февраля), «Upcoming» показывает ближайшие. Для E1–E3 этого достаточно.
+The depth of "Recent results" is noticeably more than two weeks (matches from
+late February appear in the sample); "Upcoming" shows the nearest ones. That is
+enough for E1-E3.
 
-## Страница матча — состояние, формат, счёт по картам
+## The match page — state, format, per-map scores
 
-Фикстуры: `match-2397340-upcoming.html`, `match-2397053-live.html`,
+Fixtures: `match-2397340-upcoming.html`, `match-2397053-live.html`,
 `match-2397047-finished.html`.
 
-| Что | Селектор | Значения на трёх фикстурах |
+| What | Selector | Values across the three fixtures |
 |---|---|---|
-| Время начала | **`.timeAndEvent [data-unix]`** | 1788015600000 / 1787994300000 / 1787856300000 |
-| Состояние | `.countdown` | `4h : 57m : 28s` / `LIVE` / `Match over` |
-| Турнир | `.timeAndEvent .event a` | имя + `/events/<id>/<slug>` |
-| Формат | `.preformatted-text` | `Best of 3 (LAN)` / `Best of 3 (Online)` + примечания |
-| Карты | `.mapholder` → `.mapname`, `.results-team-score`, `.results-center-half-score` | см. ниже |
-| Счёт серии | `.team1-gradient .won` / `.team2-gradient .won` | на завершённом — `2` |
-| Живой фид | `#scoreboardElement[data-scorebot-id]` | **только на live-странице** |
+| Start time | **`.timeAndEvent [data-unix]`** | 1788015600000 / 1787994300000 / 1787856300000 |
+| State | `.countdown` | `4h : 57m : 28s` / `LIVE` / `Match over` |
+| Tournament | `.timeAndEvent .event a` | the name + `/events/<id>/<slug>` |
+| Format | `.preformatted-text` | `Best of 3 (LAN)` / `Best of 3 (Online)` + notes |
+| Maps | `.mapholder` → `.mapname`, `.results-team-score`, `.results-center-half-score` | see below |
+| Series score | `.team1-gradient .won` / `.team2-gradient .won` | on the finished one — `2` |
+| Live feed | `#scoreboardElement[data-scorebot-id]` | **only on the live page** |
 
-Карты по фикстурам:
+The maps across the fixtures:
 
 ```
-upcoming : map1 TBA    scores=[]          map2 TBA    …   (до вето — TBA)
+upcoming : map1 TBA    scores=[]          map2 TBA    …   (TBA before the veto)
 live     : map1 Mirage scores=['13','10'] halves=( 5 : 7 ; 8 : 3 )
            map2 Dust2  scores=['-','-']   map3 Ancient scores=['-','-']
 finished : map1 Mirage scores=['13','10'] halves=( 8 : 4 ; 5 : 6 )
            map2 Dust2  scores=['13','10'] halves=( 9 : 3 ; 4 : 7 )
-           map3 Nuke   scores=['-','-']            (решающая не игралась)
+           map3 Nuke   scores=['-','-']            (the decider was not played)
 ```
 
-Отсюда правило конца карты (D7): **у `.mapholder` появился числовой счёт вместо
-прочерка ⇒ карта сыграна**. Оно не зависит от арифметики раундов, поэтому
-переживает овертайм, а несыгранная решающая карта естественно остаётся с
-прочерком и E6 по ней не рождается.
+Hence the map-completion rule (D7): **a `.mapholder` gained a numeric score
+instead of a dash ⇒ the map is played**. It does not depend on round arithmetic,
+so it survives an overtime, while an unplayed decider naturally stays with a
+dash and no E6 is born for it.
 
-## Ловушка, на которой легко обжечься
+> This rule was later refined: a **running** map has a numeric score too, so the
+> `.results-stats` link had to be added as the actual completion signal. See
+> [known-limitations.md](../known-limitations.md) and the "Trap two" section in
+> [architecture.md](../architecture.md).
 
-Селектор `[data-unix]` **без скоупа** берёт не то. На странице матча первым в
-DOM идёт виджет «избранные матчи» `.fbw-vp-header-time` с временем **чужих**
-матчей (на фикстуре завершённого матча их там два: 11:00 и 18:30). Неквалифицированный
-селектор дал бы 1787994000000 вместо правильного 1787856300000 — то есть время
-постороннего матча, и сервис слал бы ложные E2 «время изменилось».
+## A trap that is easy to get burned by
 
-**Обязательно `.timeAndEvent [data-unix]`.** На это есть тест по фикстурам.
+An `[data-unix]` selector **without a scope** picks up the wrong thing. On a
+match page the first thing in the DOM is the "featured matches" widget
+`.fbw-vp-header-time` carrying **other** matches' times (on the finished-match
+fixture there are two of them: 11:00 and 18:30). An unqualified selector would
+have given 1787994000000 instead of the correct 1787856300000 — that is, a
+foreign match's time, and the service would have sent false "time changed" E2
+events.
 
-## Хрупкость и план Б
+**`.timeAndEvent [data-unix]` is mandatory.** There is a fixture-based test for
+it.
 
-HTML-путь ломается при редизайне вёрстки. Признак поломки — парсер вернул ноль
-матчей при HTTP 200; это трактуется как отказ источника и уходит в E8, а не в
-«матчей нет». Если ломаться начнёт часто — возвращаемся к вопросу о мобильном
-JSON-эндпоинте (вариант А, требует проксирования трафика приложения).
+## Brittleness and the plan B
+
+The HTML path breaks on a markup redesign. The sign of a breakage is the parser
+returning zero matches on an HTTP 200; that is treated as a source failure and
+goes to E8 rather than to "there are no matches". If it starts breaking often,
+we return to the question of the mobile JSON endpoint (variant A, which requires
+proxying the app's traffic).
