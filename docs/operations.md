@@ -1,175 +1,183 @@
-# Эксплуатация
+# Operations
 
-## Что сервис умеет сейчас
+## What the service can do today
 
-| Событие | Состояние |
+| Event | State |
 |---|---|
-| E1 новый матч, E2 перенос, E3 отмена | есть, по странице команды |
-| E4 матч начался, E7 матч завершён | есть, по странице матча |
-| E6 карта закончилась со счётом | есть, **в момент победного раунда** по живому фиду; страница — подтверждение |
-| E5 карта началась | есть, по живому фиду |
-| E8 деградация (источник молчит, матч завис) | есть |
-| «Матч завис» | только когда живого фида нет; между картами порог втрое длиннее |
-| Живое сообщение со счётом по ходу карты | есть, одно на карту, `LIVE_MESSAGE` |
-| Мультикилл игрока нашей команды | есть, в момент N-го фрага, `MULTIKILL_THRESHOLD` |
+| E1 new match, E2 reschedule, E3 cancellation | done, from the team page |
+| E4 match started, E7 match finished | done, from the match page |
+| E6 map finished with the score | done, **at the winning round** from the live feed; the page confirms |
+| E5 map started | done, from the live feed |
+| E8 degradation (the source is silent, the match has stalled) | done |
+| "The match has stalled" | only when there is no live feed; between maps the threshold is three times longer |
+| The live score message during a map | done, one per map, `LIVE_MESSAGE` |
+| A multikill by a player of our team | done, at the Nth kill, `MULTIKILL_THRESHOLD` |
 
-## Запуск
+## Starting up
 
-1. `cp .env.example .env` и заполнить `TELEGRAM_BOT_TOKEN` (у @BotFather) и
-   `TELEGRAM_CHAT_ID` (у @userinfobot). `.env` в репозиторий не попадает.
-2. Первый прогон — **обязательно с `DRY_RUN=true`**: уведомления пишутся в лог
-   вместо Telegram. Так проверяется, что сервис не шлёт мусор.
-3. `docker compose up -d --build`, логи — `docker compose logs -f`.
-4. Убедившись, что всё разумно, поставить `DRY_RUN=false` и перезапустить.
+1. `cp .env.example .env` and fill in `TELEGRAM_BOT_TOKEN` (from @BotFather) and
+   `TELEGRAM_CHAT_ID` (from @userinfobot). `.env` never enters the repository.
+2. The first run must be **with `DRY_RUN=true`**: notifications go to the log
+   instead of Telegram. That is how you check the service is not sending noise.
+3. `docker compose up -d --build`, logs with `docker compose logs -f`.
+4. Once everything looks sensible, set `DRY_RUN=false` and restart.
 
-### Часовой пояс
+### Timezone
 
-Хранится и считается всё в UTC. В сообщениях время показывается в поясе
-`TZ_DISPLAY` из `.env` — по умолчанию `Europe/Moscow`. Годится любая зона из
-базы IANA (`Europe/Riga`, `Asia/Tbilisi`, ...); менять её можно на ходу,
-данные от этого не съезжают, потому что в базе они в UTC.
+Everything is stored and computed in UTC. In messages the time is shown in the
+`TZ_DISPLAY` zone from `.env` — `Europe/Moscow` by default. Any zone from the
+IANA database will do (`Europe/Riga`, `Asia/Tbilisi`, ...); it can be changed on
+the fly and the data does not drift, because in the database it is UTC.
 
-Время матчей берётся из атрибута `data-unix` (epoch в миллисекундах), а не из
-текста на странице. Это важно: HLTV рендерит время в поясе браузера, и текст
-«17:00» у разных читателей означает разное — а epoch одинаков для всех.
+Match times come from the `data-unix` attribute (epoch in milliseconds), not
+from the text on the page. That matters: HLTV renders the time in the browser's
+timezone, so the text "17:00" means different things to different readers —
+whereas the epoch is the same for everyone.
 
-Локально без Docker: `PYTHONPATH=src python -m hltv_notify`.
-Тесты: `python -m pytest`.
+Locally without Docker: `PYTHONPATH=src python -m hltv_notify`.
+Tests: `python -m pytest`.
 
-**Первый запуск молчаливый.** Все матчи со страницы команды заносятся в базу
-без уведомлений — иначе на старте прилетело бы полтора десятка сообщений про
-уже сыгранное. Уведомления начинаются со следующего опроса.
+**The first run is silent.** All the matches from the team page are written into
+the database without notifications — otherwise a dozen and a half messages about
+already played matches would arrive at startup. Notifications begin from the
+next poll.
 
-База (`data/hltv.db`) хранит и состояние, и журнал отправленных событий.
-**Терять её нельзя**: без журнала сервис заново разошлёт уведомления обо всём,
-что сочтёт новым.
+The database (`data/hltv.db`) holds both the state and the journal of sent
+events. **It must not be lost**: without the journal the service will send
+notifications again about everything it considers new.
 
-## Команды боту
+## Bot commands
 
-| Команда | Что показывает |
+| Command | What it shows |
 |---|---|
-| `/teams` | ваши команды и их глушения |
-| `/track <ссылка>` | добавить команду; её текущее расписание заносится молча |
-| `/untrack <id>` | выключить команду, история сохраняется |
-| `/mute <id> <типы>` | заглушить типы событий по одной команде |
-| `/unmute <id>` | снять глушения |
-| `/remind` | список напоминаний; `/remind 1h` добавить, `/remind rm 15m` убрать |
-| `/tz` | свой часовой пояс |
-| `/pause` / `/resume` | общий тумблер тишины поверх глушения по типам |
-| `/menu` | то же самое кнопками |
-| `/whoami` | свой chat_id, отвечает всем |
-| `/status` | режимы опроса, состояние живого фида, число матчей, очередь, последняя ошибка |
-| `/live` | идущий матч: карта, счёт, счёт по картам, результаты карт и **от какого источника** пришли данные |
-| `/next` | ближайшие матчи по данным сервиса |
-| `/check` | внеочередная проверка расписания |
-| `/verbose on\|off` | подробные логи |
+| `/teams` | your teams and their mutes |
+| `/track <link>` | add a team; its current schedule is recorded silently |
+| `/untrack <id>` | switch a team off, the history is kept |
+| `/mute <id> <types>` | mute event types for one team |
+| `/unmute <id>` | clear the mutes |
+| `/remind` | the list of reminders; `/remind 1h` adds, `/remind rm 15m` removes |
+| `/tz` | your own timezone |
+| `/pause` / `/resume` | the global quiet switch, on top of per-type muting |
+| `/menu` | the same thing with buttons |
+| `/whoami` | your own chat_id, answered for everyone |
+| `/status` | polling modes, live feed health, match counts, the queue, the last error |
+| `/live` | the running match: map, score, series score, map results and **which source** the data came from |
+| `/next` | upcoming matches as the service sees them |
+| `/check` | an out-of-turn schedule check |
+| `/verbose on\|off` | verbose logs |
 
-Когда уведомление не пришло, начинать с `/live`: по нему видно, дошёл ли счёт
-до сервиса вообще и работает ли живой фид.
+When a notification did not arrive, start with `/live`: it shows whether the
+score reached the service at all and whether the live feed is working.
 
-## Частоты опроса и что крутить
+## Polling rates and what to turn
 
-Значения живут в `.env`, дефолты — сбалансированный профиль:
+The values live in `.env`; the defaults are a balanced profile:
 
-| Переменная | Дефолт | Режим |
+| Variable | Default | Mode |
 |---|---|---|
-| `POLL_IDLE_SECONDS` | 1800 (30 мин) | нет матчей в ближайшие 30 мин |
-| `POLL_PREMATCH_SECONDS` | 180 (3 мин) | за 30 мин до планового старта |
-| `POLL_LIVE_SECONDS` | 60 | матч идёт, живого фида нет |
-| `POLL_LIVE_WITH_FEED_SECONDS` | 300 (5 мин) | матч идёт, scorebot работает |
-| `PREMATCH_WINDOW_MINUTES` | 30 | за сколько до старта включается предматчевый режим |
-| `DEGRADED_ALERT_SECONDS` | 300 | через сколько сообщать, что сервис ослеп (макс. 600) |
+| `POLL_IDLE_SECONDS` | 1800 (30 min) | no matches within the next 30 min |
+| `POLL_PREMATCH_SECONDS` | 180 (3 min) | 30 min before the scheduled start |
+| `POLL_LIVE_SECONDS` | 60 | a match is running, there is no live feed |
+| `POLL_LIVE_WITH_FEED_SECONDS` | 300 (5 min) | a match is running, scorebot works |
+| `PREMATCH_WINDOW_MINUTES` | 30 | how long before the start pre-match mode turns on |
+| `DEGRADED_ALERT_SECONDS` | 300 | how long before reporting that the service has gone blind (max 600) |
 
-Потолок **1 запрос в 30 секунд** зашит в код и конфигом не поднимается.
-Запросы последовательные, джиттер ±20%.
+The ceiling of **1 request every 30 seconds** is hardcoded and cannot be raised
+by config. Requests are sequential, with ±20% jitter.
 
-**Long-poll живого фида под этот потолок не попадает.** Это удерживаемое
-соединение (аналог websocket), одно на активный матч, а не частый опрос.
+**The live feed's long poll does not fall under that ceiling.** It is a held
+connection (the equivalent of a websocket), one per active match, not frequent
+polling.
 
-## Несколько пользователей
+## Several users
 
-Разрешённые аккаунты перечисляются в **одной** переменной, через запятую:
+Allowed accounts are listed in **one** variable, separated by commas:
 
 ```
 TELEGRAM_CHAT_ID=123456789,987654321,-1001234567890
 ```
 
-Точка с запятой и пробелы вокруг тоже принимаются. **Первый в списке —
-основной**: в него садится команда из `TEAM_ID` при первом запуске и туда
-уходят сообщения, пока подписчиков в базе нет. У групп и каналов id
-отрицательный, это нормально; нечисловые значения пропускаются с записью в лог.
+Semicolons and surrounding spaces are accepted too. **The first one in the list
+is the main chat**: the team from `TEAM_ID` is seeded there on the first run,
+and messages go there while there are no subscribers in the database. For groups
+and channels the id is negative, which is normal; non-numeric values are skipped
+with a line in the log.
 
-> **При обновлении со старой версии.** Была отдельная переменная
-> `TELEGRAM_ALLOWED_CHATS` — её больше нет, все id живут в `TELEGRAM_CHAT_ID`.
-> Перенесите их туда через запятую. Оставшаяся в `.env` старая строка просто
-> игнорируется, но сервис при старте напишет об этом в лог: если весь список
-> был только в ней, белый список окажется пустым и бот перестанет отвечать
-> вообще кому-либо.
+> **When upgrading from an older version.** There used to be a separate variable
+> `TELEGRAM_ALLOWED_CHATS` — it no longer exists, all ids live in
+> `TELEGRAM_CHAT_ID`. Move them there, separated by commas. An old line left in
+> `.env` is simply ignored, but the service writes about it to the log at
+> startup: if the whole list lived only there, the whitelist ends up empty and
+> the bot stops answering anyone at all.
 
-При `TELEGRAM_WHITELIST_ONLY=true` (по умолчанию) остальным бот молчит — их
-`chat_id` при этом пишется в лог, чтобы было что добавить в список.
+With `TELEGRAM_WHITELIST_ONLY=true` (the default) the bot stays silent to
+everyone else — their `chat_id` goes to the log so there is something to add to
+the list.
 
-Разрешённый аккаунт становится подписчиком при первом обращении к боту и
-заводит свой список команд через `/track`.
+An allowed account becomes a subscriber on its first message to the bot and
+builds its own team list through `/track`.
 
-Глушение действует **на пару «подписчик + команда»**. Если отслеживаемые
-команды играют друг против друга, событие уходит подписчику, когда его хочет
-хотя бы одна из его команд в этом матче: иначе одна команда молча глушила бы
-уведомления про другую.
+Muting applies **to the pair "subscriber + team"**. If tracked teams play each
+other, the event reaches a subscriber when at least one of their teams in that
+match wants it: otherwise one team would silently mute notifications about the
+other.
 
-## Пауза
+## The pause
 
-`/pause` выключает уведомления целиком, поверх глушения отдельных типов —
-включая живое сообщение со счётом и служебные тревоги.
-Пропущенное **не копится и не досылается**: смысл паузы в тишине, а не в
-отложенной доставке. `/resume` возвращает всё как было.
+`/pause` switches notifications off entirely, on top of per-type muting —
+including the live score message and the service alarms. What is missed is
+**not accumulated and not delivered later**: the point of the pause is silence,
+not deferred delivery. `/resume` restores everything.
 
 ## Healthcheck
 
-В образе есть `HEALTHCHECK`: раз в пять минут выполняется
-`python -m hltv_notify --health`, который смотрит, открывается ли база и не
-слишком ли давно опрашивалось расписание. Проверяется именно работа, а не
-наличие процесса: зависший процесс для докера выглядит живым, и без этого
-`restart: unless-stopped` его бы не тронула.
+The image has a `HEALTHCHECK`: every five minutes it runs
+`python -m hltv_notify --health`, which looks at whether the database opens and
+whether the schedule was polled not too long ago. What is checked is the work
+itself, not the presence of a process: a hung process looks alive to Docker, and
+without this `restart: unless-stopped` would leave it alone.
 
-Ту же команду можно позвать руками:
+The same command can be called by hand:
 
 ```bash
 docker compose exec hltv-notify python -m hltv_notify --health
 ```
 
-## Тревога «сервис деградировал»
+## The "service degraded" alarm
 
-Приходит, когда уведомления перестали работать: не читается расписание или
-страница матча, не поднимается живой фид, не уходит очередь в Telegram.
+It arrives when notifications have stopped working: the schedule or the match
+page cannot be read, the live feed will not come up, the queue is not reaching
+Telegram.
 
-Порог зависит от срочности. Если до старта матча меньше минуты, матч должен
-был начаться, кому-то осталось три раунда до победы или идёт овертайм —
-тревога через минуту. В остальных случаях через `DEGRADED_ALERT_SECONDS`.
+The threshold depends on urgency. If there is less than a minute to the match
+start, the match should have started, someone is three rounds from winning or an
+overtime is being played — the alarm comes after a minute. Otherwise after
+`DEGRADED_ALERT_SECONDS`.
 
-Одна тревога на один сбой; когда всё починится, придёт отдельное
-«Восстановилось» с длительностью простоя. Какие подсистемы лежат прямо сейчас,
-видно в `/status`.
+One alarm per failure; when everything recovers, a separate "Recovered" arrives
+with the duration of the outage. Which subsystems are down right now is visible
+in `/status`.
 
-## Прокси
+## Proxy
 
-Если из сети сервера HLTV или Telegram недоступны напрямую, весь исходящий
-трафик заворачивается стандартными переменными окружения — своих для этого не
-заведено:
+If HLTV or Telegram cannot be reached directly from the server's network, all
+outbound traffic is redirected through the standard environment variables — no
+custom ones are introduced for this:
 
-| Переменная | Для чего |
+| Variable | For what |
 |---|---|
-| `HTTP_PROXY` | адреса на `http://` |
-| `HTTPS_PROXY` | адреса на `https://` — то есть практически всё |
-| `ALL_PROXY` | запасной вариант, когда две предыдущие не заданы |
-| `NO_PROXY` | список исключений через запятую |
+| `HTTP_PROXY` | addresses on `http://` |
+| `HTTPS_PROXY` | addresses on `https://` — that is, practically everything |
+| `ALL_PROXY` | the fallback when the previous two are not set |
+| `NO_PROXY` | a comma-separated list of exceptions |
 
-Схемы: `http://`, `https://`, `socks5://`, `socks5h://`. Разница у последних
-двух в том, кто резолвит имя: у `socks5h` — прокси, и для выхода из закрытой
-сети нужен обычно именно он. Логин и пароль — в адресе
-(`socks5h://user:pass@host:1080`); в лог они не попадают.
+Schemes: `http://`, `https://`, `socks5://`, `socks5h://`. The difference
+between the last two is who resolves the name: with `socks5h` it is the proxy,
+and that is usually the one you need to get out of a closed network.
+Credentials go in the address (`socks5h://user:pass@host:1080`); they never
+reach the log.
 
-В `compose.yaml` это выглядит так:
+In `compose.yaml` it looks like this:
 
 ```yaml
     environment:
@@ -179,110 +187,117 @@ docker compose exec hltv-notify python -m hltv_notify --health
       NO_PROXY: localhost,127.0.0.1,192.168.1.0/24
 ```
 
-Прокси применяется ко **всем** трём исходящим направлениям: страницы HLTV,
-живой фид scorebot и Bot API Telegram. Отдельных переменных на каждое нет —
-развести их можно исключениями:
+The proxy applies to **all** three outbound directions: HLTV pages, the scorebot
+live feed and the Telegram Bot API. There are no separate variables for each —
+they can be split apart with exceptions:
 
 ```
-# всё через прокси, а в Telegram ходим напрямую
+# everything through the proxy, but go to Telegram directly
 ALL_PROXY=socks5h://192.168.1.10:20170
 NO_PROXY=api.telegram.org
 ```
 
-Решение принимается на каждый адрес отдельно, а не «по хосту сессии», поэтому
-исключение можно навесить и на что-то одно — например, только на
-`scorebot-lb.hltv.org`, оставив страницы `www.hltv.org` через прокси.
+The decision is made per address rather than "by the session's host", so an
+exception can be attached to just one thing — for instance only to
+`scorebot-lb.hltv.org`, leaving the `www.hltv.org` pages going through the
+proxy.
 
-`NO_PROXY` понимает имена (`hltv.org` покрывает и `www.hltv.org`), адреса,
-подсети в записи CIDR (`192.168.1.0/24`) и `*` — «никуда через прокси».
+`NO_PROXY` understands names (`hltv.org` covers `www.hltv.org` too), addresses,
+subnets in CIDR notation (`192.168.1.0/24`) and `*` — "nowhere through the
+proxy".
 
-При старте, если прокси задан, в логе появляется строка вида
-`прокси: https=http://192.168.1.10:20171, без прокси: localhost,127.0.0.1`.
-Нет строки — значит переменные до процесса не доехали.
+At startup, if a proxy is configured, a line like
+`proxy: https=http://192.168.1.10:20171, bypass: localhost,127.0.0.1` appears in
+the log. No line means the variables never reached the process.
 
-Верхний регистр работает. Это стоит отметить отдельно: libcurl, на котором
-стоит HTTP-слой, `HTTP_PROXY` в верхнем регистре **игнорирует** намеренно, и
-если бы сервис полагался на него, настройка из `compose.yaml` молча не
-сработала бы. Поэтому переменные читаются самим сервисом и передаются в
-запросы явно.
+Uppercase works. That is worth calling out: libcurl, which the HTTP layer sits
+on, **deliberately ignores** uppercase `HTTP_PROXY`, and had the service relied
+on it, the setting from `compose.yaml` would have silently done nothing. So the
+variables are read by the service itself and passed into the requests
+explicitly.
 
-## Отзыв доступа
+## Revoking access
 
-Убрать чат из `TELEGRAM_CHAT_ID` и перезапустить — при старте сервис отключит
-ему рассылку и напишет об этом в лог. Раньше белый список закрывал только вход
-(команды и кнопки), а уведомления продолжали идти, потому что доставка идёт по
-таблице подписчиков, и вычистить её можно было только руками.
+Remove a chat from `TELEGRAM_CHAT_ID` and restart — at startup the service
+switches its delivery off and writes about it to the log. The whitelist used to
+close only the way in (commands and buttons) while notifications kept arriving,
+because delivery goes by the subscribers table and clearing it out could only be
+done by hand.
 
-В открытом режиме (`TELEGRAM_WHITELIST_ONLY=false`) не отключается никто:
-списка там нет. Пустой список тоже никого не отключает — это почти наверняка
-недозаполненный `.env`, а не намерение.
+In open mode (`TELEGRAM_WHITELIST_ONLY=false`) nobody is switched off: there is
+no list there. An empty list switches nobody off either — that is almost
+certainly an unfinished `.env` rather than an intent.
 
-Вернуть доступ: снова вписать id и перезапустить, команды и подписка оживут.
+To restore access: put the id back and restart, and both commands and the
+subscription come back to life.
 
-## Если пошли отказы
+## When failures start
 
-Сначала посмотреть, что именно в логах и в `/status` у бота.
+First look at what exactly is in the logs and in the bot's `/status`.
 
-### HTTP 403 на страницах HLTV
-Значит перестал проходить TLS-фингерпринт. Заголовки тут ни при чём — их
-перебор ничего не даст, это проверено (обычный клиент получает 403 там, где
-`curl_cffi` получает 200).
+### HTTP 403 on HLTV pages
+That means the TLS fingerprint has stopped getting through. Headers have nothing
+to do with it — permuting them will achieve nothing, and that is measured (an
+ordinary client gets a 403 where `curl_cffi` gets a 200).
 
-Что делать: обновить `curl_cffi`, сменить профиль в `HTTP_IMPERSONATE`
-(`chrome` → `chrome124`, `safari`, `edge` — список зависит от версии
-библиотеки). Частоты при этом **не поднимать**.
+What to do: update `curl_cffi`, change the profile in `HTTP_IMPERSONATE`
+(`chrome` → `chrome124`, `safari`, `edge` — the list depends on the library
+version). Do **not** raise the polling rates while doing so.
 
-### Живой фид не поднимается
-Сервис от этого не встаёт: страница матча опрашивается как обычно, E4, E6 и E7
-приходят по ней. Теряется скорость (страница обновляется с задержкой) и
-событие E5. В `/status` видно, поднят ли фид.
+### The live feed will not come up
+The service does not fall over because of it: the match page is polled as usual
+and E4, E6 and E7 arrive through it. What is lost is speed (the page updates
+late) and the E5 event. `/status` shows whether the feed is up.
 
-### HTTP 403 на polling живого фида
-Наблюдалось на записи реального матча: примерно после двух минут работы сессия
-выгорела и все последующие запросы стали получать 403.
+### HTTP 403 on the live feed's polling
+Observed while recording a real match: after roughly two minutes of work the
+session burned out and every subsequent request started getting a 403.
 
-Это **не сетевой сбой, а «отойди»**. Сервис обрабатывает это отдельно от
-обрывов: новая сессия с прогревом (GET страницы матча ставит куки Cloudflare)
-и пауза `LIVE_FEED_COOLDOWN_SECONDS` (дефолт 600, ниже 60 не опускается). Всё
-это время опрос страницы матча работает как обычно, так что E4, E6 и E7
-приходят; теряются только E5, мультикиллы и скорость.
+This is **not a network failure but a "back off"**. The service handles it
+separately from disconnects: a new session with a warm-up (a GET of the match
+page sets the Cloudflare cookies) and a pause of
+`LIVE_FEED_COOLDOWN_SECONDS` (600 by default, never below 60). Throughout that
+time match-page polling works as usual, so E4, E6 and E7 arrive; only E5,
+multikills and speed are lost.
 
-Если 403 идёт постоянно — увеличить паузу и жить на опросе страницы.
+If 403s keep coming — increase the pause and live on page polling.
 
 ### HTTP 429
-Прямо не наблюдался, но если появится — это перебор по частоте. Поднять
-`POLL_IDLE_SECONDS` до 3600 и `POLL_LIVE_SECONDS` до 120, то есть перейти на
-экономный профиль. Ускоряться обратно — только если 429 не повторяется сутки.
+Not observed directly, but if it appears it means the rate is too high. Raise
+`POLL_IDLE_SECONDS` to 3600 and `POLL_LIVE_SECONDS` to 120, that is, switch to
+the frugal profile. Speed back up only if the 429 does not recur for a day.
 
-### HTTP 520 и таймауты long-poll
-Норма, лечится обычным реконнектом с backoff. `curl: (28) timed out after
-45000ms` на живом фиде приходит штатно, когда на карте пауза, и означать
-смерть фида не обязан.
+### HTTP 520 and long-poll timeouts
+Normal, cured by the usual reconnect with backoff. `curl: (28) timed out after
+45000ms` on the live feed arrives routinely when the map is paused and does not
+have to mean the feed is dead.
 
-### В логе «запрос на посторонний адрес отклонён»
-Сервису позволено ходить только на `hltv.org`, `www.hltv.org` и
-`scorebot-lb.hltv.org`. Эта строка означает, что в базе оказался адрес матча,
-ведущий куда-то ещё, — то есть разметка на странице команды не та, что
-ожидается. Запрос при этом не ушёл.
+### "request to a foreign address refused" in the log
+The service is only allowed to go to `hltv.org`, `www.hltv.org` and
+`scorebot-lb.hltv.org`. This line means a match address leading somewhere else
+ended up in the database — that is, the markup on the team page is not what is
+expected. The request did not go out.
 
-Разбираться так: найти матч в базе (`SELECT match_id, url FROM matches WHERE
-url NOT LIKE 'https://www.hltv.org/%'`), посмотреть страницу команды глазами.
-Если HLTV просто сменил формат ссылок — поправить `MATCH_SLUG_RE` в
-`sources/team_page.py`.
+How to look into it: find the match in the database (`SELECT match_id, url FROM
+matches WHERE url NOT LIKE 'https://www.hltv.org/%'`) and look at the team page
+with your own eyes. If HLTV simply changed the link format — fix
+`MATCH_SLUG_RE` in `sources/team_page.py`.
 
-### Прокси задан, а всё в таймаутах
-Проверить, что при старте в логе есть строка `прокси: …` — без неё переменные
-до контейнера не доехали (частая причина: они прописаны в `.env`, но `env_file`
-подключён не к тому сервису).
+### A proxy is set and everything times out
+Check that the log has a `proxy: …` line at startup — without it the variables
+never reached the container (a common cause: they are in `.env` but `env_file`
+is attached to the wrong service).
 
-Дальше — `curl: (7) Failed to connect to www.hltv.org:443 over proxy` означает,
-что прокси не отвечает, а не что HLTV недоступен. Проверять надо прокси.
+Next, `curl: (7) Failed to connect to www.hltv.org:443 over proxy` means the
+proxy is not answering, not that HLTV is unreachable. The proxy is what needs
+checking.
 
-Обратный случай — прокси есть, но запросы идут мимо него: скорее всего адрес
-попал в `NO_PROXY`. Подсети там сравниваются как подсети, а имена — по границе
-точки, так что `hltv.org` покрывает `www.hltv.org`, но не `nothltv.org`.
+The opposite case — there is a proxy but the requests go around it: most likely
+the address matched `NO_PROXY`. Subnets there are compared as subnets and names
+on a dot boundary, so `hltv.org` covers `www.hltv.org` but not `nothltv.org`.
 
-### Парсер вернул ноль матчей при HTTP 200
-Скорее всего редизайн вёрстки. Сервис трактует это как отказ источника (E8), а
-не как «матчей нет». Чинится обновлением селекторов; фикстуры для тестов лежат
-в `docs/recon/fixtures/`, пересобираются `scripts/fetch_fixtures.py`.
+### The parser returned zero matches on an HTTP 200
+Most likely a markup redesign. The service treats this as a source failure (E8)
+rather than as "there are no matches". It is fixed by updating the selectors;
+the test fixtures live in `docs/recon/fixtures/` and are refreshed with
+`scripts/fetch_fixtures.py`.

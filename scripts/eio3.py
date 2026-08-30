@@ -1,15 +1,16 @@
-"""Минимальный клиент Engine.IO v3 / socket.io v2 поверх polling-транспорта.
+"""A minimal Engine.IO v3 / socket.io v2 client over the polling transport.
 
-Почему polling, а не websocket (проверено 2026-08-29):
-websocket-апгрейд к scorebot-lb.hltv.org отдаёт 403 любому не-браузерному
-клиенту — и голому `websockets`, и `curl_cffi.ws_connect`, с Origin, Referer,
-браузерным UA и прогретыми куками Cloudflare. Polling проходит. Браузер и сам
-начинает с polling, так что это штатный транспорт того же протокола.
+Why polling and not websocket (verified 2026-08-29): the websocket upgrade to
+scorebot-lb.hltv.org returns 403 to every non-browser client — bare
+`websockets` and `curl_cffi.ws_connect` alike, with Origin, Referer, a browser
+UA and warmed Cloudflare cookies. Polling goes through. A browser starts with
+polling itself, so this is a regular transport of the same protocol.
 
-Framing EIO v3 в polling: пакеты идут подряд, каждый — 0x00 (строковый) или
-0x01 (бинарный), затем длина по одной цифре в байте (значение 0..9, НЕ ASCII),
-затем 0xff, затем тело. Встречается и текстовый вариант "<len>:<тело>".
-Разбирать надо байты: при декодировании в текст цифры длины становятся \ufffd.
+EIO v3 framing in polling: packets follow one another, each starting with 0x00
+(string) or 0x01 (binary), then the length one digit per byte (the value 0..9,
+NOT ASCII), then 0xff, then the body. A textual variant "<len>:<body>" also
+occurs. It has to be parsed as bytes: decoding to text turns the length digits
+into \ufffd.
 """
 
 import json
@@ -23,11 +24,12 @@ SCOREBOT_BASE = "https://scorebot-lb.hltv.org/socket.io/"
 
 
 class SessionRejected(RuntimeError):
-    """Источник ответил 403: сессия сгорела, нужна новая с прогревом и паузой."""
+    """The source answered 403: the session burned out, a new one with a
+    warm-up and a pause is needed."""
 
 
 def decode_payload(body: bytes) -> List[str]:
-    """Разбирает polling-ответ на отдельные пакеты."""
+    """Splits a polling response into individual packets."""
     packets: List[str] = []
     i = 0
     while i < len(body):
@@ -37,7 +39,7 @@ def decode_payload(body: bytes) -> List[str]:
             while i < len(body) and body[i] != 0xFF:
                 digits.append(str(body[i]))
                 i += 1
-            i += 1  # пропускаем 0xff
+            i += 1  # skip the 0xff
             length = int("".join(digits) or "0")
             packets.append(body[i:i + length].decode("utf-8", "replace"))
             i += length
@@ -53,7 +55,7 @@ def decode_payload(body: bytes) -> List[str]:
 
 
 class Eio3Client:
-    """Подписка на матч и чтение кадров. Одно соединение на матч."""
+    """Subscribing to a match and reading frames. One connection per match."""
 
     def __init__(self, match_id: str, referer: Optional[str] = None, impersonate: str = "chrome"):
         self.match_id = str(match_id)
@@ -77,11 +79,11 @@ class Eio3Client:
     @staticmethod
     def _check(resp) -> None:
         if resp.status_code == 403:
-            raise SessionRejected("403 на polling — сессия сгорела")
+            raise SessionRejected("403 on polling — the session burned out")
         resp.raise_for_status()
 
     def connect(self) -> None:
-        # Прогрев: страница матча ставит куки Cloudflare на .hltv.org.
+        # Warm-up: the match page sets Cloudflare cookies on .hltv.org.
         if self.referer:
             self.session.get(self.referer, timeout=30)
         resp = self.session.get(self._url(with_sid=False), headers=self.headers, timeout=30)
@@ -97,11 +99,12 @@ class Eio3Client:
         self._ready = "40" in rest
 
     def subscribe(self, wait_polls: int = 3) -> None:
-        """Подписка строго ПОСЛЕ пакета `40` (connect неймспейса).
+        """Subscribing strictly AFTER packet `40` (the namespace connect).
 
-        Если отправить readyForMatch раньше, сервер молча игнорирует подписку:
-        соединение живо, `40` приходит, а кадров нет. Наблюдалось на реконнекте,
-        когда `40` пришёл не вместе с handshake, а следующим poll'ом.
+        Send readyForMatch earlier and the server silently ignores the
+        subscription: the connection is alive, `40` arrives, there are no
+        frames. Observed on a reconnect, where `40` came not with the handshake
+        but on the next poll.
         """
         while not self._ready and wait_polls > 0:
             packets = self._poll_raw()
@@ -109,7 +112,7 @@ class Eio3Client:
             self._ready = "40" in packets
             wait_polls -= 1
         if not self._ready:
-            raise RuntimeError("не дождались пакета 40 — подписка была бы проигнорирована")
+            raise RuntimeError("packet 40 never arrived — the subscription would have been ignored")
         payload = json.dumps({"token": "", "listId": self.match_id})
         self._send("42" + json.dumps(["readyForMatch", payload]))
 
@@ -137,7 +140,7 @@ class Eio3Client:
         return self._poll_raw(timeout)
 
     def events(self, deadline: float) -> Iterator[str]:
-        """Кадры до дедлайна. Реконнект — забота вызывающего."""
+        """Frames until the deadline. Reconnecting is the caller's business."""
         while time.time() < deadline:
             for packet in self.poll():
                 yield packet

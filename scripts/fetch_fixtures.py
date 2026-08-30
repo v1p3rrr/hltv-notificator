@@ -1,8 +1,8 @@
-"""Одноразовый сбор фикстур для docs/recon/fixtures.
+"""A one-off fixture collector for docs/recon/fixtures.
 
-Заодно проверяет предпосылку выбранного HTML-пути: обычный HTTP-клиент
-получает 403 там, где curl_cffi с браузерным TLS-фингерпринтом получает 200.
-Запросы строго последовательные, с паузой между ними.
+It also verifies the premise of the chosen HTML path: an ordinary HTTP client
+gets a 403 where curl_cffi with a browser TLS fingerprint gets a 200. Requests
+are strictly sequential, with a pause between them.
 """
 
 import sys
@@ -26,14 +26,14 @@ PAGES = [
 
 
 def plain_urllib(url: str) -> str:
-    """Контрольный запрос без подмены фингерпринта."""
+    """A control request without fingerprint spoofing."""
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             return f"{resp.status} ({len(resp.read())} bytes)"
     except urllib.error.HTTPError as exc:
         return f"{exc.code}"
-    except Exception as exc:  # noqa: BLE001 - контрольный замер, важен сам факт
+    except Exception as exc:  # noqa: BLE001 - a control measurement, the fact is what matters
         return f"error: {type(exc).__name__}"
 
 

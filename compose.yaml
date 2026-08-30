@@ -1,31 +1,34 @@
 services:
   hltv-notify:
-    # Образ ТЯНЕТСЯ из реестра — этого файла достаточно на сервере, где нет
-    # исходников. Ключа build здесь нет намеренно: с ним docker compose up
-    # полез бы собирать образ и упал без Dockerfile под рукой.
+    # The image is PULLED from the registry — this file is enough on a server
+    # with no sources. There is deliberately no build key: with it,
+    # `docker compose up` would try to build and fail with no Dockerfile at hand.
     #
-    # Имя образа задаётся переменной IMAGE в .env: оно зависит от вашего
-    # логина Docker Hub. Точное имя печатает CI в сводке прогона.
-    # Локальная сборка — отдельным файлом:
+    # The image name is set by the IMAGE variable in .env: it depends on your
+    # Docker Hub login. CI prints the exact name in the run summary.
+    # A local build lives in a separate file:
     #   docker compose -f compose.yaml -f compose.dev.yaml up -d --build
-    image: ${IMAGE:?укажите IMAGE в .env, например ваш-логин/hltv-notificator:latest}
+    image: ${IMAGE:?set IMAGE in .env, for example your-login/hltv-notificator:latest}
     container_name: hltv-notify
     restart: unless-stopped
     env_file: .env
     environment:
-      # Внутри контейнера всё считается и хранится в UTC — это не настройка,
-      # а инвариант: от него зависит корректность на переходах летнего времени.
+      # Inside the container everything is computed and stored in UTC — this is
+      # not a setting but an invariant: correctness across DST switches depends
+      # on it.
       TZ: UTC
-      # А вот пояс ОТОБРАЖЕНИЯ в сообщениях настраивается. Значение берётся из
-      # .env (TZ_DISPLAY), здесь — только запасное на случай, если его там нет.
-      # Любая зона из базы IANA: Europe/Moscow, Europe/Riga, Asia/Tbilisi...
+      # The DISPLAY timezone in messages, on the other hand, is configurable.
+      # The value comes from .env (TZ_DISPLAY); this is only a fallback in case
+      # it is not there. Any zone from the IANA database: Europe/Moscow,
+      # Europe/Riga, Asia/Tbilisi...
       TZ_DISPLAY: ${TZ_DISPLAY:-Europe/Moscow}
 
-      # Прокси, если из этой сети HLTV или Telegram напрямую не достать.
-      # Имена стандартные, верхний регистр работает (сервис читает переменные
-      # сам — libcurl под ним HTTP_PROXY в верхнем регистре игнорирует).
-      # Схемы: http://, https://, socks5://, socks5h:// (у socks5h имя
-      # резолвит прокси, а не мы). Подробности — docs/operations.md.
+      # A proxy, if HLTV or Telegram cannot be reached directly from this
+      # network. The names are standard and uppercase works (the service reads
+      # the variables itself — libcurl underneath ignores uppercase
+      # HTTP_PROXY). Schemes: http://, https://, socks5://, socks5h:// (with
+      # socks5h the proxy resolves the name, not us). Details in
+      # docs/operations.md.
       #
       # HTTP_PROXY: http://${LAN_IP}:20171
       # HTTPS_PROXY: http://${LAN_IP}:20171
@@ -33,18 +36,19 @@ services:
       # NO_PROXY: localhost,127.0.0.1,192.168.1.0/24,10.0.0.0/24
 
     volumes:
-      # ⚠️ В этом каталоге лежит не только состояние, но и ЖУРНАЛ отправленных
-      # уведомлений. Потеря тома означает, что сервис сочтёт новым всё, что
-      # найдёт, и разошлёт уведомления повторно. Каталог бэкапить, том при
-      # обновлении образа не удалять.
+      # ⚠️ This directory holds not only the state but the JOURNAL of sent
+      # notifications. Losing the volume means the service treats everything it
+      # finds as new and sends the notifications again. Back the directory up,
+      # and do not delete the volume when updating the image.
       - ./data:/app/data
 
-    # Сервис гасится по SIGTERM: опросы и живой фид останавливаются сразу, а
-    # очередь получает до восьми секунд, чтобы дописать уже решённое к отправке
-    # (см. SHUTDOWN_DRAIN_SECONDS). Рвать её отменой нельзя: обрыв посреди
-    # send_message оставил бы сообщение отправленным, но не отмеченным в базе,
-    # и при следующем запуске оно ушло бы второй раз. Пятнадцати секунд хватает
-    # с запасом, но убивать сервис на второй секунде не надо.
+    # The service is stopped by SIGTERM: polling and the live feed stop at once
+    # while the queue gets up to eight seconds to write out what has already
+    # been decided (see SHUTDOWN_DRAIN_SECONDS). Tearing it down with a cancel
+    # is not allowed: a break in the middle of send_message would leave the
+    # message sent but not marked in the database, and on the next start it
+    # would go out a second time. Fifteen seconds is plenty, but do not kill
+    # the service on the second second.
     stop_grace_period: 15s
 
     security_opt:

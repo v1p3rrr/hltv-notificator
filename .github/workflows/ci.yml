@@ -1,13 +1,15 @@
 name: CI
 
-# Тесты — на каждый пул-реквест в main и на каждый пуш в main.
-# Публикация образа — ТОЛЬКО на пуш. У прогона по пул-реквесту доступа к
-# секретам нет и быть не должно: код в PR ещё никем не прочитан, а токен
-# Docker Hub даёт право перезаписать образ, который потом поедет на сервер.
+# Tests run on every pull request to main and on every push to main.
+# Publishing the image happens ONLY on a push. A pull-request run has no access
+# to the secrets and must not have any: the code in a PR has not been read by
+# anyone yet, and the Docker Hub token grants the right to overwrite the image
+# that later goes to the server.
 #
-# Разделение доведено до конца: образ собирается в работе БЕЗ токена и уезжает
-# дальше архивом. Работа, у которой токен есть, репозиторий даже не выкачивает —
-# она разжимает готовый архив и толкает его в реестр.
+# The separation is carried through: the image is built in a job WITHOUT the
+# token and travels onward as an archive. The job that does have the token does
+# not even check the repository out — it unpacks the ready archive and pushes
+# the layers to the registry.
 on:
   push:
     branches: [main]
@@ -15,28 +17,28 @@ on:
   pull_request:
     branches: [main]
 
-# Права токена по умолчанию — только чтение репозитория. Работам, которым нужно
-# больше, права выдаются поимённо и в минимальном объёме.
+# The default token permissions are read-only on the repository. Jobs that need
+# more are granted it by name and in the smallest amount.
 permissions:
   contents: read
 
-# Пуш за пушем: предыдущий прогон отменяется. Иначе два прогона могут добраться
-# до публикации вразнобой, и в `latest` окажется не последний коммит.
+# Push after push: the previous run is cancelled. Otherwise two runs could
+# reach publishing out of order and `latest` would not be the newest commit.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   tests:
-    name: Тесты
+    name: Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Токен не остаётся в .git/config: дальше по шагам он не нужен, а
-          # любой из них — от установки зависимостей до тестов — мог бы им
-          # воспользоваться.
+          # The token is not left in .git/config: the later steps do not need
+          # it, and any of them — from installing dependencies to running the
+          # tests — could have made use of it.
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -45,27 +47,28 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Зависимости
-        # Единственный источник версий — requirements.txt, тот же, что у образа.
-        # Дублировать список в Dockerfile нельзя: он разойдётся.
+      - name: Dependencies
+        # The single source of versions is requirements.txt, the same one the
+        # image uses. Duplicating the list in the Dockerfile is not allowed: it
+        # would drift.
         run: |
           python -m pip install --disable-pip-version-check --no-cache-dir -r requirements.txt
           python -m pip install --disable-pip-version-check --no-cache-dir pytest
 
       - name: pytest
-        # Тесты гоняются по фикстурам из docs/recon/fixtures — это настоящие
-        # страницы HLTV, снятые при разведке. Живой источник для тестов не
-        # годится: матчи редки, а овертайм и обрыв связи по заказу не
-        # воспроизводятся.
+        # The tests run against fixtures from docs/recon/fixtures — real HLTV
+        # pages captured during recon. A live source is no good for tests:
+        # matches are rare, and an overtime or a dropped connection cannot be
+        # reproduced on demand.
         run: python -m pytest
 
   image:
-    name: Сборка образа и проверка на уязвимости
+    name: Build the image and scan it
     needs: [tests]
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Версию считает эта работа — у неё есть репозиторий. Работа publish берёт
-    # готовое число и в исходники не заглядывает.
+    # The version is computed by this job — it has the repository. The publish
+    # job takes the ready number and never looks at the sources.
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
@@ -73,33 +76,33 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Версия
+      - name: Version
         id: ver
         run: |
           version=$(python3 -c "import re,pathlib;print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/hltv_notify/__init__.py').read_text(encoding='utf-8')).group(1))")
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          # Тег vX.Y.Z обязан совпадать с версией в коде: иначе образ с номером
-          # 1.2.3 сообщал бы о себе чужой номер.
+          # A vX.Y.Z tag must match the version in the code: otherwise an image
+          # numbered 1.2.3 would report somebody else's number.
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Тег $GITHUB_REF_NAME не совпадает с версией $version в src/hltv_notify/__init__.py"
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in src/hltv_notify/__init__.py"
             exit 1
           fi
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      # Метки OCI: из какого репозитория, коммита и когда собран образ. Они
-      # обязаны попасть в слои, то есть проставляются здесь, при сборке, а не
-      # при публикации. Имя образа для меток роли не играет.
-      - name: Метки
+      # OCI labels: which repository and commit the image was built from, and
+      # when. They have to end up in the layers, so they are applied here, at
+      # build time, not at publish time. The image name is irrelevant to labels.
+      - name: Labels
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: hltv-notificator
           tags: type=raw,value=${{ steps.ver.outputs.version }}
 
-      # Ни логина, ни секретов в этой работе нет — и весь код, который
-      # выполняется при сборке (pip, RUN из Dockerfile), выполняется именно тут.
-      - name: Сборка в архив
+      # There is no login and no secret in this job — and all the code that
+      # runs during the build (pip, RUN from the Dockerfile) runs right here.
+      - name: Build into an archive
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -109,14 +112,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Экспортёр docker подписи происхождения не умеет; чем собран образ,
-          # удостоверяет подпись cosign в работе publish.
+          # The docker exporter cannot do provenance attestations; what the
+          # image was built by is attested by the cosign signature in the
+          # publish job.
           provenance: false
 
-      - name: Разжать архив для проверки
+      - name: Unpack the archive for scanning
         run: docker load --input "$RUNNER_TEMP/image.tar"
 
-      # `ignore-unfixed` намеренно: падаем только там, где есть что чинить.
+      # `ignore-unfixed` is deliberate: we fail only where there is something
+      # to fix.
       - name: Trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -126,64 +131,67 @@ jobs:
           exit-code: '1'
           format: table
 
-      # На пул-реквесте публиковать нечего, и архив гонять незачем.
-      - name: Передать архив дальше
+      # On a pull request there is nothing to publish and no point in moving
+      # the archive around.
+      - name: Pass the archive on
         if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image
           path: ${{ runner.temp }}/image.tar
-          # Архив нужен только следующей работе этого же прогона.
+          # The archive is only needed by the next job of this same run.
           retention-days: 1
-          # Слои внутри уже сжаты; сильнее жать — тратить минуты впустую.
+          # The layers inside are already compressed; compressing harder just
+          # burns minutes.
           compression-level: 1
 
   publish:
-    name: Публикация в Docker Hub
+    name: Publish to Docker Hub
     needs: [image]
-    # Пул-реквест сюда не попадает никогда — см. комментарий к `on`.
+    # A pull request never reaches this job — see the comment on `on`.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Секрет живёт в окружении, а не в настройках репозитория: окружению можно
-    # задать список веток, с которых оно доступно, и ручное подтверждение.
+    # The secret lives in an environment rather than in the repository
+    # settings: an environment can be given a list of branches it is available
+    # from, and a manual approval.
     environment: dockerhub
     permissions:
       contents: read
-      id-token: write   # OIDC для keyless-подписи cosign
+      id-token: write   # OIDC for the keyless cosign signature
     steps:
-      # ⚠️ У этой работы НЕТ шага checkout, и это главное в ней. Рядом с токеном
-      # не оказывается ни одной строки из репозитория: ни Dockerfile, ни
-      # conftest.py. Образ приезжает готовым архивом, `docker load` его только
-      # распаковывает, `docker push` перекладывает слои в реестр. Ничего из
-      # образа при этом не исполняется.
-      - name: Учётные данные и имя образа
+      # ⚠️ This job has NO checkout step, and that is the main thing about it.
+      # Not a single line from the repository ends up next to the token: no
+      # Dockerfile, no conftest.py. The image arrives as a ready archive,
+      # `docker load` merely unpacks it and `docker push` moves the layers into
+      # the registry. Nothing from the image is executed in the process.
+      - name: Credentials and image name
         env:
           USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
           OVERRIDE: ${{ vars.DOCKERHUB_IMAGE }}
           TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          test -n "$USERNAME" || { echo "::error::Не задана переменная DOCKERHUB_USERNAME"; exit 1; }
-          test -n "$TOKEN"    || { echo "::error::Не задан секрет DOCKERHUB_TOKEN"; exit 1; }
-          # DOCKERHUB_IMAGE нужен, только если публикуем в организацию, а не в
-          # личное пространство.
+          test -n "$USERNAME" || { echo "::error::The variable DOCKERHUB_USERNAME is not set"; exit 1; }
+          test -n "$TOKEN"    || { echo "::error::The secret DOCKERHUB_TOKEN is not set"; exit 1; }
+          # DOCKERHUB_IMAGE is only needed when publishing into an organisation
+          # rather than a personal namespace.
           echo "IMAGE=${OVERRIDE:-$USERNAME/hltv-notificator}" >> "$GITHUB_ENV"
-          echo "Публикуем в ${OVERRIDE:-$USERNAME/hltv-notificator}"
+          echo "Publishing to ${OVERRIDE:-$USERNAME/hltv-notificator}"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: image
           path: ${{ runner.temp }}
 
-      - name: Разжать образ
+      - name: Unpack the image
         run: docker load --input "$RUNNER_TEMP/image.tar"
 
-      # Теги:
-      #   пуш в main  → 0.1.0-build.<номер прогона>, sha-<коммит>, latest
-      #   тег vX.Y.Z  → X.Y.Z, X.Y
-      # Первый уникален и растёт монотонно — это и есть «новая версия» на
-      # каждый коммит; второй позволяет от образа вернуться к коду.
-      - name: Теги
+      # Tags:
+      #   push to main  → 0.1.0-build.<run number>, sha-<commit>, latest
+      #   tag vX.Y.Z    → X.Y.Z, X.Y
+      # The first is unique and grows monotonically — that is the "new version"
+      # for every commit; the second lets you get from an image back to the code.
+      - name: Tags
         id: tags
         env:
           VERSION: ${{ needs.image.outputs.version }}
@@ -194,19 +202,19 @@ jobs:
             plain="${GITHUB_REF_NAME#v}"
             list="$plain ${plain%.*}"
           else
-            echo "::error::Не понимаю, какие теги ставить для $GITHUB_REF"
+            echo "::error::I do not know which tags to apply for $GITHUB_REF"
             exit 1
           fi
           echo "list=$list" >> "$GITHUB_OUTPUT"
-          echo "Теги: $list"
+          echo "Tags: $list"
 
-      - name: Вход в Docker Hub
+      - name: Log in to Docker Hub
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Публикация
+      - name: Publish
         id: push
         env:
           TAGS: ${{ steps.tags.outputs.list }}
@@ -216,29 +224,31 @@ jobs:
             docker tag hltv-notificator:ci "$IMAGE:$tag"
             docker push "$IMAGE:$tag"
           done
-          # Слои у всех тегов одни и те же, digest тоже один — берём по первому.
+          # All tags share the same layers and the same digest — take it from
+          # the first one.
           first="${TAGS%% *}"
           digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$first" | cut -d@ -f2)
-          test -n "$digest" || { echo "::error::Не смог узнать digest опубликованного образа"; exit 1; }
+          test -n "$digest" || { echo "::error::Could not determine the digest of the published image"; exit 1; }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      # Подпись без ключей: удостоверение выдаёт сам GitHub на время шага,
-      # хранить и ротировать нечего. В нём записаны репозиторий, файл workflow и
-      # коммит — то есть подпись отвечает и на вопрос «чем собран образ».
-      - name: Подпись образа
+      # A keyless signature: the certificate is issued by GitHub itself for the
+      # duration of the step, so there is nothing to store or rotate. It records
+      # the repository, the workflow file and the commit — that is, the
+      # signature also answers "what built this image".
+      - name: Sign the image
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
-      - name: Что опубликовано
+      - name: What was published
         env:
           TAGS: ${{ steps.tags.outputs.list }}
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           {
-            echo "### Опубликовано"
+            echo "### Published"
             echo
             echo '```'
             for tag in $TAGS; do echo "$IMAGE:$tag"; done

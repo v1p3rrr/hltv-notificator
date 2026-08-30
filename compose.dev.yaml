@@ -1,9 +1,9 @@
-# Наложение для локальной разработки: собирает образ из исходников вместо того,
-# чтобы тянуть его из реестра.
+# An overlay for local development: builds the image from source instead of
+# pulling it from the registry.
 #
 #   docker compose -f compose.yaml -f compose.dev.yaml up -d --build
 #
-# На сервере этот файл не нужен.
+# This file is not needed on the server.
 services:
   hltv-notify:
     build: .

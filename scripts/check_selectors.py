@@ -1,4 +1,4 @@
-"""Проверка черновых селекторов по сохранённым фикстурам (серверный HTML)."""
+"""Checking draft selectors against saved fixtures (server-rendered HTML)."""
 
 import re
 from pathlib import Path

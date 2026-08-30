@@ -1,12 +1,12 @@
-"""Запись сырых кадров scorebot в gzip-JSONL — фикстура для replay-тестов.
+"""Recording raw scorebot frames into gzip JSONL — a fixture for replay tests.
 
-Транспорт — Engine.IO v3 polling через curl_cffi (см. scripts/eio3.py:
-websocket-апгрейд отдаёт 403 не-браузерным клиентам).
+The transport is Engine.IO v3 polling through curl_cffi (see scripts/eio3.py:
+the websocket upgrade returns 403 to non-browser clients).
 
-Подряд идущие байт-идентичные кадры схлопываются в {"kind":"repeat","n":N}:
-именно такие повторы обязана переживать дедупликация, а объём фикстуры они
-раздувают. Обрывы и переподключения помечаются явно — replay-тест на
-дедупликацию опирается на них.
+Consecutive byte-identical frames are collapsed into {"kind":"repeat","n":N}:
+those repeats are exactly what deduplication has to survive, and they bloat the
+fixture. Disconnects and reconnects are marked explicitly — the deduplication
+replay test relies on them.
 """
 
 import argparse
@@ -48,14 +48,14 @@ def record(match_id: str, out_path: str, duration: int, referer: str = "") -> No
                         repeat = 0
                     emit({"t": time.time(), "kind": "frame", "raw": packet})
                     prev = packet
-            except Exception as exc:  # noqa: BLE001 - обрыв это норма
+            except Exception as exc:  # noqa: BLE001 - a disconnect is normal
                 if repeat:
                     emit({"t": time.time(), "kind": "repeat", "n": repeat})
                     repeat = 0
                 emit({"t": time.time(), "kind": "disconnect",
                       "error": f"{type(exc).__name__}: {exc}"})
                 attempt += 1
-                # 403 — это не сетевой сбой, а «отойди». Ретраить часто нельзя.
+                # 403 is not a network failure but a "back off". Frequent retries are not on.
                 if isinstance(exc, SessionRejected):
                     time.sleep(min(120 * attempt, 900))
                 else:

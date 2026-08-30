@@ -1,128 +1,130 @@
-# Известные ограничения
+# Known limitations
 
-Список того, что осознанно не обрабатывается или обрабатывается частично.
-Пополняется по ходу работы.
+A list of what is deliberately not handled, or handled only in part. Extended
+as the work goes on.
 
-## Смена id матча
+## The match id changes
 
-Организатор иногда пересоздаёт матч, и он получает новый id на HLTV. Для
-сервиса это выглядит как исчезновение старого матча (→ E3 «отменён») и
-появление нового (→ E1 «новый матч»). Пользователь получит два лишних
-уведомления вместо одного «перенесён».
+An organiser sometimes recreates a match and it gets a new id on HLTV. To the
+service that looks like the old match disappearing (→ E3 "cancelled") and a new
+one appearing (→ E1 "new match"). The user gets two spurious notifications
+instead of one "rescheduled".
 
-Не обрабатывается: надёжно связать старый и новый id можно только эвристикой
-по соперникам и турниру, а цена ошибки (склеить два разных матча) выше цены
-двух лишних сообщений.
+Not handled: the old and the new id can only be linked reliably by a heuristic
+over opponents and tournament, and the cost of getting it wrong (gluing two
+different matches together) is higher than the cost of two extra messages.
 
-## Хрупкость HTML
+## HTML is brittle
 
-Источник расписания — вёрстка страницы команды. Редизайн ломает парсер.
-Смягчение: парсер, вернувший ноль матчей при HTTP 200, трактуется как отказ
-источника (→ E8), а не как «матчей нет». Запасной путь — мобильный
-JSON-эндпоинт, требует проксирования трафика приложения (см. R3, вариант А).
+The schedule source is the team page's markup. A redesign breaks the parser.
+Mitigation: a parser that returns zero matches on an HTTP 200 is treated as a
+source failure (→ E8) rather than as "there are no matches". The fallback path
+is the mobile JSON endpoint, which requires proxying the app's traffic (see R3,
+variant A).
 
-## Websocket-транспорт scorebot недоступен
+## The scorebot websocket transport is unavailable
 
-Живой фид работает через polling-транспорт Engine.IO, потому что
-websocket-апгрейд отдаёт 403 не-браузерным клиентам (см. R4). Это штатный
-транспорт того же протокола, но он чуть дороже по числу HTTP-запросов и
-теоретически может быть отключён на стороне HLTV отдельно от websocket.
+The live feed runs over Engine.IO's polling transport because the websocket
+upgrade returns 403 to non-browser clients (see R4). It is a regular transport
+of the same protocol, but it is slightly more expensive in HTTP requests and
+could in theory be turned off on HLTV's side separately from websocket.
 
-## Пораундовые данные только на живом матче
+## Per-round data only exists on a live match
 
-`#scoreboardElement` есть только на live-странице матча. Подключиться к фиду
-задним числом нельзя: у завершённого матча пораундовые данные доступны только
-через страницу статистики, которую robots.txt ограничивает по фильтрам.
-Практически это значит: если сервис лежал во время матча, детальные данные по
-нему уже не восстановить, останется итоговый счёт по картам.
+`#scoreboardElement` is only present on a live match page. Connecting to the
+feed after the fact is impossible: for a finished match the per-round data is
+only available through the statistics page, which robots.txt restricts by
+filters. In practice that means: if the service was down during a match, its
+detailed data cannot be recovered — only the final score by maps remains.
 
-## E4 не шлётся, если матч застали уже завершённым
+## E4 is not sent if the match was already finished when we found it
 
-Если сервис не работал в момент старта матча, при первом же опросе страница
-скажет `Match over`. Уведомление «матч начался» в этот момент — устаревшая
-информация, поэтому шлётся только итог (E7). В логе это видно строкой
-«матч N обнаружен уже завершённым, E4 пропущен».
+If the service was not running when the match started, the very first poll will
+see `Match over` on the page. A "the match started" notification at that point
+is stale information, so only the result (E7) is sent. It shows in the log as
+"match N discovered already finished, E4 and E6 skipped".
 
-## Матч, пропавший со страницы после планового старта
+## A match that vanished from the page after its scheduled start
 
-Такой матч мог и начаться, и быть отменённым — по расписанию не различить.
-E3 в этом случае не шлётся, состояние ставится `UNKNOWN`, и матч перестаёт
-опрашиваться. Если он в реальности шёл, событие о нём будет потеряно.
-Практически это встречается, когда матч исчезает из «Recent results» из-за
-глубины списка, а не из-за отмены.
+Such a match may equally have started or been cancelled — the schedule cannot
+tell them apart. No E3 is sent in that case, the state is set to `UNKNOWN` and
+the match stops being polled. If it was in fact running, the event about it is
+lost. In practice this happens when a match drops out of "Recent results"
+because of list depth rather than because of a cancellation.
 
-## E6 не шлётся по картам, сыгранным до начала наблюдения
+## No E6 for maps played before the observation began
 
-Событие «карта закончилась» рождается на переходе карты из нерешённой в
-решённую. Если сервис увидел матч, когда первая карта уже доиграна, по ней
-уведомления не будет — это не переход, а состояние на момент знакомства.
-Результат такой карты всё равно попадает в базу и в итоговое сообщение E7.
+The "map finished" event is born on a map's transition from undecided to
+decided. If the service saw the match when the first map had already been
+played, there will be no notification for it — that is not a transition but the
+state at the moment of meeting. The map's result still lands in the database and
+in the final E7 message.
 
-Так же и с матчем, доигранным целиком, пока сервис лежал: сыпать E6 по всем
-картам задним числом — мусор, поэтому шлётся только итог.
+The same applies to a match played out in full while the service was down:
+showering E6 over every map after the fact is noise, so only the result is sent.
 
-## Секция карт на странице матча обновляется с задержкой
+## The maps section on the match page updates late
 
-Наблюдение на живом матче 2397091: пока карта идёт, счёт в её `.mapholder`
-обновляется по половинам, а не по раундам — при реальном счёте 12:11 в секции
-стояло 5:7, то есть результат первой половины. Половины при этом показаны как
-`(5:7; --)`.
+Observed on live match 2397091: while a map is running, the score in its
+`.mapholder` updates by halves rather than by rounds — at a real score of 12:11
+the section still read 5:7, the result of the first half. The halves were shown
+as `(5:7; --)` at the time.
 
-Практическое следствие: E6 через страницу матча структурно опаздывает — он
-приходит не в момент окончания карты, а когда HLTV обновит секцию. Это и есть
-причина, по которой на этапе 4 основным источником для скорости становится
-scorebot, а страница остаётся подтверждением. Дублирования не будет: событие
-по карте рождается один раз, кто бы ни принёс его первым.
+The practical consequence: an E6 driven by the match page is structurally late —
+it arrives not when the map ends but when HLTV updates the section. That is
+precisely why scorebot became the primary source for speed while the page
+remains the confirmation. There will be no duplication: the event for a map is
+born once, whoever brings it first.
 
-## Номер карты живой фид берёт со страницы
+## The live feed takes the map number from the page
 
-Фид присылает только название карты (`de_mirage`), номера в серии у него нет.
-Номер берётся из состава карт, вычитанного со страницы матча. Пока вето не
-сыграно и состав неизвестен, номер считается как «сколько карт уже записано
-плюс одна» — на первой карте это верно, но если сервис подключился к фиду
-посреди серии и страница ещё не успела записать предыдущую карту, номер может
-оказаться на единицу меньше. На счёт и на факт уведомления это не влияет,
-только на подпись «Карта N».
+The feed sends only the map name (`de_mirage`), it has no number in the series.
+The number comes from the map lineup read off the match page. While the veto has
+not been played and the lineup is unknown, the number is computed as "however
+many maps are already recorded, plus one" — correct on the first map, but if the
+service connected to the feed mid-series and the page has not managed to record
+the previous map yet, the number can come out one lower. This affects neither
+the score nor the fact of the notification, only the "Map N" label.
 
-## Живое сообщение не досылается после сбоя
+## The live message is not re-delivered after a failure
 
-Живое сообщение со счётом идёт мимо очереди outbox: у него нет ключа
-идемпотентности, и досылать устаревший кадр счёта незачем. Если правка не
-прошла (лимит Telegram, сеть), она просто пропускается — следующая правка
-через несколько секунд принесёт актуальный счёт. Вехи (E5, E6, E7) это не
-затрагивает: они идут через очередь и не теряются.
+The live score message goes around the outbox queue: it has no idempotency key,
+and there is no point re-delivering a stale score frame. If an edit did not go
+through (a Telegram limit, the network), it is simply skipped — the next edit a
+few seconds later brings the current score. The milestones (E5, E6, E7) are
+unaffected: they go through the queue and are not lost.
 
-## Мультикилл может быть пропущен после переподключения
+## A multikill can be missed after a reconnect
 
-Алерт считается по приросту фрагов в кадрах табло между началом раунда и
-текущим моментом. База отсчёта живёт в памяти воркера. Если соединение с
-фидом пересоздалось посреди раунда, база берётся заново, и мультикилл,
-начатый до обрыва, останется незамеченным.
+The alert is computed from the increment in kills in scoreboard frames between
+the start of a round and the current moment. The baseline lives in the worker's
+memory. If the connection to the feed was recreated mid-round, the baseline is
+taken afresh and a multikill started before the drop goes unnoticed.
 
-Это осознанный размен в безопасную сторону: пропустить хайлайт неприятно, а
-ложный алерт про несуществующий эйс — хуже. По той же причине алерт не
-считается по событиям `Kill` из лога: при подключении фид проигрывает бэклог,
-и алерты посыпались бы за давно сыгранные раунды.
+This is a deliberate trade in the safe direction: missing a highlight is
+annoying, a false alert about a non-existent ace is worse. For the same reason
+the alert is not computed from the `Kill` events in the log: on connecting, the
+feed replays its backlog and alerts would rain down for long-finished rounds.
 
-Между порогом и эйсом промежуточные значения не сообщаются: два сообщения на
-раунд — это уже шум.
+Intermediate values between the threshold and an ace are not reported: two
+messages per round is already noise.
 
-## Глушение нельзя задать «на всё сразу»
+## Muting cannot be set "for everything at once"
 
-Глушение живёт на паре «подписчик + команда»: заглушить тип события глобально,
-одной командой, нельзя — придётся пройтись по своим командам. Для двух-трёх
-команд это терпимо, для десятка было бы неудобно.
+Muting lives on the pair "subscriber + team": an event type cannot be muted
+globally with a single command — you have to walk through your teams. For two or
+three teams that is tolerable; for a dozen it would be awkward.
 
-## Живое сообщение со счётом не разворачивается по подписчику задним числом
+## The live score message is not re-oriented per subscriber retroactively
 
-Разворот применяется при отрисовке, поэтому подписчик, добавивший команду
-посреди карты, увидит уже существующее сообщение в прежней ориентации до
-следующей правки. Правка приходит через несколько секунд, так что практического
-значения это почти не имеет.
+The orientation is applied at render time, so a subscriber who adds a team
+mid-map will see the existing message in the old orientation until the next
+edit. That edit arrives within a few seconds, so it has almost no practical
+significance.
 
-## Тревога о застрявшей очереди уходит в ту же очередь
+## The alarm about a stuck queue goes into that same queue
 
-Если Telegram не принимает сообщения, уведомление об этом встанет в ту же
-застрявшую очередь и доедет только вместе с остальными. Обойти это, оставаясь
-в рамках одного канала доставки, невозможно. До тех пор состояние видно в
-`/status` и в логах.
+If Telegram is not accepting messages, the notification about it will join that
+same stuck queue and only get through together with the rest. There is no way
+around this while staying within a single delivery channel. Until then the state
+is visible in `/status` and in the logs.

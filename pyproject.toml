@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hltv-notificator"
 version = "0.1.0"
-description = "Уведомления в Telegram о матчах команд CS2 на HLTV"
+description = "Telegram notifications about CS2 team matches on HLTV"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -25,8 +25,9 @@ hltv-notify = "hltv_notify.__main__:main"
 [project.urls]
 Homepage = "https://github.com/v1p3rrr/hltv-notificator"
 
-# Версия дублируется в src/hltv_notify/__init__.py — оттуда её читает CI и
-# сверяет с тегом. На это есть тест: tests/test_version.py.
+# The version is duplicated in src/hltv_notify/__init__.py — CI reads it from
+# there and checks it against the tag. There is a test for that:
+# tests/test_version.py.
 [tool.setuptools]
 package-dir = { "" = "src" }
 

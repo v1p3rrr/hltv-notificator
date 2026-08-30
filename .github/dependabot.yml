@@ -1,16 +1,16 @@
 version: 2
 
-# Действия в ci.yml прибиты к коммитам, а не к тегам: тег можно передвинуть, и
-# `@v4` завтра окажется другим кодом с теми же правами. Обратная сторона — сами
-# по себе они больше не обновляются никогда, поэтому обновляет их Dependabot.
+# Actions in ci.yml are pinned to commits rather than tags: a tag can be moved,
+# and `@v4` may be different code with the same permissions tomorrow. The flip
+# side is that they then never update on their own, so Dependabot updates them.
 #
-# ⚠️ Настройки ниже — про то, чтобы он не превращался в шум:
+# ⚠️ The settings below are about keeping it from turning into noise:
 #
-#  * **группировка** — все обновления одной экосистемы приезжают ОДНИМ
-#    пул-реквестом. Одна ветка, один прогон, один разбор;
-#  * **раз в месяц**, а не в неделю. Обновления безопасности приходят отдельно и
-#    расписания не ждут — частый опрос покупает только шум;
-#  * **мажорные прыжки игнорируются** (см. ниже).
+#  * **grouping** — all updates for one ecosystem arrive in ONE pull request.
+#    One branch, one run, one review;
+#  * **monthly**, not weekly. Security updates arrive separately and do not
+#    wait for a schedule — polling more often buys only noise;
+#  * **major jumps are ignored** (see below).
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -21,14 +21,14 @@ updates:
         patterns: ['*']
     open-pull-requests-limit: 2
 
-  # Базовый образ Dockerfile.
+  # The Dockerfile's base image.
   #
-  # ⚠️ Тег `python:3.12-slim` уже плавающий: он сам подтягивает 3.12.x. То есть
-  # исправления приезжают при каждой пересборке, и Dependabot тут может
-  # предложить только смену ветки языка — ровно то, чего мы не хотим случайно.
-  # Поэтому игнорируем и мажорную, и минорную: 3.12 → 3.13 меняет интерпретатор,
-  # а переход на новую версию языка — отдельная задача с прогоном тестов на ней,
-  # а не автоматический пул-реквест.
+  # ⚠️ The tag `python:3.12-slim` already floats: it picks up 3.12.x by itself.
+  # That is, fixes arrive on every rebuild, and the only thing Dependabot could
+  # propose here is a change of language branch — exactly what we do not want
+  # by accident. So both major and minor are ignored: 3.12 → 3.13 changes the
+  # interpreter, and moving to a new language version is a separate job with a
+  # test run on it, not an automatic pull request.
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -42,21 +42,21 @@ updates:
       base-images:
         patterns: ['*']
 
-  # Зависимости сервиса. Список не продублирован нигде: образ ставит их из того
-  # же requirements.txt, что и CI, поэтому пул-реквесты бота проходят без
-  # ручной правки.
+  # The service's dependencies. The list is not duplicated anywhere: the image
+  # installs them from the same requirements.txt that CI uses, so the bot's
+  # pull requests go through without manual edits.
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: monthly
     ignore:
-      # ⚠️ Мажорные обновления не предлагаем: мажор меняет поведение, а не чинит
-      # его, и приезжать он должен осознанно. Здесь это особенно чувствительно —
-      # весь доступ к источнику держится на curl_cffi и его профилях
-      # impersonation, а разбор страниц на селекторах поверх beautifulsoup4.
-      # Обратная сторона честная: если исправление уязвимости выйдет только в
-      # новом мажоре, пул-реквеста не будет — придёт оповещение во вкладке
-      # Security, и обновлять надо руками.
+      # ⚠️ Major updates are not proposed: a major changes behaviour rather
+      # than fixing it, and it should arrive deliberately. That matters
+      # particularly here — all access to the source rests on curl_cffi and its
+      # impersonation profiles, and page parsing on selectors over
+      # beautifulsoup4. The honest flip side: if a vulnerability fix ships only
+      # in a new major, there will be no pull request — a notice appears in the
+      # Security tab and the update has to be done by hand.
       - dependency-name: '*'
         update-types:
           - version-update:semver-major

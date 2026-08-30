@@ -12,16 +12,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
 
-# База лежит на томе, чтобы переживать пересборку образа: в ней и состояние,
-# и журнал отправленных событий — потеря журнала означала бы повторные
-# уведомления обо всём подряд.
+# The database sits on a volume so it survives an image rebuild: it holds both
+# the state and the journal of sent events — losing the journal would mean
+# repeat notifications about everything.
 VOLUME ["/app/data"]
 
 RUN useradd --create-home --uid 1000 app && mkdir -p /app/data && chown -R app /app
 USER app
 
-# Проверяем не «процесс жив», а «опрос идёт»: зависший процесс для докера
-# выглядит здоровым, и restart-policy его бы не тронула.
+# We check not "the process is alive" but "polling is happening": a hung
+# process looks healthy to Docker and the restart policy would leave it alone.
 HEALTHCHECK --interval=5m --timeout=30s --start-period=2m --retries=3     CMD python -m hltv_notify --health || exit 1
 
 CMD ["python", "-m", "hltv_notify"]

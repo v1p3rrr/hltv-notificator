@@ -1,141 +1,145 @@
 # hltv-notificator
 
-Уведомления в Telegram о матчах команд CS2 на HLTV — с той
-гранулярностью, которой нет в штатных подписках сайта.
+Telegram notifications about CS2 team matches on HLTV — at a granularity the
+site's own subscriptions do not offer.
 
-Штатные подписки HLTV умеют «матч начался» и «матч закончился». Этот сервис
-умеет главное, чего там нет: **конец каждой карты со счётом**, причём в момент
-победного раунда, а не когда HLTV обновит секцию карт (она отстаёт — см.
+HLTV's built-in subscriptions can do "the match started" and "the match
+finished". This service does the one thing missing there: **the end of every
+map, with the score**, and at the moment of the winning round rather than when
+HLTV updates its maps section (which lags — see
 [docs/known-limitations.md](docs/known-limitations.md)).
 
-Один процесс, один пользователь, веб-интерфейса нет: интерфейс — чат с ботом.
+One process, one user, no web interface: the interface is a chat with the bot.
 
-## Что приходит в чат
+## What arrives in the chat
 
-| | Событие | Источник |
+| | Event | Source |
 |---|---|---|
-| E10 | Напоминание за N минут до матча | расписание |
-| E1 | Новый матч в расписании | страница команды |
-| E2 | Время матча изменилось | страница команды |
-| E3 | Матч отменён или отложен | страница команды |
-| E4 | Матч начался, состав карт и чей это пик | страница матча |
-| E5 | Карта началась | живой фид |
-| E6 | **Карта закончилась со счётом** | живой фид (мгновенно), страница — подтверждение |
-| E7 | Матч завершён, итог по картам | страница матча |
-| E8 | Сервис ослеп: источник молчит, фид не поднимается, очередь не уходит | сторож |
-| E8R | Восстановилось | сторож |
-| E9 | Игрок отслеживаемой команды взял 4+ фрага в раунде | живой фид |
+| E10 | Reminder N minutes before the match | schedule |
+| E1 | A new match in the schedule | team page |
+| E2 | The match time changed | team page |
+| E3 | The match was cancelled or postponed | team page |
+| E4 | The match started, the map lineup and whose pick each is | match page |
+| E5 | A map started | live feed |
+| E6 | **A map finished, with the score** | live feed (instantly), the page confirms |
+| E7 | The match finished, the result by maps | match page |
+| E8 | The service has gone blind: the source is silent, the feed will not come up, the queue is not draining | watchdog |
+| E8R | Recovered | watchdog |
+| E9 | A player of a tracked team took 4+ kills in a round | live feed |
 
-Плюс **живое сообщение на карту** — одно сообщение, обновляемое по ходу игры
-текущим счётом и замораживаемое финальным.
+Plus a **live message per map** — one message, updated with the current score
+as the game goes on and frozen on the final one.
 
 ```
-✅ Карта 2 сыграна
+✅ Map 2 finished
 Dust2 — 13:10
 FORZE Reload — Color
-Счёт по картам: 2:0
+Series score: 2:0
 GLuck Moscow Cyber Games 2026 Closed Qualifier
 ```
 
-## Быстрый старт
+## Quick start
 
 ```bash
 cp .env.example .env
 ```
 
-Заполнить `TELEGRAM_BOT_TOKEN` (у [@BotFather](https://t.me/BotFather)) и
-`TELEGRAM_CHAT_ID` (у [@userinfobot](https://t.me/userinfobot)). Оставить
-`DRY_RUN=true` — первый прогон должен быть без отправки.
+Fill in `TELEGRAM_BOT_TOKEN` (from [@BotFather](https://t.me/BotFather)) and
+`TELEGRAM_CHAT_ID` (from [@userinfobot](https://t.me/userinfobot)). Leave
+`DRY_RUN=true` — the first run should send nothing.
 
 ```bash
 docker compose up -d --build
 docker compose logs -f
 ```
 
-Убедившись, что в логах разумное, поставить `DRY_RUN=false` и перезапустить.
+Once the logs look sensible, set `DRY_RUN=false` and restart.
 
-Подробности — [docs/deployment.md](docs/deployment.md) и
+Details in [docs/deployment.md](docs/deployment.md) and
 [docs/operations.md](docs/operations.md).
 
-## Кнопки или команды
+## Buttons or commands
 
-Всё управление есть и кнопками, и текстом. `/menu` (а также `/start`, `/help`)
-открывает инлайн-меню: состояние, идущий матч, ближайшие, список команд,
-напоминания и тумблер тишины. В меню команды каждый тип уведомления
-переключается нажатием — не нужно помнить коды событий и id команды.
+Everything is available both as buttons and as text. `/menu` (as well as
+`/start` and `/help`) opens the inline menu: status, the running match, what is
+coming up, the team list, reminders and the quiet switch. In a team's menu every
+notification type toggles with a tap — no need to remember event codes or team
+ids.
 
-Текстовые команды никуда не делись: они короче, когда точно знаешь, чего
-хочешь, и их удобно слать скриптом.
+The text commands have not gone anywhere: they are shorter when you know exactly
+what you want, and convenient to send from a script.
 
-## Команды боту
+## Bot commands
 
-| Команда | Что делает |
+| Command | What it does |
 |---|---|
-| `/teams` | какие команды отслеживаете вы |
-| `/track <ссылка>` | добавить команду |
-| `/untrack <id>` | перестать отслеживать |
-| `/mute <id> <E5,E9>` | заглушить типы событий по команде |
-| `/unmute <id>` | снять глушения |
-| `/remind 15m` | напоминать за 15 минут, `/remind rm 15m` — убрать |
-| `/tz Europe/Berlin` | ваш часовой пояс |
-| `/pause`, `/resume` | замолчать / снова слать |
-| `/whoami` | ваш `chat_id` |
-| `/status` | состояние сервиса, источников и живого фида |
-| `/live` | что прямо сейчас на идущем матче и от какого источника пришли данные |
-| `/next` | ближайшие матчи по данным сервиса |
-| `/check` | проверить расписание немедленно |
-| `/verbose on\|off` | подробный режим логов |
+| `/teams` | which teams you follow |
+| `/track <link>` | start following a team |
+| `/untrack <id>` | stop following |
+| `/mute <id> <E5,E9>` | mute event types for a team |
+| `/unmute <id>` | clear the mutes |
+| `/remind 15m` | remind 15 minutes before, `/remind rm 15m` removes it |
+| `/tz Europe/Berlin` | your timezone |
+| `/pause`, `/resume` | go quiet / start sending again |
+| `/whoami` | your `chat_id` |
+| `/status` | the health of the service, the sources and the live feed |
+| `/live` | what is happening in a running match and which source the data came from |
+| `/next` | upcoming matches as the service sees them |
+| `/check` | poll the schedule immediately |
+| `/verbose on\|off` | verbose logging |
 
-## Кто получает уведомления
+## Who receives notifications
 
-Сервис обслуживает **несколько аккаунтов Telegram**: у каждого свой список
-команд и свои глушения. Разрешённые аккаунты перечисляются в одной переменной
-через запятую (`TELEGRAM_CHAT_ID=123456789,987654321`), первый в списке —
-основной; по умолчанию (`TELEGRAM_WHITELIST_ONLY=true`) бот отвечает только им,
-остальным молчит.
+The service serves **several Telegram accounts**: each with its own team list
+and its own mutes. Allowed accounts are listed in a single variable, separated
+by commas (`TELEGRAM_CHAT_ID=123456789,987654321`); the first one is the main
+chat. By default (`TELEGRAM_WHITELIST_ONLY=true`) the bot answers only them and
+stays silent to everyone else.
 
-Свой `chat_id` человек узнаёт командой `/whoami` — она отвечает всем, чтобы
-было что внести в белый список. Можно и через [@userinfobot](https://t.me/userinfobot).
-У групп id отрицательный, это нормально.
+A person learns their own `chat_id` with `/whoami` — it answers everyone, so
+there is something to put on the whitelist. [@userinfobot](https://t.me/userinfobot)
+works too. For groups the id is negative, which is normal.
 
-## Отслеживаемые команды
+## Tracked teams
 
-Список живёт в базе и правится **через бота**: `/track`, `/untrack`, `/teams`.
-`TEAM_ID` из `.env` используется только для первого посева, когда список пуст.
+The list lives in the database and is edited **through the bot**: `/track`,
+`/untrack`, `/teams`. `TEAM_ID` from `.env` is used only for the first seed,
+when the list is empty.
 
-Фильтрация идёт строго по числовому id, а не по названию: названия команд
-меняются, дублируются и обрастают приставками `ex-`. Поэтому `/track` принимает
-ссылку на страницу команды, а не имя.
+Filtering goes strictly by numeric id, not by name: team names change, repeat
+themselves and pick up `ex-` prefixes. That is why `/track` takes a link to the
+team page rather than a name.
 
-Если отслеживаемые команды играют **друг против друга**, матч остаётся одним:
-уведомление приходит по разу каждому подписчику, причём счёт разворачивается
-на ту команду, за которой следит именно он. Исключение — мультикиллы: четвёрка
-игрока каждой команды это отдельный хайлайт, и уходит она тем, кто следит за
-командой этого игрока. Разбор — в [docs/architecture.md](docs/architecture.md).
+If tracked teams play **each other**, the match stays one match: the
+notification arrives once per subscriber, with the score turned around to face
+whichever team that particular person follows. The exception is multikills: a 4k
+by a player of either team is its own highlight and goes to those following that
+player's team. The reasoning is in [docs/architecture.md](docs/architecture.md).
 
-## Документация
+## Documentation
 
-| Документ | О чём |
+| Document | About |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | как устроено и почему именно так |
-| [docs/deployment.md](docs/deployment.md) | развёртывание, CI, публикация образа |
-| [docs/operations.md](docs/operations.md) | эксплуатация, частоты, что делать при отказах |
-| [docs/known-limitations.md](docs/known-limitations.md) | что осознанно не обрабатывается |
-| [docs/recon/](docs/recon/) | разведка источников: чем HLTV отдаёт данные и как |
-| [CLAUDE.md](CLAUDE.md) | контекст и правила для доработки |
+| [docs/architecture.md](docs/architecture.md) | how it works and why it is built this way |
+| [docs/deployment.md](docs/deployment.md) | deployment, CI, publishing the image |
+| [docs/operations.md](docs/operations.md) | operations, polling rates, what to do on failures |
+| [docs/known-limitations.md](docs/known-limitations.md) | what is deliberately not handled |
+| [docs/recon/](docs/recon/) | source recon: what HLTV serves data through, and how |
+| [CLAUDE.md](CLAUDE.md) | context and rules for further work |
 
-## Установка пакетом
+## Installing as a package
 
-Помимо Docker проект ставится как обычный пакет — прямо из репозитория:
+Besides Docker, the project installs as an ordinary package, straight from the
+repository:
 
 ```bash
 pip install git+https://github.com/v1p3rrr/hltv-notificator
 hltv-notify
 ```
 
-На PyPI он не публикуется: основной канал распространения — образ.
+It is not published to PyPI: the image is the main distribution channel.
 
-## Разработка
+## Development
 
 ```bash
 python -m venv .venv
@@ -146,11 +150,12 @@ python -m venv .venv
 python -m pytest
 ```
 
-Тесты гоняются по **фикстурам реальных страниц и записям живого фида** из
-`docs/recon/fixtures`. Живой источник для тестов не годится: матчи редки, а
-овертайм, обрыв связи и мультикилл по заказу не воспроизводятся.
+The tests run against **fixtures of real pages and recordings of the live feed**
+from `docs/recon/fixtures`. A live source is no good for tests: matches are
+rare, and an overtime, a dropped connection or a multikill cannot be reproduced
+on demand.
 
-Прогнать записанный матч через машину состояний:
+Replaying a recorded match through the state machine:
 
 ```bash
 PYTHONPATH=src python -m hltv_notify.replay docs/recon/fixtures/scorebot-2397053-forze.jsonl.gz --team-id 12857 --match-id 2397053 --twice
