@@ -247,6 +247,48 @@ Both numbers come from the frame's own `regulationHalfLength` and
 `overtimeHalfLength`, never from a hardcoded 12 — the same rule as everywhere
 in `hltv_notify.scoring`.
 
+## Comebacks
+
+One more line on the map's result, not a message of its own — it belongs where
+the score it talks about already is.
+
+**The measure is the swing in the score difference, not a streak.** Two shapes
+of the same story:
+
+```
+down  3:11, won 13:11    ten taken without reply
+down  1:7,  won 13:9     twelve taken, two given away
+```
+
+The first is a streak, the second is not, and both are the same thing: −8 to
++2 is a swing of ten, −6 to +4 is a swing of ten. Counting rounds in a row
+would have found only one of them. So the map's difference is followed frame by
+frame and the biggest rise and the biggest fall are kept — a rise is our
+comeback, a fall is theirs. Both are reported: a comeback made, a comeback
+given away and a comeback denied are the same fact told from different sides,
+and one verdict serves every recipient.
+
+**There is a floor under the deficit as well as under the swing.** Without it a
+13:1 win reads as "a comeback from 0:1" — the swing is twelve and there was
+never a hole to climb out of. Half the swing is the smallest hole worth the
+word, so it is derived from `COMEBACK_ROUNDS` rather than being a second
+setting.
+
+A run that only reached overtime, or was stopped short, still gets its line:
+the map was lost but the run happened. The verdict is `won` when the team that
+made it took the map and `stopped` when it did not.
+
+Whose run it was is **derived from the score at render time, never stored** —
+the E11 lesson: the score turns around for a subscriber following the opponent
+and a stored "whose" would not turn with it. Every score in the line is written
+from the comeback team's own side, so "Color came back from 1:10" reads the way
+a person would say it whichever team the reader follows.
+
+The tracker lives in the machine's memory, like the multikill trackers. It
+survives feed reconnects, which are frequent; a restart in the middle of a map
+loses the rounds before it, and then a comeback comes out understated or
+missing — but never invented.
+
 ## Map point (E11)
 
 One round from taking the map — time to stop what you are doing and watch.

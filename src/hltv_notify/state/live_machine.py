@@ -23,6 +23,7 @@ from ..config import Config
 from ..models import Event, MatchState
 from ..scoring import map_completed, rounds_to_win, series_decided
 from ..sources.scorebot import ROUND_WARMUP, LiveFrame, PlayerLine
+from .comeback import ComebackTracker
 from .db import Storage
 from .multikill import MultikillTracker
 
@@ -63,6 +64,17 @@ class LiveMachine:
         # trackers: after a restart the journal is still there to keep the
         # message from going out twice.
         self._announced: set = set()
+        # The score trajectory of the map being played, for the comeback line
+        # on E6. In memory for the same reason as the multikill trackers: it
+        # survives feed reconnects, and a restart in the middle of a map can
+        # understate a comeback but never invent one.
+        self._comeback: Dict[str, ComebackTracker] = {}
+
+    def _comeback_tracker(self, map_name: str) -> ComebackTracker:
+        """One tracker per map: a new map starts from an empty score."""
+        if map_name not in self._comeback:
+            self._comeback[map_name] = ComebackTracker(self.config.comeback_rounds)
+        return self._comeback[map_name]
 
     def _tracker(self, team_id: int) -> MultikillTracker:
         if team_id not in self._multikill:
@@ -104,6 +116,11 @@ class LiveMachine:
         # changed" at exactly the moment a map started, and E5 was never born.
         previous_map = state_row["live_map_name"] if state_row else None
         map_number = self._map_number(match_id, map_name, len(recorded))
+
+        # The trajectory is followed on every frame, warmup included (0:0 costs
+        # nothing), so that at the winning round the whole map is already
+        # behind us and the comeback can be judged without asking anybody.
+        self._comeback_tracker(map_name).observe(ours, theirs)
 
         events: List[Event] = []
         started = self._released_start_event(match_id, frame)
@@ -549,6 +566,15 @@ class LiveMachine:
             series = (series[0] + 1, series[1])
         elif theirs > ours:
             series = (series[0], series[1] + 1)
+        # A comeback is not a message of its own: it is one more line on the
+        # map's result, where the score it talks about already is.
+        comeback = self._comeback_tracker(map_name).verdict(
+            ours, theirs, overtime=overtime) or {}
+        if comeback:
+            log.info("match %s: map %s was a comeback from %d:%d, swing %d, %s",
+                     match_id, map_name, comeback["comeback_from_team"],
+                     comeback["comeback_from_opponent"], comeback["comeback_swing"],
+                     comeback["comeback_result"])
         return Event(
             type="E6",
             idempotency_key=f"E6:{match_id}:map:{map_number}:result:{ours}-{theirs}",
@@ -562,5 +588,6 @@ class LiveMachine:
                 "overtime": overtime,
                 "series_team": series[0],
                 "series_opponent": series[1],
+                **comeback,
             },
         )

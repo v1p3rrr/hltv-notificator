@@ -169,3 +169,20 @@ def test_half_time_is_found_in_a_real_recording(prepared):
     assert phases[0].payload["overtime"] == 0
     assert (phases[0].payload["score_team"]
             + phases[0].payload["score_opponent"]) == 12
+
+
+def test_the_comeback_is_measured_on_real_frames(prepared, config):
+    """That map went 10:13 our way — the opponent came back from 2:8 down and
+    took eleven of the last fourteen rounds."""
+    e6 = [e for e in replay(DUMP, prepared, config, MATCH_ID) if e.type == "E6"][0]
+    assert (e6.payload["comeback_from_team"],
+            e6.payload["comeback_from_opponent"]) == (8, 2)
+    assert e6.payload["comeback_swing"] == 9
+    assert e6.payload["comeback_result"] == "won"
+
+
+def test_a_one_sided_map_gets_no_comeback_line(mouz, mouz_config):
+    """13:4 from the front — there was never a hole to climb out of."""
+    e6 = [e for e in replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH)
+          if e.type == "E6"][0]
+    assert "comeback_swing" not in e6.payload

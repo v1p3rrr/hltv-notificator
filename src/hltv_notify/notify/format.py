@@ -52,6 +52,11 @@ SWAPPED_PAIRS = (
     ("team_id", "opponent_id"),
     ("score_team", "score_opponent"),
     ("series_team", "series_opponent"),
+    # The comeback's start and peak. They turn around with everything else,
+    # and whose comeback it was is read back off them at render time — a
+    # stored "whose" would not have turned.
+    ("comeback_from_team", "comeback_from_opponent"),
+    ("comeback_to_team", "comeback_to_opponent"),
 )
 
 
@@ -98,6 +103,39 @@ def _minutes(value) -> str:
         return f"{minutes} min"
     hours, rest = divmod(minutes, 60)
     return f"{hours} h" if rest == 0 else f"{hours} h {rest} min"
+
+
+def comeback_line(payload: dict, *, team: str, opponent: str) -> str:
+    """The comeback line on a finished map, or "" when there was none.
+
+    Whose comeback it was is worked out from the score, not taken from the
+    payload: the score has already been turned around for this recipient, and
+    a stored "whose" would still be pointing the other way. The team behind at
+    the low point is the one that came back — and the deficit is written from
+    THAT team's side, so "Color came back from 2:10" reads the way a person
+    would say it.
+    """
+    if "comeback_swing" not in payload:
+        return ""
+    low = (payload.get("comeback_from_team") or 0,
+           payload.get("comeback_from_opponent") or 0)
+    ours = low[0] < low[1]
+    who = team if ours else opponent
+    # Every score in the line is written from the comeback team's own side.
+    behind, ahead = low if ours else low[::-1]
+    overtime = payload.get("comeback_overtime")
+
+    if payload.get("comeback_result") == "won":
+        through = " through overtime" if overtime else ""
+        return (f"🔥 <b>Comeback</b>: {who} turned {behind}:{ahead} around"
+                f"{through} — a swing of {payload.get('comeback_swing')} rounds")
+
+    peak = (payload.get("comeback_to_team") or 0,
+            payload.get("comeback_to_opponent") or 0)
+    peak = peak if ours else peak[::-1]
+    reached = "to force overtime" if overtime else f"to {peak[0]}:{peak[1]}"
+    return (f"🧱 <b>Comeback denied</b>: {who} came back from {behind}:{ahead} "
+            f"{reached} and still lost the map")
 
 
 def render(event: Event, *, team_name: str, tz_name: str,
@@ -224,14 +262,17 @@ def render(event: Event, *, team_name: str, tz_name: str,
         theirs = payload.get("score_opponent")
         icon = "✅" if (ours or 0) > (theirs or 0) else "❌"
         overtime = " (overtime)" if payload.get("overtime") else ""
-        return "\n".join([
+        lines = [
             f"{icon} <b>Map {payload.get('map_number')} finished</b>",
             f"{_esc(payload.get('map_name'))} — <b>{ours}:{theirs}</b>{overtime}",
             f"{team} — {opponent}",
             f"Series score: <b>{payload.get('series_team')}:{payload.get('series_opponent')}</b>",
-            event_name,
-            _link(url, "Match page"),
-        ])
+        ]
+        comeback = comeback_line(payload, team=team, opponent=opponent)
+        if comeback:
+            lines.append(comeback)
+        lines += [event_name, _link(url, "Match page")]
+        return "\n".join(lines)
 
     if event.type == "E7":
         ours = payload.get("series_team", 0)

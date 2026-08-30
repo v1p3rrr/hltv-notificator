@@ -286,3 +286,75 @@ def test_map_point_in_overtime_says_which_one():
     event = Event(type="E11", idempotency_key="k", match_id=1, payload=payload)
     text = fmt.render(event, team_name="FORZE Reload", tz_name="Europe/Moscow")
     assert "(overtime 2)" in text
+
+
+def _map_end_event(**extra):
+    payload = {
+        "team_name": "FORZE Reload", "team_id": 12857,
+        "opponent": "Color", "opponent_id": 13973,
+        "event_name": "GLuck", "url": "u",
+        "map_number": 2, "map_name": "Mirage",
+        "score_team": 13, "score_opponent": 11, "overtime": False,
+        "series_team": 1, "series_opponent": 0,
+    }
+    payload.update(extra)
+    return Event(type="E6", idempotency_key="k", match_id=1, payload=payload)
+
+
+COMEBACK = dict(comeback_from_team=3, comeback_from_opponent=11,
+                comeback_to_team=13, comeback_to_opponent=11,
+                comeback_swing=10, comeback_result="won", comeback_overtime=False)
+
+
+def test_a_map_without_a_comeback_gains_no_line():
+    from hltv_notify.notify import format as fmt
+
+    text = fmt.render(_map_end_event(), team_name="FORZE Reload",
+                      tz_name="Europe/Moscow")
+    assert "Comeback" not in text
+
+
+def test_the_comeback_line_names_the_team_and_the_deficit():
+    from hltv_notify.notify import format as fmt
+
+    text = fmt.render(_map_end_event(**COMEBACK), team_name="FORZE Reload",
+                      tz_name="Europe/Moscow")
+    assert "FORZE Reload turned 3:11 around" in text
+    assert "swing of 10 rounds" in text
+
+
+def test_the_comeback_reads_the_same_from_the_other_side():
+    """The score flips, the story does not: it was still FORZE who came back
+    from 3:11. Whose run it was is read off the score, not stored."""
+    from hltv_notify.notify import format as fmt
+
+    text = fmt.render(_map_end_event(**COMEBACK), team_name="Color",
+                      tz_name="Europe/Moscow", for_team_id=13973)
+    assert "Mirage — <b>11:13</b>" in text
+    assert "FORZE Reload turned 3:11 around" in text
+
+
+def test_a_denied_comeback_says_so():
+    from hltv_notify.notify import format as fmt
+
+    denied = dict(comeback_from_team=10, comeback_from_opponent=1,
+                  comeback_to_team=10, comeback_to_opponent=12,
+                  comeback_swing=11, comeback_result="stopped",
+                  comeback_overtime=False)
+    text = fmt.render(_map_end_event(score_team=13, score_opponent=12, **denied),
+                      team_name="FORZE Reload", tz_name="Europe/Moscow")
+    assert "Comeback denied" in text
+    assert "Color came back from 1:10 to 12:10" in text
+
+
+def test_a_comeback_that_only_forced_overtime():
+    from hltv_notify.notify import format as fmt
+
+    denied = dict(comeback_from_team=1, comeback_from_opponent=10,
+                  comeback_to_team=12, comeback_to_opponent=10,
+                  comeback_swing=11, comeback_result="stopped",
+                  comeback_overtime=True)
+    text = fmt.render(_map_end_event(score_team=12, score_opponent=16,
+                                     overtime=True, **denied),
+                      team_name="FORZE Reload", tz_name="Europe/Moscow")
+    assert "FORZE Reload came back from 1:10 to force overtime" in text

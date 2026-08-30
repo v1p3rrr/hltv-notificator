@@ -242,6 +242,53 @@ def test_no_e12_during_the_warmup(storage, config):
                                    state="warmup", live=False)) == []
 
 
+# ---------------------------------------------------------------- comebacks
+
+def score_path(m, rounds, map_name="de_mirage"):
+    """Feed the machine a map round by round. `a` is ours, `b` theirs."""
+    ours = theirs = 0
+    events = []
+    events += m.apply(MATCH_ID, frame(map_name, rnd=1))
+    for number, char in enumerate(rounds, start=1):
+        if char == "a":
+            ours += 1
+        else:
+            theirs += 1
+        events += m.apply(MATCH_ID, frame(map_name, ours=ours, theirs=theirs,
+                                          rnd=number + 1))
+    return events
+
+
+def test_map_result_carries_the_comeback(storage, config):
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    events = score_path(m, "aaa" + "b" * 11 + "a" * 10)
+    e6 = [e for e in events if e.type == "E6"][0]
+    assert (e6.payload["comeback_from_team"],
+            e6.payload["comeback_from_opponent"]) == (3, 11)
+    assert e6.payload["comeback_swing"] == 10
+    assert e6.payload["comeback_result"] == "won"
+
+
+def test_an_ordinary_map_carries_nothing(storage, config):
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    events = score_path(m, "ab" * 4 + "a" * 9)
+    e6 = [e for e in events if e.type == "E6"][0]
+    assert "comeback_swing" not in e6.payload
+
+
+def test_every_map_is_followed_from_zero(storage, config):
+    """The trajectory of the previous map must not leak into the next one."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    score_path(m, "aaa" + "b" * 11 + "a" * 10)                 # a comeback
+    events = score_path(m, "ab" * 4 + "a" * 9, map_name="de_dust2")
+    e6 = [e for e in events if e.type == "E6"][0]
+    assert e6.payload["map_name"] == "Dust2"
+    assert "comeback_swing" not in e6.payload
+
+
 # ---------------------------------------------------------------- E11
 
 def test_e11_at_map_point(storage, config):

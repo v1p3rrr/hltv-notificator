@@ -129,6 +129,11 @@ class Config:
     # more message per map for something the live card already shows.
     phase_alerts: bool = field(default_factory=lambda: _bool("PHASE_ALERTS", False))
 
+    # How big a swing in the score difference counts as a comeback. Not a
+    # streak: 3:11 -> 13:11 and 1:7 -> 13:9 are both swings of ten, and only
+    # the first is a streak. 0 switches the line off entirely.
+    comeback_rounds: int = field(default_factory=lambda: _int("COMEBACK_ROUNDS", 9))
+
     # Pre-match reminders: the defaults handed to a new subscriber, who then
     # edits them via /remind.
     default_reminders: str = field(default_factory=lambda: _str("REMINDERS", "15"))

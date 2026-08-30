@@ -132,6 +132,15 @@ saying so, that is up to twenty extra requests spent on nothing. The
 alternative — falling back to a poll every half hour — is what lost a
 reschedule.
 
+## A map decided without the live feed carries no comeback line
+
+The comeback is measured from the score trajectory, and only the live feed has
+one. When a map's result comes from the match page — the feed was down, or in
+its cooldown after a 403 — the result arrives as usual and the comeback line
+simply is not there. The same after a restart in the middle of a map: the
+rounds before it are gone, so the run can come out smaller than it was, or
+below the threshold and therefore unmentioned. Understated, never invented.
+
 ## Map point is only about the MAP
 
 E11 fires when somebody is one round from taking the map, in regulation and

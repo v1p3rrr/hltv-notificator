@@ -10,6 +10,17 @@ interface is a chat with the bot.
 docstrings, log messages, the bot's user-facing texts, tests and docs. Talk to
 the owner in Russian.
 
+**Spell out the event codes when talking to the owner.** `E6` is shorthand for
+people who read the code; in a message it is "E6 (конец карты)" the first time
+it comes up. The same for every other code. Nobody should have to go and look
+up what a message is about.
+
+| | | | |
+|---|---|---|---|
+| E1 new match | E2 reschedule | E3 cancellation | E4 match started |
+| E5 map started | E6 map finished | E7 match finished | E8 / E8R degraded / recovered |
+| E9 multikill | E10 reminder | E11 map point | E12 half / new overtime |
+
 A general description is in [README.md](README.md). How it works and why is in
 [docs/architecture.md](docs/architecture.md). **Read it before making any
 change**: almost every decision there came out of watching the live HLTV, and
@@ -299,7 +310,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 387 tests
+python -m pytest                                    # 407 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

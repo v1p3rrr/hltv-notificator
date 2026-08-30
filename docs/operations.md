@@ -10,6 +10,7 @@
 | E11 map point | done, from the live feed; a separate one for every overtime |
 | E12 half / new overtime | done, from the live feed, `PHASE_ALERTS`, **off by default** |
 | E6 map finished with the score | done, **at the winning round** from the live feed; the page confirms |
+| A comeback on the map | done, an extra line on E6, `COMEBACK_ROUNDS` |
 | E5 map started | done, from the live feed, once the warmup is over |
 | E8 degradation (the source is silent, the match has stalled) | done |
 | "The match has stalled" | only when there is no live feed; between maps the threshold is three times longer |
@@ -84,6 +85,7 @@ The values live in `.env`; the defaults are a balanced profile:
 | `POLL_LIVE_WITH_FEED_SECONDS` | 300 (5 min) | a match is running, scorebot works |
 | `PREMATCH_WINDOW_MINUTES` | 30 | how long before the start pre-match mode turns on |
 | `LATE_START_GRACE_MINUTES` | 60 | how long a match that should have started keeps pre-match mode |
+| `COMEBACK_ROUNDS` | 9 | the swing that counts as a comeback; 0 removes the line |
 | `DEGRADED_ALERT_SECONDS` | 300 | how long before reporting that the service has gone blind (max 600) |
 
 The ceiling of **1 request every 30 seconds** is hardcoded and cannot be raised
