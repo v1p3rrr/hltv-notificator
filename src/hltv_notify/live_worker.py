@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from dataclasses import replace
 from typing import Dict, Optional
 
 from .config import Config
@@ -100,22 +101,43 @@ class LiveWorker:
                 continue
             for frame in frames_from_packets(packets):
                 events = self.machine.apply(self.match_id, frame)
+                # E5 is held back: where the live message is on, it carries the
+                # map start itself. Sending both would mean two messages about
+                # one thing, and in the wrong order at that — the live message
+                # goes straight to Telegram while events wait in the queue.
+                started = next((e for e in events if e.type == "E5"), None)
                 for event in events:
-                    self.notifier.enqueue(event)
-                await self._refresh_live_message(frame, events)
+                    if event is not started:
+                        self.notifier.enqueue(event)
+                await self._refresh_live_message(frame, events, started)
 
-    async def _refresh_live_message(self, frame, events) -> None:
+    async def _refresh_live_message(self, frame, events, started=None) -> None:
         """The live message is redrawn after apply, so that the final edit
         already carries the series score including the map just taken."""
-        if self.messenger is None:
+        snapshot = self.machine.snapshot(self.match_id, frame) if self.messenger else None
+        if self.messenger is None or not snapshot:
+            # No live message at all — then E5 goes the ordinary way.
+            if started is not None:
+                self.notifier.enqueue(started)
             return
-        snapshot = self.machine.snapshot(self.match_id, frame)
-        if not snapshot:
-            return
+
         if any(event.type == "E6" for event in events):
             await self.messenger.finalize(self.match_id, snapshot)
-        else:
-            await self.messenger.update(self.match_id, snapshot)
+            return
+
+        missed = await self.messenger.update(self.match_id, snapshot,
+                                             map_started=started is not None)
+        if started is None:
+            return
+        for chat_id in missed:
+            # The map's card did not reach this chat. A milestone must not be
+            # lost on the best-effort path, so it goes through the queue —
+            # addressed to that one chat, so the others get no second copy.
+            log.warning("the live message for match %s did not reach %s, "
+                        "sending the map start through the queue",
+                        self.match_id, chat_id)
+            self.notifier.enqueue(replace(
+                started, payload={**started.payload, "only_chat": chat_id}))
 
     @staticmethod
     async def _sleep(seconds: float, stop: asyncio.Event) -> None:

@@ -55,7 +55,9 @@ def test_e5_when_map_changes(storage, config):
     m = LiveMachine(storage, config)
     m.apply(MATCH_ID, frame("de_mirage", rnd=1))
     m.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=5, rnd=18))  # map taken
-    events = m.apply(MATCH_ID, frame("de_dust2", rnd=1, state="warmup", live=False))
+    # The warmup of the next map says nothing yet: it can run for twenty minutes.
+    assert m.apply(MATCH_ID, frame("de_dust2", rnd=1, state="warmup", live=False)) == []
+    events = m.apply(MATCH_ID, frame("de_dust2", rnd=1, state="started", live=False))
     assert [e.type for e in events] == ["E5"]
     assert events[0].idempotency_key == "E5:777:map:2:started:Dust2"
     assert events[0].payload["series_team"] == 1
@@ -71,9 +73,43 @@ def test_no_e5_when_connecting_in_the_middle_of_a_map(storage, config):
 def test_e5_on_the_very_first_map_if_caught_from_the_start(storage, config):
     add_match(storage)
     m = LiveMachine(storage, config)
-    events = m.apply(MATCH_ID, frame("de_mirage", rnd=1, state="warmup", live=False))
+    events = m.apply(MATCH_ID, frame("de_mirage", rnd=1, state="started", live=False))
     assert [e.type for e in events] == ["E5"]
     assert events[0].payload["map_number"] == 1
+
+
+def test_warmup_is_not_the_start_of_the_map(storage, config):
+    """The warmup can run for twenty minutes, and the score sits at 0:0 all of
+    it. The feed reports the warmup explicitly through currentRoundState — that
+    is the only reliable signal.
+
+    The `live` flag is NOT one: measured on a recorded map boundary it only
+    turns true once the FIRST ROUND HAS BEEN PLAYED. Gating on it would announce
+    the map after its first round was already decided, so the sequence below is
+    exactly the recorded one: warmup/live=False, then started/live=False.
+    """
+    add_match(storage)
+    m = LiveMachine(storage, config)
+
+    for _ in range(3):
+        assert m.apply(MATCH_ID, frame("de_mirage", rnd=1, state="warmup",
+                                       live=False)) == []
+    events = m.apply(MATCH_ID, frame("de_mirage", rnd=1, state="started", live=False))
+    assert [e.type for e in events] == ["E5"]
+
+
+def test_warmup_does_not_consume_the_map_change(storage, config):
+    """The private memo must not be advanced during the warmup either: it would
+    leave nothing for the map start to notice."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    m.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=5, rnd=18))
+
+    for _ in range(5):
+        m.apply(MATCH_ID, frame("de_dust2", rnd=1, state="warmup", live=False))
+    events = m.apply(MATCH_ID, frame("de_dust2", rnd=1, state="started", live=False))
+    assert [e.type for e in events] == ["E5"]
 
 
 def test_e5_not_repeated_on_every_frame(storage, config):
@@ -179,3 +215,69 @@ def test_without_lineup_numbering_falls_back_to_counting(storage, config):
     m = LiveMachine(storage, config)
     events = m.apply(MATCH_ID, frame("de_dust2", rnd=1))
     assert events[0].payload["map_number"] == 1
+
+
+# ------------------------------------------------ the end of the match by maps
+
+
+def win_the_map(machine, name, ours, theirs):
+    machine.apply(MATCH_ID, frame(name, rnd=1))
+    return machine.apply(MATCH_ID, frame(name, ours=ours, theirs=theirs, rnd=20))
+
+
+def test_the_feed_calls_the_match_finished_on_the_last_map(storage, config):
+    """The page reports this too, but minutes later — it has to notice the
+    status flip first. Here it is known the moment the last map ends."""
+    add_match(storage)
+    storage.set_state(MATCH_ID, "LIVE", source="t")
+    storage.set_best_of(MATCH_ID, 3)
+    m = LiveMachine(storage, config)
+
+    assert [e.type for e in win_the_map(m, "de_mirage", 13, 5)] == ["E6"]
+    events = win_the_map(m, "de_dust2", 13, 7)
+    assert [e.type for e in events] == ["E6", "E7"]
+
+    finished = events[1]
+    assert finished.idempotency_key == "E7:777:finished:2-0"
+    assert finished.payload["won"] is True
+    assert len(finished.payload["maps"]) == 2
+
+
+def test_an_unknown_format_keeps_the_page_in_charge(storage, config):
+    """Without best_of we do not guess: the page will report the end of the
+    match as it did before."""
+    add_match(storage)
+    storage.set_state(MATCH_ID, "LIVE", source="t")
+    m = LiveMachine(storage, config)
+    assert [e.type for e in win_the_map(m, "de_mirage", 13, 5)] == ["E6"]
+
+
+def test_a_bo3_at_one_all_is_not_finished(storage, config):
+    add_match(storage)
+    storage.set_state(MATCH_ID, "LIVE", source="t")
+    storage.set_best_of(MATCH_ID, 3)
+    m = LiveMachine(storage, config)
+    win_the_map(m, "de_mirage", 13, 5)
+    assert [e.type for e in win_the_map(m, "de_dust2", 7, 13)] == ["E6"]
+
+
+def test_a_bo1_is_finished_by_its_only_map(storage, config):
+    add_match(storage)
+    storage.set_state(MATCH_ID, "LIVE", source="t")
+    storage.set_best_of(MATCH_ID, 1)
+    m = LiveMachine(storage, config)
+    assert [e.type for e in win_the_map(m, "de_mirage", 13, 5)] == ["E6", "E7"]
+
+
+def test_a_bo2_ends_level_after_both_maps(storage, config):
+    """Nobody can take a majority of two, so the series ends when both maps
+    have been played — and a draw is a legitimate result."""
+    add_match(storage)
+    storage.set_state(MATCH_ID, "LIVE", source="t")
+    storage.set_best_of(MATCH_ID, 2)
+    m = LiveMachine(storage, config)
+    assert [e.type for e in win_the_map(m, "de_mirage", 13, 5)] == ["E6"]
+    events = win_the_map(m, "de_dust2", 7, 13)
+    assert [e.type for e in events] == ["E6", "E7"]
+    assert events[1].payload["won"] is None
+    assert events[1].idempotency_key == "E7:777:finished:1-1"

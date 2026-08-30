@@ -169,3 +169,85 @@ def test_disabled_by_config(tmp_path):
     assert telegram.sent == []
     assert storage.live_message(CHAT, MATCH_ID, 1) is None
     storage.close()
+
+
+# ------------------------------------------------- the map card (E5 merged in)
+
+
+def test_the_map_card_carries_the_start(messenger):
+    """One message per map instead of two.
+
+    They used to be separate, and the live message always won the race to the
+    chat: it goes straight to Telegram while events wait in the queue, so
+    "the map has started" arrived seconds AFTER the score for that map.
+    """
+    m, telegram, _ = messenger
+    missed = asyncio.run(m.update(MATCH_ID, snapshot(score=(0, 0), rnd=1),
+                                  map_started=True))
+    assert missed == []
+    assert len(telegram.sent) == 1
+    text = telegram.sent[0]
+    assert "Map 1: Mirage" in text          # what E5 used to say
+    assert "0:0" in text                     # and the score, from the start
+    assert "Test" in text                    # the event name came along too
+
+
+def test_the_card_keeps_its_shape_while_the_score_moves(messenger):
+    """The heading must not change on the way: it is one message being edited."""
+    m, telegram, _ = messenger
+    asyncio.run(m.update(MATCH_ID, snapshot(score=(0, 0), rnd=1), map_started=True))
+    asyncio.run(m.update(MATCH_ID, snapshot(score=(13, 5), rnd=18), force=True))
+    assert len(telegram.sent) == 1
+    assert telegram.edited[-1][1].startswith("🗺")
+    assert "13:5" in telegram.edited[-1][1]
+
+
+def test_a_muted_map_start_leaves_the_plain_score(messenger):
+    """Muting E5 asked for exactly that: no map-start framing, just the score.
+    The queue will not send them E5 either, so nothing is lost."""
+    m, telegram, storage = messenger
+    storage.add_subscriber(CHAT)
+    storage.add_team(CHAT, 555, "x", "X")
+    storage.link_match_team(MATCH_ID, 555)
+    storage.set_team_mutes(CHAT, 555, ["E5"])
+
+    missed = asyncio.run(m.update(MATCH_ID, snapshot(score=(0, 0), rnd=1),
+                                  map_started=True))
+    assert missed == []                      # nothing to fall back on
+    # The plain form still names the map, but on the second line, as a detail
+    # of the score rather than as the heading.
+    first_line = telegram.sent[0].splitlines()[0]
+    assert first_line.startswith("🎯")
+    assert "Map 1: Mirage" not in first_line
+
+
+def test_a_failed_card_is_reported_for_the_fallback(tmp_path):
+    """A milestone must not be lost on the best-effort path: if the card cannot
+    be created, the caller is told which chat needs a plain E5 through the
+    queue."""
+    from hltv_notify.state.db import utcnow
+
+    storage = Storage(tmp_path / "fail.db")
+    storage.upsert_match(match_id=MATCH_ID, opponent_id=1, opponent_name="Color",
+                         event_name="Test", start_utc=utcnow(), url="u",
+                         snapshot={}, snapshot_hash="h")
+
+    class Broken(FakeTelegram):
+        async def send_message(self, chat_id, text, reply_markup=None):
+            raise TelegramError("Telegram 400: chat not found", fatal=True)
+
+    telegram = Broken()
+    m = LiveMessenger(storage, live_config(), telegram)
+    missed = asyncio.run(m.update(MATCH_ID, snapshot(score=(0, 0), rnd=1),
+                                  map_started=True))
+    assert missed == [CHAT]
+    storage.close()
+
+
+def test_the_first_card_is_not_delayed_by_the_throttle(messenger):
+    """The throttle exists to spare Telegram's limits on EDITS. Holding the
+    first message back would delay the map's card by the whole interval."""
+    m, telegram, _ = messenger
+    m.config = live_config(live_edit_seconds=600)
+    asyncio.run(m.update(MATCH_ID, snapshot(score=(0, 0), rnd=1), map_started=True))
+    assert len(telegram.sent) == 1

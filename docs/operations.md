@@ -5,12 +5,13 @@
 | Event | State |
 |---|---|
 | E1 new match, E2 reschedule, E3 cancellation | done, from the team page |
-| E4 match started, E7 match finished | done, from the match page |
+| E4 match started | done, from the match page |
+| E7 match finished | done, from the live feed by the map count; the page confirms |
 | E6 map finished with the score | done, **at the winning round** from the live feed; the page confirms |
-| E5 map started | done, from the live feed |
+| E5 map started | done, from the live feed, once the warmup is over |
 | E8 degradation (the source is silent, the match has stalled) | done |
 | "The match has stalled" | only when there is no live feed; between maps the threshold is three times longer |
-| The live score message during a map | done, one per map, `LIVE_MESSAGE` |
+| The live score message during a map | done, one per map, `LIVE_MESSAGE`; it is also the map's card and carries the map start |
 | A multikill by a player of our team | done, at the Nth kill, `MULTIKILL_THRESHOLD` |
 
 ## Starting up
@@ -155,8 +156,10 @@ overtime is being played — the alarm comes after a minute. Otherwise after
 `DEGRADED_ALERT_SECONDS`.
 
 One alarm per failure; when everything recovers, a separate "Recovered" arrives
-with the duration of the outage. Which subsystems are down right now is visible
-in `/status`.
+with the duration of the outage. A "Recovered" only follows an alarm that was
+actually sent — a failure that healed before the threshold, or before the
+poller's next attempt, is never announced in either direction. Which subsystems
+are down right now is visible in `/status`.
 
 ## Proxy
 

@@ -155,3 +155,79 @@ def test_both_sources_on_the_same_map_end_give_one_event(match, config):
 
     keys = [row["idempotency_key"] for row in match.due_outbox(limit=50)]
     assert len([k for k in keys if k.startswith("E6:2397053:map:2")]) == 1
+
+
+# ----------------------------------------------------------------------
+# The end of the match: the feed gives the speed, the page stays the truth
+# ----------------------------------------------------------------------
+
+
+def played_out(match, config):
+    """Both maps of the finished fixture won through the feed."""
+    live = LiveMachine(match, config)
+    events = []
+    for name, ours, theirs in (("de_mirage", 13, 10), ("de_dust2", 13, 10)):
+        live.apply(MATCH_ID, frame(name, rnd=1))
+        events += live.apply(MATCH_ID, frame(name, ours=ours, theirs=theirs, rnd=23))
+    return events
+
+
+def test_the_feed_finishes_the_match_without_waiting_for_the_page(match, config):
+    """This is what the four-minute gap was: the feed knew at the winning round,
+    the page only once HLTV flipped its status."""
+    match.set_state(MATCH_ID, "LIVE", source="page")
+    match.set_best_of(MATCH_ID, 3)
+    events = played_out(match, config)
+    assert [e.type for e in events] == ["E6", "E6", "E7"]
+    assert events[-1].idempotency_key == f"E7:{MATCH_ID}:finished:2-0"
+
+
+def test_the_page_adds_nothing_when_it_agrees(match, config):
+    """The page produces the same key, so the unique index swallows its copy
+    and the owner gets one message, not two."""
+    from hltv_notify.notify.outbox import Notifier
+
+    match.add_subscriber("1")
+    match.add_team("1", TEAM_ID, "forze-reload", "FORZE Reload")
+    match.link_match_team(MATCH_ID, TEAM_ID)
+    match.set_state(MATCH_ID, "LIVE", source="page")
+    match.set_best_of(MATCH_ID, 3)
+    notifier = Notifier(match, config, telegram=None)
+
+    for event in played_out(match, config):
+        notifier.enqueue(event)
+    before = [row["idempotency_key"] for row in match.conn.execute(
+        "SELECT idempotency_key FROM sent_events WHERE event_type = 'E7'")]
+    assert len(before) == 1
+
+    for event in MatchMachine(match, config).apply(page("match-2397047-finished.html")):
+        notifier.enqueue(event)
+    after = [row["idempotency_key"] for row in match.conn.execute(
+        "SELECT idempotency_key FROM sent_events WHERE event_type = 'E7'")]
+    assert after == before
+
+
+def test_a_disagreeing_page_says_it_is_a_correction(match, config):
+    """If the page ends up with a different series score the key differs and the
+    message goes out — but it must say it is a correction, otherwise it reads
+    as a duplicate of what already arrived."""
+    match.set_state(MATCH_ID, "LIVE", source="page")
+    match.set_best_of(MATCH_ID, 3)
+
+    # The feed saw one map and called the series 1-0 on a BO1-sized guess.
+    live = LiveMachine(match, config)
+    live.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    match.set_best_of(MATCH_ID, 1)
+    finished = [e for e in live.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=10, rnd=23))
+                if e.type == "E7"]
+    assert finished and finished[0].payload["corrected"] is False
+    match.record_event(idempotency_key=finished[0].idempotency_key,
+                       event_type="E7", match_id=MATCH_ID, body="x", chat_id="1")
+
+    # The page sees both maps played, so its series score is 2-0 — a different
+    # key, a real disagreement.
+    events = MatchMachine(match, config).apply(page("match-2397047-finished.html"))
+    e7 = [e for e in events if e.type == "E7"]
+    assert e7, "the page must still report a result it does not agree with"
+    assert e7[0].idempotency_key != finished[0].idempotency_key
+    assert e7[0].payload["corrected"] is True

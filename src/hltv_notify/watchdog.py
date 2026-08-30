@@ -62,6 +62,21 @@ def _detail_key(subsystem: str) -> str:
     return f"degraded_detail:{subsystem}"
 
 
+def _alerted_key(subsystem: str) -> str:
+    """Whether an alarm was actually SENT about this failure.
+
+    Not the same as "a failure was recorded". Both are needed because the two
+    happen at different times: the countdown starts on the first failed
+    attempt, while the alarm only goes out once the failure has held past the
+    threshold — and it may never go out at all, because the next attempt only
+    happens on the poller's next cycle. Seen in production twice: the live feed
+    connected 0.7 s after the countdown began, the schedule recovered on its
+    next attempt 35 minutes later, and both produced a "Recovered" for an
+    outage nobody had ever been told about.
+    """
+    return f"degraded_alerted:{subsystem}"
+
+
 class Watchdog:
     def __init__(self, storage: Storage, config: Config):
         self.storage = storage
@@ -158,6 +173,8 @@ class Watchdog:
             return []
 
         minutes = max(1, int(broken_for.total_seconds() // 60))
+        # From here on a "Recovered" is warranted: the alarm is going out.
+        self.storage.set_meta(_alerted_key(subsystem), iso(since))
         return [Event(
             type="E8",
             # The key includes the moment the failure STARTED: one alarm per
@@ -179,15 +196,20 @@ class Watchdog:
         if not since_raw:
             return []
         now = now or utcnow()
+        alerted = self.storage.get_meta(_alerted_key(subsystem))
         self.storage.set_meta(_since_key(subsystem), "")
         self.storage.set_meta(_detail_key(subsystem), "")
+        self.storage.set_meta(_alerted_key(subsystem), "")
 
         since = parse_iso(since_raw)
         broken_for = now - since
-        # A failure nobody saw gets no announcement on the way out either.
-        if broken_for < timedelta(seconds=URGENT_SECONDS):
-            log.info("subsystem %s came back in %.0f s, there was no alarm",
-                     subsystem, broken_for.total_seconds())
+        # "Recovered" only makes sense after an alarm the owner actually saw.
+        # Elapsed time is not the test: a subsystem is re-checked on the
+        # poller's own cycle, so an outage of a second can look like a minute
+        # and one of 35 minutes can pass without a single alarm.
+        if not alerted:
+            log.info("subsystem %s came back after %.0f s, no alarm had been "
+                     "raised — staying quiet", subsystem, broken_for.total_seconds())
             return []
 
         minutes = max(1, int(broken_for.total_seconds() // 60))

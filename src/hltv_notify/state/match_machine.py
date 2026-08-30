@@ -107,6 +107,9 @@ class MatchMachine:
         if observation.max_rounds_regulation and observation.max_rounds_overtime:
             self.storage.set_map_format(match_id, observation.max_rounds_regulation,
                                         observation.max_rounds_overtime)
+        # The series format is stored for the live feed: only with it can the
+        # feed tell that the last map ended the match.
+        self.storage.set_best_of(match_id, observation.best_of)
         # The marker is set AFTER first_observation has been computed: it
         # refers to the previous observations, not to this one.
         self.storage.mark_page_seen(match_id)
@@ -292,6 +295,13 @@ class MatchMachine:
     def _event_e7(self, observation: MatchObservation, row, team_id: int,
                   ours: int, theirs: int) -> Event:
         opponent_id, opponent_name = observation.opponent(team_id)
+        # The live feed may already have reported the match as finished from
+        # the map count. If the page agrees, the key matches and the unique
+        # index swallows this one silently. If it disagrees, the key differs
+        # and the message goes out — as a correction, which it must say.
+        key = f"E7:{observation.match_id}:finished:{ours}-{theirs}"
+        corrects = [k for k in self.storage.finished_event_keys(observation.match_id)
+                    if not k.endswith(key)]
         maps = []
         for line in observation.final_maps():
             our_score, their_score = observation.map_score(line, team_id)
@@ -304,7 +314,7 @@ class MatchMachine:
             })
         return Event(
             type="E7",
-            idempotency_key=f"E7:{observation.match_id}:finished:{ours}-{theirs}",
+            idempotency_key=key,
             match_id=observation.match_id,
             payload={
                 "team_name": self.storage.team_name(team_id, self.config.team_name),
@@ -320,6 +330,7 @@ class MatchMachine:
                 # the same result.
                 "won": None if ours == theirs else ours > theirs,
                 "maps": maps,
+                "corrected": bool(corrects),
                 "url": row["url"] if row else "",
             },
         )

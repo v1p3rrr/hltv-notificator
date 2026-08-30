@@ -189,6 +189,25 @@ with the handshake. Send earlier and you get the same silent refusal.
 **Scorebot's websocket is closed (403), polling works.** Verified with every
 header, cookie and impersonation profile, including `curl_cffi.ws_connect`.
 
+**The `live` flag is not a "the map has started" signal.** Measured on a
+recorded map boundary: it turns true only once the FIRST ROUND HAS BEEN PLAYED.
+The sequence is `warmup/live=False` (177 frames), then `started/live=False`
+(64 frames — the map really running), then `ended/live=True` with the score
+already 0:1. The only reliable warmup signal is `currentRoundState == "warmup"`.
+
+**The live message carries E5, and it is not a stylistic choice.** The two
+delivery paths differ: the live message goes straight to Telegram, an event is
+merely queued and the outbox worker wakes every five seconds. So a separate E5
+ALWAYS lost the race to its own map's score — measured 3 seconds behind. If a
+third such message ever appears, put it in the card too rather than adding a
+fourth race.
+
+**"Recovered" requires an alarm that was SENT, not one that was counted down.**
+Those are different moments, and elapsed time cannot tell them apart: a
+subsystem is only re-checked on its poller's cycle, so a 0.7-second outage can
+look like a minute and a 35-minute one can pass without any alarm. The flag is
+`degraded_alerted:<subsystem>`; both halves of this were seen in production.
+
 **A long-poll timeout is not a disconnect.** The feed goes quiet during pauses,
 and the whole break between maps passes like that. See `FeedIdle`.
 
@@ -247,7 +266,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 330 tests
+python -m pytest                                    # 349 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

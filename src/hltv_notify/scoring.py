@@ -89,6 +89,25 @@ def map_completed(score_a: Optional[int], score_b: Optional[int], *,
     return MapVerdict(False, played)
 
 
+def series_decided(wins_a: int, wins_b: int, best_of: Optional[int]) -> bool:
+    """Is the series over, judging by the maps won.
+
+    With an odd best_of somebody has to take the majority: 1 of 1, 2 of 3,
+    3 of 5, 4 of 7. With an even one (BO2 happens in group stages) nobody can
+    take a majority, so the series ends when both maps have been played — the
+    result may legitimately be a draw.
+
+    `None` means the format is unknown: the match page has not been read yet,
+    or it did not say "Best of N". Then we do not guess and let the page decide
+    the end of the match, as it did before.
+    """
+    if not best_of or best_of < 1:
+        return False
+    if best_of % 2 == 0:
+        return wins_a + wins_b >= best_of
+    return max(wins_a, wins_b) >= best_of // 2 + 1
+
+
 def rounds_to_win(score_a: int, score_b: int, *,
                   regulation: int = DEFAULT_REGULATION,
                   overtime: int = DEFAULT_OVERTIME) -> int:

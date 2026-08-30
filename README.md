@@ -22,13 +22,17 @@ One process, one user, no web interface: the interface is a chat with the bot.
 | E4 | The match started, the map lineup and whose pick each is | match page |
 | E5 | A map started | live feed |
 | E6 | **A map finished, with the score** | live feed (instantly), the page confirms |
-| E7 | The match finished, the result by maps | match page |
+| E7 | The match finished, the result by maps | live feed by the map count, the page confirms |
 | E8 | The service has gone blind: the source is silent, the feed will not come up, the queue is not draining | watchdog |
 | E8R | Recovered | watchdog |
 | E9 | A player of a tracked team took 4+ kills in a round | live feed |
 
 Plus a **live message per map** — one message, updated with the current score
-as the game goes on and frozen on the final one.
+as the game goes on and frozen on the final one. Where the live message is on,
+it is also the map's card: it carries the map start itself, so E5 does not
+arrive separately. Two messages about one thing would have been in the wrong
+order anyway — the live message goes straight to Telegram while events wait in
+the queue.
 
 ```
 ✅ Map 2 finished

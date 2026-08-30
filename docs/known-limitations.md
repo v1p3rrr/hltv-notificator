@@ -91,8 +91,21 @@ the score nor the fact of the notification, only the "Map N" label.
 The live score message goes around the outbox queue: it has no idempotency key,
 and there is no point re-delivering a stale score frame. If an edit did not go
 through (a Telegram limit, the network), it is simply skipped — the next edit a
-few seconds later brings the current score. The milestones (E5, E6, E7) are
+few seconds later brings the current score. The milestones (E6, E7) are
 unaffected: they go through the queue and are not lost.
+
+E5 is the one that now rides on the live message, so it gets an explicit
+fallback: if the message cannot be CREATED for a chat, a plain E5 is queued for
+that one chat instead. A failed later EDIT is still only skipped — by then the
+map start has already been delivered.
+
+## The map start is not reported during the warmup
+
+"A map has started" waits for `currentRoundState` to leave `warmup`. That is
+honest — during the warmup the score is 0:0 and nothing is being played — but it
+means you learn which map was picked a few minutes later than the feed knew it.
+For a rotation between maps that is usually seconds; before the first map of a
+match a warmup can run for twenty.
 
 ## A multikill can be missed after a reconnect
 
@@ -121,6 +134,19 @@ The orientation is applied at render time, so a subscriber who adds a team
 mid-map will see the existing message in the old orientation until the next
 edit. That edit arrives within a few seconds, so it has almost no practical
 significance.
+
+## A failure between two poll cycles may pass unreported
+
+The watchdog only re-evaluates a subsystem when its poller next runs. In idle
+mode the schedule is polled every ~30 minutes, so a failure at minute 0 that
+heals by minute 30 is never announced — the next attempt simply succeeds. Seen
+in the logs: a 35-minute schedule outage produced no alarm at all.
+
+This is deliberate rather than an oversight: in idle mode there are no matches,
+so nothing is being missed. Around a match the intervals are 3 minutes and
+1 minute, so a real failure is re-checked and reported quickly. What was fixed
+is the other half of it — a "Recovered" no longer arrives for an outage nobody
+was told about.
 
 ## The alarm about a stuck queue goes into that same queue
 

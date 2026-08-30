@@ -201,8 +201,13 @@ def render(event: Event, *, team_name: str, tz_name: str,
         theirs = payload.get("series_opponent", 0)
         won = payload.get("won")
         icon = "🤝" if won is None else ("🏆" if won else "💀")
+        # A correction: the live feed already reported the match as finished
+        # from the map count, and the page then disagreed about the score. Say
+        # so, otherwise the second message just looks like a duplicate.
+        headline = ("Match finished — corrected" if payload.get("corrected")
+                    else "Match finished")
         lines = [
-            f"{icon} <b>Match finished</b>",
+            f"{icon} <b>{headline}</b>",
             f"<b>{team} {ours}:{theirs} {opponent}</b>",
             event_name,
         ]
@@ -261,20 +266,40 @@ ROUND_STATE_LABELS = {
 }
 
 
-def render_live(snapshot: dict, *, team_name: str) -> str:
+def render_live(snapshot: dict, *, team_name: str,
+                announces_start: bool = False) -> str:
     """The live message for one map, updated as the game goes on.
 
     It is deliberately short: it is redrawn every few seconds, and a long text
     turns the chat history into a wall.
+
+    `announces_start` turns this message into the map's card: it then also
+    carries what E5 used to say on its own, and no separate "map started"
+    message is sent. The two used to be separate, and the live message always
+    won the race to the chat — it goes straight to Telegram while events wait
+    in the queue, so "the map has started" landed seconds AFTER the score for
+    that map. The heading is written to read correctly both at 0:0 in round 1
+    and at 13:5 in round 18.
     """
     team = escape(snapshot.get("team_name") or team_name)
     opponent = escape(snapshot.get("opponent") or "TBD")
     map_name = escape(snapshot.get("map_name"))
     state = ROUND_STATE_LABELS.get(snapshot.get("round_state"), "")
     tail = f" · {state}" if state else ""
-    return "\n".join([
-        f"🎯 <b>{team} {snapshot['score_team']}:{snapshot['score_opponent']} {opponent}</b>",
-        f"Map {snapshot.get('map_number')}: {map_name} · round {snapshot.get('round')}{tail}",
-        f"Series score: {snapshot.get('series_team')}:{snapshot.get('series_opponent')}",
-        _link(snapshot.get("url") or "", "Match page"),
-    ])
+    score = f"{snapshot['score_team']}:{snapshot['score_opponent']}"
+    if announces_start:
+        lines = [
+            f"🗺 <b>Map {snapshot.get('map_number')}: {map_name}</b>",
+            f"{team} <b>{score}</b> {opponent} · round {snapshot.get('round')}{tail}",
+        ]
+    else:
+        lines = [
+            f"🎯 <b>{team} {score} {opponent}</b>",
+            f"Map {snapshot.get('map_number')}: {map_name} · round {snapshot.get('round')}{tail}",
+        ]
+    lines.append(
+        f"Series score: {snapshot.get('series_team')}:{snapshot.get('series_opponent')}")
+    if announces_start and snapshot.get("event_name"):
+        lines.append(escape(snapshot["event_name"]))
+    lines.append(_link(snapshot.get("url") or "", "Match page"))
+    return "\n".join(lines)

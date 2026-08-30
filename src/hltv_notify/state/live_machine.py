@@ -21,8 +21,8 @@ from typing import Dict, List, Optional, Tuple
 
 from ..config import Config
 from ..models import Event, MatchState
-from ..scoring import map_completed
-from ..sources.scorebot import LiveFrame, PlayerLine
+from ..scoring import map_completed, series_decided
+from ..sources.scorebot import ROUND_WARMUP, LiveFrame, PlayerLine
 from .db import Storage
 from .multikill import MultikillTracker
 
@@ -114,6 +114,9 @@ class LiveMachine:
                 overtime=verdict.overtime_number > 0)
             log.info("match %s: map %d (%s) taken at %d:%d, overtime #%d",
                      match_id, map_number, map_name, ours, theirs, verdict.overtime_number)
+            finished = self._event_e7(match_id, frame, team_id)
+            if finished is not None:
+                events.append(finished)
 
         series = self._series(match_id)
         self.storage.set_state(
@@ -121,7 +124,10 @@ class LiveMachine:
             current_map_number=map_number, current_map_name=map_name,
             current_map_score=f"{ours}-{theirs}",
             series_score=f"{series[0]}-{series[1]}")
-        self.storage.set_live_map(match_id, map_name)
+        if not self._warming_up(frame):
+            # The memo is advanced only once the map is really being played —
+            # see _is_new_map.
+            self.storage.set_live_map(match_id, map_name)
         return events
 
     # ------------------------------------------------------------------
@@ -244,15 +250,37 @@ class LiveMachine:
                 return index
         return recorded_count + 1
 
+    @staticmethod
+    def _warming_up(frame: LiveFrame) -> bool:
+        """Is the map still in its warmup.
+
+        The feed says so explicitly through `currentRoundState`, and that is the
+        only reliable signal. The `live` flag is NOT one: measured on a recorded
+        map boundary, it only turns true once the first round has been PLAYED —
+        warmup runs as `warmup/live=False` (177 frames), then the map really
+        starts as `started/live=False` (64 frames), and only the end of round 1
+        brings `live=True`. Gating on `live` would announce the map after its
+        first round was already decided.
+        """
+        return frame.round_state == ROUND_WARMUP
+
     def _is_new_map(self, previous_map: Optional[str], map_name: str,
                     frame: LiveFrame) -> bool:
         """The map has started.
+
+        The warmup does not count: it can run for twenty minutes, and "the map
+        has started" during it is simply untrue — the score would sit at 0:0 all
+        that time. Note that `live_map_name` is not advanced during the warmup
+        either, otherwise this comparison would find nothing left to notice by
+        the time the map really starts.
 
         If there is no previous map in the state, we have only just taken the
         match under observation. Announcing "the map has started" about a map
         twenty rounds in is too late — so in that case the event is only born
         if the map really is at its very beginning.
         """
+        if self._warming_up(frame):
+            return False
         if previous_map is None:
             return frame.current_round <= 1
         return previous_map != map_name
@@ -302,6 +330,45 @@ class LiveMachine:
                 "map_name": map_name,
                 "series_team": series[0],
                 "series_opponent": series[1],
+            },
+        )
+
+    def _event_e7(self, match_id: int, frame: LiveFrame,
+                  team_id: int) -> Optional[Event]:
+        """The match is over, judged by the map count.
+
+        The page reports this too, but minutes later — it has to notice the
+        status flip first. Here it is known the moment the last map ends.
+
+        The key is the same one the page machine would produce, so if the two
+        agree the unique index swallows the page's copy in silence. If they
+        disagree, the key differs and the page's message goes out as a
+        correction. That is deliberate: the feed gives the speed, the page stays
+        the source of truth.
+
+        With an unknown format we do not guess and stay silent — the page will
+        report the end of the match as it did before.
+        """
+        ours, theirs = self._series(match_id)
+        if not series_decided(ours, theirs, self.storage.best_of(match_id)):
+            return None
+        maps = [{"number": row["map_number"], "name": row["map_name"],
+                 "score_team": row["score_team"], "score_opponent": row["score_opponent"],
+                 "overtime": bool(row["overtime"])}
+                for row in self.storage.map_results(match_id)]
+        log.info("match %s: the series is decided %d-%d, reporting the finish "
+                 "without waiting for the page", match_id, ours, theirs)
+        return Event(
+            type="E7",
+            idempotency_key=f"E7:{match_id}:finished:{ours}-{theirs}",
+            match_id=match_id,
+            payload={
+                **self._context(match_id, frame, team_id),
+                "series_team": ours,
+                "series_opponent": theirs,
+                "won": None if ours == theirs else ours > theirs,
+                "maps": maps,
+                "corrected": False,
             },
         )
 

@@ -174,6 +174,52 @@ def test_recovery_is_reported_after_a_real_outage(dog):
     assert "Working again" in events[0].payload["detail"]
 
 
+def test_recovery_needs_an_alarm_that_was_actually_sent(dog, storage):
+    """Seen in production: the live feed connected 0.7 s after the countdown
+    began, yet a minute later "Recovered — the live feed will not come up, the
+    outage lasted 1 min" arrived. Nobody had ever been told about an outage.
+
+    Elapsed time is the wrong test. A subsystem is only re-checked on its
+    poller's own cycle, so an outage of a second can look like a minute — and
+    an outage of 35 minutes can pass without a single alarm, because the next
+    attempt succeeded.
+    """
+    now = utcnow()
+    dog.report_failure("live_feed", "no connection", now)          # countdown starts
+    assert dog.report_success("live_feed", now + timedelta(minutes=1)) == []
+
+
+def test_a_long_outage_nobody_was_told_about_stays_quiet(dog):
+    """The schedule case from the same logs: it failed at 04:21 and the next
+    attempt was only due 35 minutes later, by which time it worked. No alarm
+    was ever sent, so there is nothing to recover from."""
+    now = utcnow()
+    dog.report_failure("schedule", "timeout", now)
+    assert dog.report_success("schedule", now + timedelta(minutes=35)) == []
+
+
+def test_recovery_still_arrives_after_a_real_alarm(dog):
+    now = utcnow()
+    dog.report_failure("schedule", "timeout", now)
+    assert [e.type for e in dog.report_failure(
+        "schedule", "timeout", now + timedelta(seconds=400))] == ["E8"]
+    events = dog.report_success("schedule", now + timedelta(seconds=500))
+    assert [e.type for e in events] == ["E8R"]
+
+
+def test_a_new_outage_after_a_recovery_starts_clean(dog):
+    """The alarm flag must be cleared, otherwise the next short blip would
+    produce a "Recovered" of its own."""
+    now = utcnow()
+    dog.report_failure("schedule", "timeout", now)
+    dog.report_failure("schedule", "timeout", now + timedelta(seconds=400))
+    dog.report_success("schedule", now + timedelta(seconds=500))
+
+    later = now + timedelta(hours=1)
+    dog.report_failure("schedule", "timeout", later)
+    assert dog.report_success("schedule", later + timedelta(seconds=90)) == []
+
+
 def test_blink_is_not_reported(dog):
     """A failure nobody learned about must not produce a "recovered"."""
     now = utcnow()

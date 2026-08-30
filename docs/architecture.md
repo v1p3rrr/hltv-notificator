@@ -176,7 +176,67 @@ milestones meanwhile go through the queue and are not lost.
 
 The message id is kept in the database: otherwise a restart would start a
 second live message for the same map. The lower bound on the edit interval
-(5 seconds) is hardcoded and cannot be worked around by config.
+(5 seconds) is hardcoded and cannot be worked around by config — but it applies
+to edits only, never to creating the message, or the map's card would be held
+back by a whole interval.
+
+**The live message is also the map's card: it carries E5.** The two used to be
+separate messages, and the order between them was always wrong. The reason is
+the two delivery paths: the live message goes straight to Telegram, while an
+event is only *queued* and the outbox worker wakes every five seconds and
+spaces sends 1.2 s apart. Measured on a real match: E5 queued at 09:13:24.905,
+the live message created at 09:13:25.035, E5 actually delivered at 09:13:28.189
+— the score for a map arrived three seconds before "the map has started".
+
+So where `LIVE_MESSAGE` is on, E5 is not queued at all and the live message's
+heading says what E5 would have said. A subscriber who muted E5 gets the plain
+score form instead — muting asked for exactly that. And if the message cannot
+be created for someone (Telegram refused), E5 goes to that one chat through the
+queue after all: a milestone must not be lost on a best-effort path.
+
+## When a map starts
+
+Not when the feed first names the new map — that happens in the warmup, which
+can run for twenty minutes with the score sitting at 0:0.
+
+The feed reports the warmup explicitly through `currentRoundState`, and that is
+the only reliable signal. The `live` flag is **not** one. Measured on a recorded
+map boundary:
+
+```
+warmup   live=False  round=1  0:0     177 frames
+started  live=False  round=1  0:0      64 frames   <- the map really starts here
+ended    live=True   round=1  0:1                  <- only now is live true
+```
+
+`live` turns true only once the first round has been PLAYED. Gating on it would
+announce the map after its first round was already decided.
+
+The private memo `live_map_name` is not advanced during the warmup either —
+otherwise the comparison would find nothing left to notice by the time the map
+really starts.
+
+## The end of the match: the same division of labour
+
+The feed only ever knows the current map, so on its own it cannot tell that the
+match is over. Give it the series format and it can: BO3 ends when somebody
+takes 2 maps, BO1 at 1, BO5 at 3, BO7 at 4; BO2 has no majority to take, so it
+ends when both maps are played and may legitimately end level. `best_of` comes
+from the match page and is stored in `match_state`.
+
+So "the match finished" now goes out at the same moment as the last map,
+instead of the four minutes later it took the page to notice its own status
+flip (measured on a real match: 12:09:58 and 12:14:22).
+
+The page still has the last word, and it needs no new machinery to keep it. The
+live feed emits E7 with **the same idempotency key the page machine would
+produce**. If the two agree, the unique index swallows the page's copy in
+silence. If they disagree — a forfeit, a technical decision, a map replayed —
+the key differs, the page's message goes out, and it says it is a correction so
+it does not read as a duplicate.
+
+With an unknown format nothing is guessed: the page reports the end of the
+match as it always did.
 
 ## Being careful with the source
 
@@ -436,6 +496,16 @@ judgement.
 repeated checks of the same failure send nothing while a new failure is reported
 afresh. Recovery arrives as a separate message — otherwise it is unclear whether
 it has passed.
+
+**A "Recovered" only follows an alarm that was actually sent.** Not one that was
+merely counted down: those are different moments. The countdown starts on the
+first failed attempt, while the alarm goes out only once the failure has held
+past the threshold — and it may never go out, because the next attempt happens
+on the poller's own cycle. Both halves of that were seen in production: the live
+feed connected 0.7 s after its countdown began, and the schedule recovered on
+its next attempt 35 minutes later. Both produced a "Recovered" for an outage
+nobody had ever been told about. Elapsed time is not the test; whether an alarm
+was sent is.
 
 There is a paradox about the sending queue: if Telegram is not accepting, the
 alarm about Telegram goes into that same stuck queue. That is deliberate — it

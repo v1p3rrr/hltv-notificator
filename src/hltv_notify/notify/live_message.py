@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..config import Config
 from ..state.db import Storage
@@ -41,17 +41,36 @@ class LiveMessenger:
         return max(float(self.config.live_edit_seconds), HARD_MIN_EDIT_SECONDS)
 
     async def update(self, match_id: int, snapshot: dict, *, force: bool = False,
-                     finalize: bool = False) -> None:
+                     finalize: bool = False,
+                     map_started: bool = False) -> List[str]:
         """The live message is per subscriber.
 
         It is edited in place and the message id differs per chat, so there
         cannot be one shared message for everyone.
+
+        `map_started` says this frame is the one that started the map, so
+        the message must also carry what E5 would have said. Returns the chats
+        where that did NOT get through — the caller sends them a plain E5
+        instead, because a milestone must not be lost on the best-effort path.
         """
         if not self.config.live_message or not snapshot:
-            return
+            return []
+        missed: List[str] = []
         for chat_id, for_team_id in self._recipients(match_id):
-            await self._update_one(chat_id, for_team_id, match_id, snapshot,
-                                   force=force, finalize=finalize)
+            # A subscriber who muted E5 gets the plain score message: muting
+            # asked for exactly that, and the queue will not send them E5 either.
+            carries_start = not self._muted(chat_id, for_team_id, "E5")
+            ok = await self._update_one(chat_id, for_team_id, match_id, snapshot,
+                                        force=force, finalize=finalize,
+                                        announces_start=carries_start)
+            if map_started and carries_start and not ok:
+                missed.append(chat_id)
+        return missed
+
+    def _muted(self, chat_id: str, for_team_id, event_type: str) -> bool:
+        if for_team_id is None:
+            return False
+        return event_type in self.storage.team_mutes(chat_id, for_team_id)
 
     def _recipients(self, match_id: int):
         """The same computation as the event queue's — and the same pause check.
@@ -64,28 +83,34 @@ class LiveMessenger:
                     self.storage, self.config, match_id)]
 
     async def _update_one(self, chat_id: str, for_team_id, match_id: int, snapshot: dict,
-                          *, force: bool = False, finalize: bool = False) -> None:
+                          *, force: bool = False, finalize: bool = False,
+                          announces_start: bool = False) -> bool:
+        """True means the message is in the chat and up to date."""
         map_number = int(snapshot.get("map_number") or 0)
         if map_number <= 0:
-            return
+            return False
 
         row = self.storage.live_message(chat_id, match_id, map_number)
         if row is not None and row["finalized"]:
-            return
+            return True
 
         key = (chat_id, match_id, map_number)
-        if not force:
+        if not force and row is not None:
+            # The throttle applies to edits, never to creating the message:
+            # holding the first one back would delay the map's card by the
+            # whole interval.
             elapsed = time.monotonic() - self._last_edit.get(key, 0.0)
             if elapsed < self._interval:
-                return
+                return True
 
         text = fmt.render_live(fmt.orient(snapshot, for_team_id),
-                               team_name=self.config.team_name)
+                               team_name=self.config.team_name,
+                               announces_start=announces_start)
         if row is not None and row["last_text"] == text and not finalize:
             # The score has not changed — an edit with the same text only
             # spends the rate limit.
             self._last_edit[key] = time.monotonic()
-            return
+            return True
 
         message_id = row["telegram_message_id"] if row is not None else None
         if self.config.dry_run or self.telegram is None:
@@ -106,12 +131,13 @@ class LiveMessenger:
                 log.warning("live message for match %s map %d was not updated: %s",
                             match_id, map_number, exc)
                 self._last_edit[key] = time.monotonic()
-                return
+                return False
 
         self._last_edit[key] = time.monotonic()
         self.storage.save_live_message(
             chat_id, match_id, map_number, telegram_message_id=message_id,
             text=text, finalized=finalize)
+        return True
 
     async def finalize(self, match_id: int, snapshot: dict) -> None:
         """The last edit once the map is over: freeze the final score."""

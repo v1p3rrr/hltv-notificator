@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS match_state (
     live_map_name      TEXT,   -- the last map the LIVE FEED saw
     page_seen_utc      TEXT,   -- when the MATCH PAGE first saw this match
     regulation_rounds  INTEGER,-- map format: half of regulation (usually 12)
-    overtime_rounds    INTEGER -- half of an overtime (usually 3)
+    overtime_rounds    INTEGER,-- half of an overtime (usually 3)
+    best_of            INTEGER -- series format, so the feed can tell the match is over
 );
 
 CREATE TABLE IF NOT EXISTS map_results (
@@ -202,6 +203,7 @@ class Storage:
                 "page_seen_utc": "TEXT",
                 "regulation_rounds": "INTEGER",
                 "overtime_rounds": "INTEGER",
+                "best_of": "INTEGER",
             },
             "matches": {
                 "team_id": "INTEGER",
@@ -576,6 +578,35 @@ class Storage:
         self.conn.execute(
             "UPDATE match_state SET regulation_rounds = ?, overtime_rounds = ? "
             "WHERE match_id = ?", (regulation, overtime, match_id))
+
+    def set_best_of(self, match_id: int, best_of: Optional[int]) -> None:
+        """The series format from the match page.
+
+        Without it the live feed cannot tell that the match is over: it only
+        ever knows the current map. With it, the last map's result and the
+        "match finished" message arrive at the same moment instead of four
+        minutes apart.
+        """
+        if not best_of:
+            return
+        self.conn.execute("UPDATE match_state SET best_of = ? WHERE match_id = ?",
+                          (int(best_of), match_id))
+
+    def best_of(self, match_id: int) -> Optional[int]:
+        row = self.get_state(match_id)
+        return row["best_of"] if row else None
+
+    def finished_event_keys(self, match_id: int) -> List[str]:
+        """The E7 keys already sent for this match, whoever they went to.
+
+        Used to tell a first "match finished" from a correction: if the page
+        later disagrees with the feed about the series score, the key differs,
+        the message goes out again, and it should say it is a correction rather
+        than look like a duplicate.
+        """
+        return [row["idempotency_key"] for row in self.conn.execute(
+            "SELECT idempotency_key FROM sent_events "
+            "WHERE event_type = 'E7' AND match_id = ?", (match_id,))]
 
     def set_progress(self, match_id: int, signature: str, since: datetime) -> None:
         """A fingerprint of the match moving forward and the moment it last
