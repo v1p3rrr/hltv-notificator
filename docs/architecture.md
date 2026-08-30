@@ -1,439 +1,470 @@
-# Архитектура
+# Architecture
 
-Документ отвечает на вопрос «почему именно так», а не только «как». Почти
-каждое решение здесь родилось из наблюдения за живым HLTV, и без этого
-контекста часть кода выглядит переусложнённой.
+This document answers "why this way", not just "how". Almost every decision
+here came out of watching the live HLTV, and without that context parts of the
+code look over-engineered.
 
-## Общая схема
+## The overall shape
 
 ```
-┌──────────────────┐  страница команды, раз в 3-30 мин
+┌──────────────────┐  team page, every 3-30 min
 │ SchedulePoller   │──────────────┐
 └──────────────────┘              │
                                   ▼
 ┌──────────────────┐        ┌──────────────┐        ┌──────────────┐
-│ MatchPoller      │───────▶│  Машины      │───────▶│  Notifier    │
-│ страница матча   │        │  состояний   │ события│  очередь +   │
-└────────┬─────────┘        │  + Storage   │  с     │  повторы     │
-         │ поднимает        └──────────────┘  ключом└──────┬───────┘
+│ MatchPoller      │───────▶│    State     │───────▶│  Notifier    │
+│ match page       │        │   machines   │ events │  queue +     │
+└────────┬─────────┘        │  + Storage   │ with a │  retries     │
+         │ brings up        └──────────────┘  key   └──────┬───────┘
          ▼                         ▲                       ▼
 ┌──────────────────┐               │                  Telegram
 │ LiveSupervisor   │───────────────┘
-│   LiveWorker     │  живой фид, только на время матча
-│   (по одному     │
-│    на матч)      │──────▶ LiveMessenger ─────────▶ Telegram (editMessageText)
-└──────────────────┘        живое сообщение, мимо очереди
+│   LiveWorker     │  live feed, only while a match runs
+│   (one per       │
+│    match)        │──────▶ LiveMessenger ─────────▶ Telegram (editMessageText)
+└──────────────────┘        the live message, around the queue
 ```
 
-Компоненты не вызывают друг друга напрямую. Источники записывают наблюдения,
-машины состояний рождают события, нотификатор отправляет. Смысл разделения
-один: **дедупликация живёт в одном месте**, а не размазана по коду.
+The components do not call each other directly. Sources record observations,
+the state machines give birth to events, the notifier sends them. There is one
+reason for the split: **deduplication lives in one place** rather than being
+smeared across the code.
 
-## Главный принцип: событие рождается на ПЕРЕХОДЕ
+## The main principle: an event is born on a TRANSITION
 
-Это не стилистика, а единственное, что спасает от лавины дублей.
+This is not a matter of style but the only thing that saves you from an
+avalanche of duplicates.
 
-* Страница матча опрашивается раз в минуту и всё это время говорит одно и то же.
-* Живой фид присылает полное состояние табло **по нескольку раз в секунду**.
-* При каждом подключении фид **проигрывает историю заново**. На записи матча
-  2397053 за час случилось 15 подключений, и на серии из двух карт накопилось
-  **150 событий `MatchStarted`**.
+* The match page is polled every minute and says the same thing all that time.
+* The live feed sends the full scoreboard state **several times a second**.
+* On every connect the feed **replays its history from the beginning**. Over a
+  recording of match 2397053 there were 15 connects in an hour, and across a
+  two-map series **150 `MatchStarted` events** piled up.
 
-Поэтому логика «увидели счёт 13 — шлём уведомление» даст дубли гарантированно.
-Вместо неё: наблюдение сравнивается с сохранённым состоянием, и событие
-возникает только если состояние изменилось. По той же причине **события лога
-фида (`Kill`, `MatchStarted`, `RoundEnd`) не используются нигде** — решения
-принимаются по снимкам `scoreboard`.
+So the logic "we saw a score of 13, send a notification" is guaranteed to
+produce duplicates. Instead: the observation is compared with the stored state,
+and an event arises only if the state changed. For the same reason **the feed's
+log events (`Kill`, `MatchStarted`, `RoundEnd`) are not used anywhere** —
+decisions are made from `scoreboard` snapshots.
 
-## Идемпотентность
+## Idempotency
 
-Второй рубеж — уникальный индекс `sent_events.idempotency_key`. Запись события
-и постановка сообщения в очередь идут **одной транзакцией**: если бы журнал
-записался, а очередь нет, уведомление потерялось бы навсегда, потому что
-повторно оно уже не родится.
+The second line of defence is the unique index on
+`sent_events.idempotency_key`. Recording the event and queueing the message
+happen in **one transaction**: if the journal were written and the queue were
+not, the notification would be lost forever, because it will never be born
+again.
 
-Проверки «есть ли уже такое в базе» отдельным запросом нет намеренно — это
-гонка. Вставка либо проходит, либо нет.
+There is deliberately no separate "is this already in the database" query —
+that would be a race. An insert either goes through or does not.
 
-Ключи:
+The keys:
 
 ```
-E1:<матч>:new
-E2:<матч>:moved:<новое_время_utc>
-E3:<матч>:cancelled
-E4:<матч>:started
-E5:<матч>:map:<n>:started:<карта>
-E6:<матч>:map:<n>:result:<наш>-<их>
-E7:<матч>:finished:<карт_нам>-<карт_им>
-E8:<подсистема>:<причина>:<час_utc>
-E9:<матч>:map:<n>:round:<r>:<steam_id>:<фраги>
+E1:<match>:new
+E2:<match>:moved:<new_time_utc>
+E3:<match>:cancelled
+E4:<match>:started
+E5:<match>:map:<n>:started:<map>
+E6:<match>:map:<n>:result:<ours>-<theirs>
+E7:<match>:finished:<maps_ours>-<maps_theirs>
+E8:<subsystem>:<reason>:<utc_hour>
+E9:<match>:map:<n>:round:<r>:<steam_id>:<kills>
 ```
 
-Ключ обязан зависеть **только от содержания**. Попади в него время получения
-ответа — дедупликация перестала бы работать. Час в ключе E8 — компромисс: не
-шлём «я ослеп» на каждой неудачной попытке, но и не глушим проблему навсегда.
+A key must depend **only on the content**. Let the time the response arrived
+into it and deduplication stops working. The hour in the E8 key is a
+compromise: we do not send "I have gone blind" on every failed attempt, but
+neither do we mute the problem forever.
 
-## Источники и их особенности
+## The sources and their quirks
 
-### Страница команды — расписание
+### The team page — the schedule
 
-`/team/<id>/<slug>`. Взята вместо очевидного `/matches?team=<id>`, потому что
-последний **запрещён robots.txt**, а данные там те же.
+`/team/<id>/<slug>`. Chosen instead of the obvious `/matches?team=<id>`,
+because the latter is **disallowed by robots.txt** while the data is the same.
 
-Время берётся из атрибута `data-unix` (epoch в миллисекундах), а не из текста:
-HLTV рендерит время в поясе браузера, и «17:00» у разных читателей означает
-разное.
+The time comes from the `data-unix` attribute (epoch in milliseconds), not from
+the text: HLTV renders the time in the browser's timezone, and "17:00" means
+different things to different readers.
 
-Своя команда на странице идёт первой, а счёт даётся с её точки зрения — но
-парсер на порядок не полагается и сверяется по id.
+Our own team comes first on its page and the score is given from its point of
+view — but the parser does not rely on the ordering and matches by id.
 
-### Страница матча — состояние и счёт по картам
+### The match page — state and per-map scores
 
-**Ловушка первая.** Селектор `[data-unix]` без скоупа берёт время **чужого**
-матча: первым в DOM идёт виджет `.fbw-vp-header-time` с избранными матчами.
-Обязательно `.timeAndEvent [data-unix]`, иначе сервис шлёт ложные E2.
+**Trap one.** An unscoped `[data-unix]` selector picks up **another** match's
+time: the first thing in the DOM is the `.fbw-vp-header-time` widget with
+featured matches. `.timeAndEvent [data-unix]` is mandatory, otherwise the
+service sends false E2 events.
 
-**Ловушка вторая, дороже.** У **идущей** карты счёт в `.mapholder` тоже
-числовой — это текущий счёт, а не финальный. Правило «есть счёт, значит карта
-сыграна» прислало бы E6 с промежуточным счётом (поймано на живом матче: в
-секции стояло 5:7 при реальном 12:11). Классы `won`/`lost` не спасают: на
-идущей карте ими помечен текущий лидер.
+**Trap two, the more expensive one.** A **running** map also has a numeric
+score in its `.mapholder` — that is the current score, not the final one. The
+rule "there is a score, so the map is played" would have sent an E6 with an
+in-play score (caught on a live match: the section read 5:7 while the real
+score was 12:11). The `won`/`lost` classes do not save you: on a running map
+they mark the current leader.
 
-Признак завершённости — **появление ссылки `.results-stats`** на статистику
-карты: HLTV заводит эту запись ровно в момент окончания. Для завершённого
-матча признак дополняется статусом страницы, потому что у форфейта статистики
-может не быть вовсе.
+The completion signal is the **appearance of the `.results-stats` link** to the
+map statistics: HLTV creates that record exactly at the moment the map ends.
+For a finished match the signal is backed by the page status, because a forfeit
+may have no statistics at all.
 
-### Живой фид (scorebot)
+### The live feed (scorebot)
 
-`scorebot-lb.hltv.org`, **Engine.IO v3 поверх polling**. Websocket-апгрейд
-отдаёт **403** любому не-браузерному клиенту — проверено и на голом
-`websockets`, и на `curl_cffi.ws_connect`, с Origin, Referer, браузерным UA и
-прогретыми куками. Polling проходит даже на холодной сессии, и браузер сам
-начинает с него.
+`scorebot-lb.hltv.org`, **Engine.IO v3 over polling**. The websocket upgrade
+returns **403** to every non-browser client — verified with bare `websockets`
+and with `curl_cffi.ws_connect`, with Origin, Referer, a browser UA and warmed
+cookies. Polling goes through even on a cold session, and a browser starts with
+it itself.
 
-Две детали, каждая из которых даёт **молчаливый отказ без ошибки**:
+Two details, each of which produces a **silent failure with no error**:
 
-* аргумент `readyForMatch` обязан быть JSON-**строкой**, а не объектом;
-* подписываться можно только **после** пакета `40` — на реконнекте он приходит
-  не вместе с handshake, а следующим poll'ом.
+* the `readyForMatch` argument must be a JSON **string**, not an object;
+* you may only subscribe **after** packet `40` — on a reconnect it arrives not
+  with the handshake but on the next poll.
 
-Долгий poll без данных (45 секунд) — **норма**, а не обрыв: фид молчит, когда
-на карте пауза, и весь перерыв между картами проходит так. Считать это обрывом
-значит переподключаться каждые 45 секунд ровно тогда, когда ждёшь начала
-следующей карты.
+A long poll with no data (45 seconds) is **normal**, not a disconnect: the feed
+goes quiet when the map is paused, and the whole break between maps passes like
+that. Treating it as a disconnect means reconnecting every 45 seconds exactly
+when you are waiting for the next map to start.
 
-Смысл флага `live` — «карта в игре», а не «матч идёт»: в конце карты он
-остаётся `true`, а в разминке следующей становится `false`.
+The meaning of the `live` flag is "the map is in play", not "the match is
+running": at the end of a map it stays `true`, and during the next one's warmup
+it becomes `false`.
 
-Подробности и сырые замеры — [recon/R4-scorebot.md](recon/R4-scorebot.md).
+Details and raw measurements: [recon/R4-scorebot.md](recon/R4-scorebot.md).
 
-## Правило конца карты (D7): два источника, разные роли
+## The map-completion rule (D7): two sources, different roles
 
-**Фид решает, страница подтверждает.**
+**The feed decides, the page confirms.**
 
-Фид знает счёт по раундам сразу, поэтому E6 рождается по счёту в момент
-победного раунда. Пороги считает `scoring.py` от `regulationHalfLength` и
-`overtimeHalfLength`, которые присылает сам фид: 13, затем 16, 19, 22. Никаких
-«13 раундов» в коде — иначе первый же MR3-овертайм или нестандартный регламент
-всё сломает. 12:12 и 15:15 картой не считаются.
+The feed knows the round score immediately, so E6 is born from the score at the
+moment of the winning round. The thresholds are computed by `scoring.py` from
+`regulationHalfLength` and `overtimeHalfLength`, which the feed itself sends:
+13, then 16, 19, 22. No hardcoded "13 rounds" anywhere — the first MR3 overtime
+or non-standard format would break it. 12:12 and 15:15 do not count as a
+finished map.
 
-Страница даёт тот же результат, но **с задержкой**: её секция карт обновляется
-по половинам. Она остаётся источником истины для случаев, которым арифметика
-не подчиняется — форфейт, техническое поражение, отказ команды.
+The page gives the same result but **later**: its maps section updates by
+halves. It remains the source of truth for the cases arithmetic does not cover
+— a forfeit, a technical loss, a team withdrawing.
 
-Дубля при двух источниках не будет: событие по карте рождается один раз, кто
-бы ни принёс его первым (guard по записанным картам плюс уникальный ключ).
+There will be no duplicate with two sources: the event for a map is born once,
+whoever brings it first (a guard on the recorded maps plus the unique key).
 
-## Мультикиллы (E9)
+## Multikills (E9)
 
-Считаются по **приросту фрагов в кадрах табло** между началом раунда и текущим
-моментом, а не по событиям `Kill`. Причина та же, что и везде: лог при
-подключении проигрывается заново. Побочная выгода — алерт в момент N-го фрага,
-а не в конце раунда.
+Computed from the **increment in kills in scoreboard frames** between the start
+of a round and the current moment, not from `Kill` events. The reason is the
+same as everywhere: the log is replayed on connect. A side benefit is the alert
+at the Nth kill rather than at the end of the round.
 
-Фраги в кадре накоплены **за карту**, поэтому база отсчёта сбрасывается на
-каждом раунде; без этого каждый следующий раунд выглядел бы мультикиллом.
-Разминка игнорируется — там дезматч.
+Kills in a frame are accumulated **over the map**, so the baseline is reset on
+every round; without that every subsequent round would look like a multikill.
+The warmup is ignored — that is deathmatch.
 
-Направление ошибок безопасное: после реконнекта посреди раунда база берётся
-заново, поэтому мультикилл может быть **пропущен, но не выдуман**.
+Errors lean the safe way: after a reconnect mid-round the baseline is taken
+afresh, so a multikill can be **missed but never invented**.
 
-## Живое сообщение
+## The live message
 
-Идёт **мимо очереди outbox**, и это осознанно: у него нет ключа
-идемпотентности, и досылать устаревший кадр счёта после сбоя незачем —
-следующая правка через несколько секунд принесёт актуальный. Вехи при этом
-идут через очередь и не теряются.
+It goes **around the outbox queue**, and that is deliberate: it has no
+idempotency key, and there is no point re-delivering a stale score frame after
+a failure — the next edit a few seconds later brings the current one. The
+milestones meanwhile go through the queue and are not lost.
 
-Id сообщения хранится в базе: иначе после рестарта сервис завёл бы на ту же
-карту второе живое сообщение. Нижняя граница интервала правок (5 секунд)
-зашита в код и конфигом не обходится.
+The message id is kept in the database: otherwise a restart would start a
+second live message for the same map. The lower bound on the edit interval
+(5 seconds) is hardcoded and cannot be worked around by config.
 
-## Бережность к источнику
+## Being careful with the source
 
-Единый HTTP-слой (`http.py`) — единственная точка выхода в сеть. Обычные
-`requests`/`httpx` получают **403** там, где браузер получает данные: отсев
-идёт по TLS-фингерпринту, а не по заголовкам. Их перебор бесполезен, поэтому
-`curl_cffi` с профилем impersonation с самого начала.
+The single HTTP layer (`http.py`) is the only point of egress to the network.
+Ordinary `requests`/`httpx` get a **403** where a browser gets data: the
+filtering is by TLS fingerprint, not by headers. Permuting them is useless,
+hence `curl_cffi` with an impersonation profile from the very beginning.
 
-Потолок **1 запрос в 30 секунд** зашит в код и конфигом не поднимается.
-Запросы строго последовательные, с джиттером ±20%. Ожидание сделано циклом, а
-не одиночным `sleep`: таймер возвращает управление на несколько миллисекунд
-раньше срока, и потолок систематически недотягивал бы.
+The ceiling of **1 request every 30 seconds** is hardcoded and cannot be raised
+by config. Requests are strictly sequential, with ±20% jitter. The wait is a
+loop rather than a single `sleep`: the timer returns control a few milliseconds
+early and the ceiling would systematically fall short.
 
-**Long-poll живого фида под потолок не попадает** — это удерживаемое
-соединение, одно на матч, а не частый опрос.
+**The live feed's long poll does not fall under the ceiling** — it is a held
+connection, one per match, not frequent polling.
 
-`403` обрабатывается отдельно от сетевых сбоев: это не авария, а «отойди».
-Пауза минутами, а опрос страницы продолжает работать.
+`403` is handled separately from network failures: it is not an outage but a
+"back off". The pause is measured in minutes while page polling keeps working.
 
-## Кому уходит уведомление
+## Who a notification goes to
 
-Получателей считает `notify/audience.py` — и это ЕДИНСТВЕННОЕ место, где
-проверяется пауза. Раньше их было два: очередь событий и живое сообщение со
-счётом, — и они разошлись. Очередь про паузу знала, живое сообщение нет,
-поэтому нажавший «Тишина» продолжал получать счёт по ходу карты. Правило
-«проверить в двух местах» невыполнимо; правильный вывод — чтобы место было
-одно.
+The recipients are computed by `notify/audience.py` — and that is the ONLY
+place the pause is checked. There used to be two: the event queue and the live
+score message, and they drifted apart. The queue knew about the pause, the live
+message did not, so someone who pressed "Quiet" kept receiving the score as the
+map went on. The rule "check it in two places" is unenforceable; the right
+conclusion is to have one place.
 
-Там же вторая половина того же дефекта: ветка «у матча нет связей с командами»
-раньше отдавала чат из конфига напрямую, минуя и список подписчиков, и паузу.
-Так выглядит база сразу после обновления, пока страница команды не опрошена
-заново, — и в этот момент поставивший паузу получал уведомления, а тот, кто
-паузу не ставил, не получал ничего. Теперь такой матч показывается всем, кто
-на связи.
+The other half of the same defect lives there too: the "this match has no team
+links" branch used to hand back the chat from the config directly, bypassing
+both the subscriber list and the pause. That is what the database looks like
+right after an upgrade, until the team page is polled again — and at that
+moment the person who had paused received notifications while the person who
+had not received nothing. Now such a match is shown to everyone who is
+listening.
 
-Очередь добавляет к этому то, что знает только она: адресные события
-(напоминания идут одному чату — интервалы у всех разные) и глушение по типам.
+The queue adds what only it knows: targeted events (a reminder goes to one
+chat — the intervals differ per person) and muting by type.
 
-## Куда сервису позволено ходить
+## Where the service is allowed to go
 
-Список хостов закрытый и лежит в коде (`config.ALLOWED_HOSTS`), проверка — на
-самом выходе в сеть, в `http.py` и у клиента фида.
+The host list is closed and lives in code (`config.ALLOWED_HOSTS`), and the
+check sits at the network egress itself, in `http.py` and in the feed client.
 
-Это не перестраховка, а закрытая дыра. Адрес матча раньше собирался склейкой
-`HLTV_BASE + href`, где `href` брался со страницы HLTV. `HLTV_BASE` не
-заканчивается слэшем, поэтому `href` вида `@10.0.0.1:8080/matches/1/x` давал
-`https://www.hltv.org@10.0.0.1:8080/matches/1/x`: `www.hltv.org` тут — userinfo,
-а запрос уходит на `10.0.0.1`. Проверено на живом libcurl — идёт именно туда.
-Варианту `.evil.example/matches/1/x` не нужна была даже собака. Адрес
-сохранялся в базу и потом запрашивался каждую минуту, то есть чужая разметка
-заставляла сервис долбиться в локальную сеть с домашнего IP владельца.
+This is not belt-and-braces but a closed hole. The match address used to be
+assembled by concatenating `HLTV_BASE + href`, where `href` came off the HLTV
+page. `HLTV_BASE` does not end in a slash, so an `href` like
+`@10.0.0.1:8080/matches/1/x` produced
+`https://www.hltv.org@10.0.0.1:8080/matches/1/x`: `www.hltv.org` is userinfo
+there and the request goes to `10.0.0.1`. Verified against a live libcurl — it
+goes exactly there. The variant `.evil.example/matches/1/x` did not even need
+the at-sign. The address was saved to the database and then requested every
+minute, meaning foreign markup could make the service hammer the local network
+from the owner's home IP.
 
-Починка двухслойная:
+The fix has two layers:
 
-1. адрес матча собирается из **проверенного числа**, а не из строки:
-   `f"{HLTV_BASE}/matches/{match_id}/{slug}"`, где `slug` — только
-   `[A-Za-z0-9_-]`, то есть из сегмента пути не выбраться;
-2. хост проверяется ещё раз перед самим запросом — чтобы сработало и на
-   записи, попавшей в базу до починки.
+1. the match address is assembled from a **validated number**, not from a
+   string: `f"{HLTV_BASE}/matches/{match_id}/{slug}"`, where `slug` is only
+   `[A-Za-z0-9_-]`, so there is no getting out of one path segment;
+2. the host is checked once more right before the request — so it also fires on
+   a record written to the database before the fix.
 
-Проверяется именно `hostname` из разбора URL, а не начало строки: `startswith`
-здесь бесполезен, ровно на нём атака и строится.
+What is compared is the `hostname` from the parsed URL, not the start of the
+string: `startswith` is useless here, and the attack is built on exactly that.
 
-## Прокси
+## Proxy
 
-Выхода в сеть три — страницы HLTV, живой фид, Bot API Telegram — и у каждого
-своя сессия `curl_cffi`. Прокси выбирается один раз при создании сессии, по её
-базовому адресу, из стандартных `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/
-`NO_PROXY` (`proxy.py`). Своих переменных не заведено намеренно: это тот
-случай, когда общепринятое имя лучше собственного.
+There are three ways out to the network — HLTV pages, the live feed, the
+Telegram Bot API — each with its own `curl_cffi` session. The proxy is chosen
+per request address (not per session) from the standard
+`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` (`proxy.py`). No custom
+variables were introduced, deliberately: this is the case where the common name
+beats a private one. Per-address selection is what lets a `NO_PROXY` exception
+apply precisely — the feed client, for one, talks to two hosts: the feed itself
+and the match page it warms up on.
 
-Разбор написан руками, хотя переменные окружения умеет читать и сам libcurl.
-Причины конкретные, все три — наблюдения, а не предосторожность:
+The parsing is written by hand even though libcurl can read the environment
+itself. The reasons are concrete, and all three are observations rather than
+precautions:
 
-* `curl_cffi` их не читает вовсе. Поле `trust_env` у сессии есть, но на выбор
-  прокси не влияет — под ним просто нет кода;
-* libcurl читает, но `HTTP_PROXY` в ВЕРХНЕМ регистре игнорирует намеренно
-  (наследие CGI, где эта переменная приходила от клиента). В `compose.yaml`
-  пишут именно в верхнем — настройка молча не сработала бы;
-* поддержка CIDR в `NO_PROXY` зависит от версии libcurl.
+* `curl_cffi` does not read it at all. The session has a `trust_env` field, but
+  it does not affect proxy selection — there is simply no code under it;
+* libcurl does read it, but deliberately ignores `HTTP_PROXY` in UPPERCASE (a
+  CGI legacy, where the variable came from the client). And uppercase is
+  exactly how it is written in `compose.yaml` — the setting would have silently
+  done nothing;
+* CIDR support in `NO_PROXY` depends on the libcurl version.
 
-Отсюда неочевидная деталь: при попадании адреса в `NO_PROXY` сервис
-выставляет прокси в **пустую строку**, а не «не выставляет». Пустая строка для
-libcurl означает «без прокси» и перебивает переменную окружения; отсутствие же
-настройки вернуло бы его к чтению `ALL_PROXY`, и обход бы не сработал. Это
-проверено вживую: с дохлым `ALL_PROXY` и `NO_PROXY=hltv.org` страница
-команды скачивается.
+Hence a non-obvious detail: when an address matches `NO_PROXY` the service sets
+the proxy to an **empty string** rather than "does not set it". An empty string
+means "no proxy" to libcurl and overrides the environment variable; the absence
+of a setting would send it back to reading `ALL_PROXY` and the bypass would not
+work. This is verified live: with a dead `ALL_PROXY` and `NO_PROXY=hltv.org`
+the team page downloads.
 
-## Остановка
+## Shutdown
 
-По SIGTERM опросы, сторож, напоминания и живой фид гасятся сразу: они только
-порождают новое, а нового уже не надо. Бот при этом висит в `getUpdates` до
-двадцати пяти секунд — ждать его нельзя, у докера свой таймер.
+On SIGTERM the pollers, the watchdog, the reminders and the live feed are
+stopped at once: they only produce new work, and new work is no longer wanted.
+The bot meanwhile hangs in `getUpdates` for up to twenty-five seconds — we
+cannot wait for it, Docker has its own timer.
 
-Очередь — исключение, её **не отменяют**. Отмена посреди `send_message`
-оставила бы сообщение отправленным в Telegram, но не отмеченным в базе, и при
-следующем запуске оно ушло бы человеку второй раз. Вместо этого она выходит
-сама (флаг остановки уже взведён) и делает последний проход: событие могло
-родиться секунду назад — например, конец карты у матча, доигравшегося прямо во
-время рестарта, — и пролежать до следующего запуска ему незачем.
+The queue is the exception and is **not cancelled**. A cancel in the middle of
+`send_message` would leave the message sent to Telegram but not marked in the
+database, and on the next start it would go to the person a second time.
+Instead it exits on its own (the stop flag is already set) and makes a final
+pass: an event may have been born a second ago — the end of a map in a match
+that finished right during the restart, say — and there is no reason for it to
+sit until the next start.
 
-Проход ограничен по времени, а всё ожидание — восемью секундами, что меньше
-`stop_grace_period` в compose. Не успевшее никуда не денется: строки очереди
-лежат в базе и уйдут при старте.
+The pass is time-bounded, and the whole wait is eight seconds, less than
+`stop_grace_period` in compose. Whatever did not make it goes nowhere: the
+queue rows are in the database and go out on the next start.
 
-## Модель данных
+## The data model
 
-| Таблица | Зачем |
+| Table | What for |
 |---|---|
-| `matches` | известные матчи, снимок и его хеш |
-| `match_state` | состояние, текущая карта, счёт, отпечаток продвижения |
-| ↳ `current_map_name` | **только для отображения**: пишут обе машины |
-| ↳ `live_map_name` | приватная памятка живой машины (по ней решается E5) |
-| ↳ `page_seen_utc` | приватная отметка машины страницы (первое наблюдение) |
-| `map_results` | результаты сыгранных карт |
-| `sent_events` | **журнал отправленного, уникальный индекс по ключу** |
-| `outbox` | очередь исходящих с повторами |
-| `live_messages` | id живого сообщения на карту |
-| `raw_log` | сырые ответы для отладки, с обрезкой по возрасту |
-| `meta` | флаг первого запуска, состав карт матча, время последнего опроса |
+| `matches` | known matches, the snapshot and its hash |
+| `match_state` | state, current map, score, the progress fingerprint |
+| ↳ `current_map_name` | **display only**: written by both machines |
+| ↳ `live_map_name` | the live machine's private memo (E5 is decided from it) |
+| ↳ `page_seen_utc` | the page machine's private marker (first observation) |
+| `map_results` | the results of played maps |
+| `sent_events` | **the journal of what was sent, unique index on the key** |
+| `outbox` | the outgoing queue with retries |
+| `live_messages` | the id of the live message per map |
+| `raw_log` | raw responses for debugging, pruned by age |
+| `meta` | the first-run flag, a match's map lineup, the last poll time |
 
-Всё время — **в UTC**. Конвертация только при рендере, через `zoneinfo`.
-Пояс отображения — `TZ_DISPLAY`, по умолчанию `Europe/Moscow`.
+All times are **in UTC**. Conversion happens only at render time, through
+`zoneinfo`. The display zone is `TZ_DISPLAY`, `Europe/Moscow` by default.
 
-База в автокоммите с `synchronous=NORMAL`: с `FULL` первичное заполнение в
-контейнере занимало 21 секунду вместо 0.2 — fsync на каждый INSERT.
+The database is in autocommit with `synchronous=NORMAL`: with `FULL` the
+initial fill took 21 seconds in a container instead of 0.2 — an fsync per
+INSERT.
 
-## Приватное состояние против общего
+## Private state versus shared state
 
-Машина страницы и живая машина пишут в одну таблицу, и это нормально ровно до
-тех пор, пока они не начинают делать по общим полям выводы **о собственной
-истории**. На этом проект уже обжёгся дважды:
+The page machine and the live machine write into one table, and that is fine
+right up until they start drawing conclusions **about their own history** from
+shared fields. The project has been burned by this twice:
 
-* живая машина спрашивала у `current_map_name` «сменилась ли карта», но это
-  поле пишет и страница — причём именем ПРЕДСТОЯЩЕЙ карты. Ответ всегда был
-  «не сменилась», и E5 не рождался ни разу;
-* машина страницы выводила «я этот матч ещё не видела» из `last_source`, а
-  живой фид переписывает его несколько раз в секунду. Ответ всегда был «не
-  видела», и E6 со страницы молчал всё время работы фида — то есть страница
-  переставала подстраховывать ровно тогда, когда фид что-то пропускал.
+* the live machine asked `current_map_name` "has the map changed", but that
+  field is written by the page too — and with the name of the UPCOMING map. The
+  answer was always "it has not", and E5 was never born;
+* the page machine derived "I have not seen this match yet" from `last_source`,
+  which the live feed rewrites several times a second. The answer was always "I
+  have not", and page-side E6 stayed silent the whole time the feed ran — that
+  is, the page stopped backing anything up exactly when the feed missed
+  something.
 
-Правило: **вывод о своей истории делается только по своему полю.** Общие поля
-годятся для отображения и для данных, но не для решений.
+The rule: **a conclusion about your own history is drawn only from your own
+field.** Shared fields are fine for display and for data, but not for
+decisions.
 
-## Несколько отслеживаемых команд
+## Several tracked teams
 
-Список команд живёт в таблице `teams` и правится через бота. Расписание
-опрашивается по каждой включённой команде отдельно; неудача по одной не мешает
-остальным, а отказом источника считается только провал по всем сразу.
+The team list lives in the `teams` table and is edited through the bot. The
+schedule is polled per enabled team separately; a failure on one does not get
+in the way of the others, and only a failure across all of them counts as a
+source failure.
 
-Флаг первого запуска — **свой на каждую команду** (`bootstrapped:<id>`).
-Иначе добавление команды посреди работы было бы шумным: у неё сразу найдётся
-полтора десятка сыгранных матчей, и на каждый прилетело бы E1.
+The first-run flag is **per team** (`bootstrapped:<id>`). Otherwise adding a
+team mid-run would be noisy: it immediately has a dozen and a half played
+matches, and every one of them would produce an E1.
 
-### Матч двух отслеживаемых команд
+### A match between two tracked teams
 
-Матч один, значит и уведомления о нём должны прийти по одному разу. Но каждая
-команда видит его со своей стороны, и наивно счёт ориентируется на «нашу»
-команду. Ключ `E6:<матч>:map:2:result:13-10` от второй команды превратился бы
-в `...:result:10-13` — другой ключ, а значит **второе уведомление о том же**.
+There is one match, so notifications about it must arrive once each. But each
+team sees it from its own side, and naively the score is oriented on "our"
+team. The key `E6:<match>:map:2:result:13-10` would become `...:result:10-13`
+for the second team — a different key, and therefore **a second notification
+about the same thing**.
 
-Поэтому у матча есть **каноническая перспектива** (`matches.team_id`): счёт и
-имя команды в сообщении берутся от неё одной. Выбирается меньший id из
-отслеживаемых участников — выбор произволен, но обязан быть детерминированным.
+That is why a match has a **canonical perspective** (`matches.team_id`): the
+score and the team name in the message are taken from that one team alone. It
+is the team that saw the match first — the choice is arbitrary but must be
+deterministic.
 
-Ещё важнее: перспектива **не меняется** после того, как выбрана
-(`COALESCE(matches.team_id, excluded.team_id)`). Если бы новая перезаписывала
-старую, добавление второй команды посреди идущего матча перевернуло бы счёт,
-ключи стали бы зеркальными и всё уже отправленное разослалось бы заново.
+More importantly: the perspective **does not change** once chosen
+(`COALESCE(matches.team_id, excluded.team_id)`). If a new one overwrote the
+old, adding a second team in the middle of a running match would flip the
+score, the keys would become mirrored and everything already sent would go out
+again.
 
-**Мультикиллы — исключение, и намеренное.** Их ключ содержит `steam_id`,
-поэтому четвёрки игроков обеих команд приходят каждая своя: это разные
-хайлайты, и глушить один ради другого нет смысла.
+**Multikills are the exception, deliberately.** Their key contains the
+`steam_id`, so a 4k by a player of either team arrives on its own: those are
+different highlights and there is no sense muting one for the other's sake.
 
-## Несколько подписчиков
+## Several subscribers
 
-Уведомление адресное. Нотификатор для каждого события определяет получателей и
-кладёт в очередь СВОЮ строку каждому: `outbox.chat_id`, а ключ журнала
-дополняется адресатом (`<chat>|<ключ>`). Иначе событие об общем матче ушло бы
-только одному — уникальный индекс отсёк бы остальных.
+A notification is addressed. For every event the notifier works out the
+recipients and puts ITS OWN row in the queue for each: `outbox.chat_id`, with
+the journal key extended by the recipient (`<chat>|<key>`). Otherwise an event
+about a shared match would reach only one of them — the unique index would cut
+the rest off.
 
-Кому что уходит:
+Who gets what:
 
-| Событие | Получатели |
+| Event | Recipients |
 |---|---|
-| про матч (E1-E7) | подписчики, следящие за любым участником |
-| мультикилл (E9) | те, кто следит за командой **этого игрока** |
-| служебное (E8, E8R) | все включённые подписчики |
+| about a match (E1-E7) | subscribers following any participant |
+| a multikill (E9) | those following **that player's** team |
+| service (E8, E8R) | all enabled subscribers |
 
-**Разворот счёта.** Событие ориентировано на каноническую команду матча. Тому,
-кто следит за её соперником, показывается зеркальный счёт — иначе он увидит
-«13:10» там, где для него это «10:13». Разворачивает `format.orient` при
-рендере, поэтому в очереди у разных подписчиков лежат разные тексты одного
-события.
+**Turning the score around.** The event is oriented on the match's canonical
+team. Someone following its opponent is shown the mirrored score — otherwise
+they read "13:10" where for them it is "10:13". `format.orient` does the
+turning at render time, so different subscribers have different texts of the
+same event sitting in the queue.
 
-**Перспектива матча запоминается один раз** — в `matches.team_id`, той
-командой, которая увидела матч первой; `canonical_team()` читает именно её.
-Пока он возвращал просто меньший id из участников, перспектива переворачивалась
-на ровном месте: стоило посреди матча добавить через бота команду с меньшим id,
-и счёт по уже сыгранным картам менялся местами, а следующие сообщения о том же
-матче противоречили предыдущим. Защита `COALESCE` в `upsert_match` при этом
-исправно стояла — но на столбце, который никто не читал.
+**The match perspective is remembered once** — in `matches.team_id`, by the
+team that saw the match first; `canonical_team()` reads exactly that. While it
+returned simply the lower id among the participants, the perspective flipped out
+of nowhere: add a team with a lower id through the bot mid-match, and the scores
+of already played maps swapped over while the next messages about the same match
+contradicted the previous ones. The `COALESCE` guard in `upsert_match` was
+standing there faithfully all along — but on a column nobody read.
 
-**Глушение** — на пару «подписчик + команда» (`teams.muted_events`). Правило
-для матча двух отслеживаемых команд: событие уходит, если его хочет **хотя бы
-одна** из команд подписчика в этом матче. Иначе одна команда молча глушила бы
-уведомления про другую.
+**Muting** is on the pair "subscriber + team" (`teams.muted_events`). The rule
+for a match between two tracked teams: the event goes out if **at least one** of
+that subscriber's teams in the match wants it. Otherwise one team would silently
+mute notifications about the other.
 
-**Белый список.** У бота публичный адрес, и без ограничения команду ему отдаст
-любой, кто его найдёт. По умолчанию отвечаем только перечисленным в
-`TELEGRAM_CHAT_ID` (через запятую); остальным — молчание, чтобы не подтверждать
-существование бота. Исключение — `/whoami`: свой id человек должен узнать,
-иначе его некому внести в список.
+**The whitelist.** The bot has a public address, and without a restriction
+anyone who finds it could command it. By default we answer only those listed in
+`TELEGRAM_CHAT_ID` (comma separated); everyone else gets silence, so as not to
+confirm the bot exists. The exception is `/whoami`: a person has to be able to
+learn their own id, otherwise there is nobody to add them to the list.
 
-## Сторож: «я ослеп»
+## The watchdog: "I have gone blind"
 
-Отдельный компонент (`watchdog.py`), потому что смысл события не «источник
-вернул ошибку», а «уведомления перестали работать, сходи посмотри руками».
-Наблюдает четыре подсистемы: расписание, страницу матча, живой фид и очередь
-отправки.
+A separate component (`watchdog.py`), because the meaning of the event is not
+"the source returned an error" but "notifications have stopped working, go and
+look by hand". It watches four subsystems: the schedule, the match page, the
+live feed and the sending queue.
 
-Тревога поднимается не сразу — короткий сбой чинится ретраями. Но и не «когда
-угодно»: порог зависит от того, чем мы рискуем **прямо сейчас**.
+The alarm is not raised immediately — a short failure fixes itself through
+retries. But neither is it raised "whenever": the threshold depends on what is
+at stake **right now**.
 
-| Ситуация | Порог |
+| Situation | Threshold |
 |---|---|
-| до старта матча меньше минуты | 60 с |
-| матч должен был начаться, а мы его не видим | 60 с |
-| кому-то осталось ≤3 раунда до победы на карте | 60 с |
-| идёт овертайм | 60 с |
-| всё остальное | `DEGRADED_ALERT_SECONDS`, дефолт 300, максимум 600 |
+| less than a minute to the match start | 60 s |
+| the match should have started and we cannot see it | 60 s |
+| someone is ≤3 rounds from winning the map | 60 s |
+| an overtime is being played | 60 s |
+| everything else | `DEGRADED_ALERT_SECONDS`, 300 by default, 600 max |
 
-Пороги «осталось N раундов» считает та же `scoring.py` от формата из
-источника, поэтому MR15 и нестандартные овертаймы не ломают оценку.
+The "N rounds left" thresholds are computed by the same `scoring.py` from the
+format the source reports, so MR15 and non-standard overtimes do not break the
+judgement.
 
-**Одна тревога на один сбой:** ключ содержит момент начала сбоя, поэтому
-повторные проверки того же сбоя ничего не шлют, а новый сбой сообщится заново.
-Восстановление приходит отдельным сообщением — иначе непонятно, прошло ли.
+**One alarm per failure:** the key contains the moment the failure started, so
+repeated checks of the same failure send nothing while a new failure is reported
+afresh. Recovery arrives as a separate message — otherwise it is unclear whether
+it has passed.
 
-Про очередь отправки есть парадокс: если Telegram не принимает, тревога о
-Telegram уйдёт в ту же застрявшую очередь. Это осознанно — она доедет, когда
-связь вернётся, и до тех пор видна в `/status` и в логах. Молчать хуже:
-немая доставка выглядит ровно как отсутствие событий.
+There is a paradox about the sending queue: if Telegram is not accepting, the
+alarm about Telegram goes into that same stuck queue. That is deliberate — it
+will get through when the connection returns, and until then it is visible in
+`/status` and in the logs. Staying quiet is worse: mute delivery looks exactly
+like an absence of events.
 
-## Состояния матча
+## Match states
 
 ```
 SCHEDULED ──▶ LIVE ──▶ FINISHED
     │           │
-    │           └──▶ (E8 «завис», если нет фида и ничего не меняется)
+    │           └──▶ (E8 "stalled", if there is no feed and nothing changes)
     └──▶ CANCELLED / UNKNOWN
 ```
 
-`UNKNOWN` — матч пропал со страницы команды после планового старта: он мог и
-начаться, и быть отменённым, и догадываться тут вредно.
+`UNKNOWN` means the match vanished from the team page after its scheduled
+start: it may equally have begun or been cancelled, and guessing here does
+harm.
 
-Событие «матч завис» не шлётся, **пока живой фид на связи**: смысл события —
-«я ослеп», а если фид отвечает, мы матч видим. Между картами порог
-растягивается втрое — на LAN перерыв в двадцать минут норма (ложная тревога на
-этом уже случалась).
+The "match has stalled" event is not sent **while the live feed is connected**:
+the meaning of the event is "I have gone blind", and if the feed answers, we do
+see the match. Between maps the threshold is stretched threefold — at a LAN a
+twenty-minute break is normal (a false alarm on this has already happened).
 
-## Точки расширения
+## Extension points
 
-### Мобильный JSON-эндпоинт HLTV
+### HLTV's mobile JSON endpoint
 
-Запасной источник расписания, устойчивый к редизайну. Требует проксирования
-трафика приложения через mitmproxy; разведка отложена — см.
+A fallback schedule source, resistant to a redesign. It requires proxying the
+app's traffic through mitmproxy; the recon is deferred — see
 [recon/R3-schedule-source.md](recon/R3-schedule-source.md).
