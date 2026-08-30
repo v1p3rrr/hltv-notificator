@@ -87,3 +87,44 @@ def test_rejection_cooldown_has_a_floor(monkeypatch, storage):
     generous = Config(live_feed_cooldown=1800)
     assert max(float(generous.live_feed_cooldown),
                MIN_REJECTED_COOLDOWN_SECONDS) == 1800
+
+
+# ----------------------------------------------------------------------
+# The card must not overtake the start message it continues
+# ----------------------------------------------------------------------
+
+
+def test_the_card_waits_for_the_start_message(storage, config):
+    """The card goes straight to Telegram, the start message waits in the
+    queue — without this it would arrive first."""
+    w = worker(storage, config)
+    storage.record_event(idempotency_key="E4:1:started", event_type="E4",
+                         match_id=1, body="x", chat_id="1")
+    w._awaiting_start_message = __import__("time").monotonic() + 30
+    assert w._start_message_pending() is True
+
+    for row in storage.due_outbox():
+        storage.mark_sent(row["id"], 1)
+    assert w._start_message_pending() is False
+    # And the flag is cleared, so the queue is not consulted on every frame.
+    assert w._awaiting_start_message == 0.0
+
+
+def test_the_card_does_not_wait_forever(storage, config):
+    """A stuck queue must not cost us the live score."""
+    w = worker(storage, config)
+    storage.record_event(idempotency_key="E4:1:started", event_type="E4",
+                         match_id=1, body="x", chat_id="1")
+    w._awaiting_start_message = __import__("time").monotonic() - 1
+    assert w._start_message_pending() is False
+
+
+def test_the_queue_wakes_up_on_a_new_event(storage, config):
+    """Five seconds of sleep are five seconds of the wrong order."""
+    from hltv_notify.models import Event
+
+    notifier = Notifier(storage, config, None)
+    assert notifier._arrived.is_set() is False
+    notifier.enqueue(Event(type="E4", idempotency_key="E4:1:started", match_id=1,
+                           payload={"team_name": "T", "opponent": "O", "url": "u"}))
+    assert notifier._arrived.is_set() is True

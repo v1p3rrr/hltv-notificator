@@ -64,6 +64,83 @@ def test_e4_on_transition_to_live(storage, config):
     assert storage.get_state(MATCH_ID)["state"] == MatchState.LIVE
 
 
+def test_e4_waits_while_the_feed_reports_a_warmup(storage, config):
+    """The page raises LIVE when the teams connect to the server. The warmup
+    before the first map can run twenty minutes, and "the match has started"
+    during it is untrue."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    now = utcnow()
+    storage.set_state(MATCH_ID, MatchState.SCHEDULED, source="team_page")
+    storage.set_live_phase(MATCH_ID, "warmup", now)
+
+    events = m.apply(observe("live", maps(None, None, None)), now,
+                     feed_connected=True)
+    assert events == []
+    # The state still flips: the feed has to be brought up, and the schedule
+    # must stop treating the match as one that has not begun.
+    assert storage.get_state(MATCH_ID)["state"] == MatchState.LIVE
+    assert storage.pending_start_event(MATCH_ID)["best_of"] == 3
+
+
+def test_the_page_sends_the_start_once_the_warmup_is_over(storage, config):
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    now = utcnow()
+    storage.set_state(MATCH_ID, MatchState.SCHEDULED, source="team_page")
+    storage.set_live_phase(MATCH_ID, "warmup", now)
+    assert m.apply(observe("live", maps(None, None, None)), now,
+                   feed_connected=True) == []
+
+    storage.set_live_phase(MATCH_ID, "started", now)
+    events = m.apply(observe("live", maps(None, None, None)), now,
+                     feed_connected=True)
+    assert [e.type for e in events] == ["E4"]
+    assert storage.pending_start_event(MATCH_ID) is None
+
+
+def test_e4_is_not_held_without_a_live_feed(storage, config):
+    """Losing E4 entirely would be far worse than sending it during a warmup."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    now = utcnow()
+    storage.set_state(MATCH_ID, MatchState.SCHEDULED, source="team_page")
+    storage.set_live_phase(MATCH_ID, "warmup", now)
+    events = m.apply(observe("live", maps(None, None, None)), now,
+                     feed_connected=False)
+    assert [e.type for e in events] == ["E4"]
+
+
+def test_a_stale_warmup_does_not_hold_e4_forever(storage, config):
+    """The feed may have dropped mid-warmup — then there is nothing to wait
+    for, and the page goes back to deciding on its own."""
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    now = utcnow()
+    storage.set_state(MATCH_ID, MatchState.SCHEDULED, source="team_page")
+    storage.set_live_phase(MATCH_ID, "warmup", now - timedelta(minutes=5))
+    events = m.apply(observe("live", maps(None, None, None)), now,
+                     feed_connected=True)
+    assert [e.type for e in events] == ["E4"]
+
+
+def test_the_page_stays_quiet_if_the_feed_sent_the_start(storage, config):
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    now = utcnow()
+    storage.set_state(MATCH_ID, MatchState.SCHEDULED, source="team_page")
+    storage.set_live_phase(MATCH_ID, "warmup", now)
+    m.apply(observe("live", maps(None, None, None)), now, feed_connected=True)
+
+    # The live machine got there first and its message is in the journal.
+    storage.record_event(idempotency_key=f"E4:{MATCH_ID}:started", event_type="E4",
+                         match_id=MATCH_ID, body="x", chat_id="1")
+    storage.set_live_phase(MATCH_ID, "started", now)
+    assert m.apply(observe("live", maps(None, None, None)), now,
+                   feed_connected=True) == []
+    assert storage.pending_start_event(MATCH_ID) is None
+
+
 def test_e4_not_repeated_on_every_poll(storage, config):
     """The page is polled every minute and says LIVE the whole time. A map
     managed to finish meanwhile — an E6 about it, but no repeat E4."""

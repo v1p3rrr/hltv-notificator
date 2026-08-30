@@ -108,6 +108,30 @@ time is accepted silently and no message is sent. It happens when the service
 was blind across the reschedule — HLTV timing out for several polls in a row is
 enough.
 
+## Without a live feed, the match start is still reported from the page
+
+E4 waits for a round to actually be played only while the feed is up and says
+it is a warmup. With no feed — a 403 cooldown, a feed that will not come up —
+the page decides on its own, and the page cannot tell a warmup from a game. So
+in that situation "the match has started" can still arrive twenty minutes
+early. Deliberate: losing the message entirely would be worse, and the map
+lineup it carries is the useful part at that moment anyway.
+
+## The half inside an overtime is not reported
+
+E12 covers the regulation half and the START of each overtime. Sides also swap
+in the middle of every overtime, and that is not reported: under MR3 it would
+mean a message every three rounds.
+
+## A match that never happens holds the frequent polling for an hour
+
+A match past its start and not running keeps the schedule on the pre-match
+cadence for `LATE_START_GRACE_MINUTES` (60 by default), because that is the
+window in which HLTV moves it. If it was simply cancelled without the page
+saying so, that is up to twenty extra requests spent on nothing. The
+alternative — falling back to a poll every half hour — is what lost a
+reschedule.
+
 ## Map point is only about the MAP
 
 E11 fires when somebody is one round from taking the map, in regulation and

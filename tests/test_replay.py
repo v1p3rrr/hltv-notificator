@@ -154,3 +154,18 @@ def test_real_map_end_score(mouz, mouz_config):
 def test_boundary_dump_is_idempotent(mouz, mouz_config):
     replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH)
     assert replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH) == []
+
+
+def test_half_time_is_found_in_a_real_recording(prepared):
+    """The arithmetic against real frames rather than a hand-made score."""
+    from dataclasses import replace as _replace
+
+    from hltv_notify.config import Config
+
+    events = replay(DUMP, prepared, _replace(Config(), phase_alerts=True), MATCH_ID)
+    phases = [e for e in events if e.type == "E12"]
+    assert [e.idempotency_key for e in phases] == ["E12:2397053:map:2:half"]
+    # 12 rounds played, the map went on to 10:13 — so no overtime alert.
+    assert phases[0].payload["overtime"] == 0
+    assert (phases[0].payload["score_team"]
+            + phases[0].payload["score_opponent"]) == 12

@@ -14,7 +14,7 @@ from typing import List, Optional
 
 from ..config import Config
 from ..models import Event, MatchState
-from ..sources import match_page
+from ..sources import match_page, scorebot
 from ..sources.match_page import MapLine, MatchObservation
 from .db import Storage, parse_iso, utcnow
 
@@ -32,6 +32,11 @@ TERMINAL = {MatchState.FINISHED, MatchState.CANCELLED}
 # minutes pass between maps. The "match stalled" threshold is stretched for
 # that time, otherwise every break would raise a false alarm.
 BREAK_THRESHOLD_MULTIPLIER = 3
+
+# How long the phase the feed reported stays worth believing. Longer than any
+# gap between frames, shorter than a warmup: if the feed went quiet, the page
+# must get back to deciding for itself.
+FEED_PHASE_FRESH_SECONDS = 120
 
 
 def _overtime(line: MapLine) -> bool:
@@ -119,8 +124,22 @@ class MatchMachine:
         if any(name and name.upper() != "TBA" for name in lineup):
             self.storage.set_map_lineup(match_id, lineup)
 
-        if target == MatchState.LIVE and previous not in (MatchState.LIVE, *TERMINAL):
-            events.append(self._event_e4(observation, row, team_id))
+        if target == MatchState.LIVE and previous not in TERMINAL:
+            # Not "on the transition to LIVE" any more, but "while it is live
+            # and the start has not been announced". The transition happens
+            # once, and the announcement may have to wait for the warmup to
+            # end — so the attempt has to be repeatable.
+            # "The page has not spoken about this match yet" counts as the
+            # transition too. The state is shared, and the live machine writes
+            # LIVE into it as well — if the feed happened to come up first, the
+            # page would decide the start had already been announced and stay
+            # quiet forever. `first_observation` is the page's own memo.
+            started = self._start_event(observation, row, team_id, now,
+                                        first_time=first_observation
+                                        or previous != MatchState.LIVE,
+                                        feed_connected=feed_connected)
+            if started is not None:
+                events.append(started)
 
         discovered_finished = target == MatchState.FINISHED and not seen_live
         events.extend(self._map_events(
@@ -242,6 +261,60 @@ class MatchMachine:
         )]
 
     # ------------------------------------------------------------------
+
+    def _start_event(self, observation: MatchObservation, row, team_id: int,
+                     now: datetime, *, first_time: bool,
+                     feed_connected: bool) -> Optional[Event]:
+        """"The match has started" — but only once it has.
+
+        The page's LIVE flag is not the start of play. HLTV raises it when the
+        teams connect to the server, and the warmup before the first map can
+        run twenty minutes with the score at 0:0. So while the live feed says
+        this very moment that it is a warmup, the message is written and put
+        aside; the live machine sends it on the first round actually played,
+        with the same idempotency key.
+
+        The gate is deliberately narrow. If the feed is not connected, or has
+        not spoken for a while, or has never been up at all (a 403 cooldown),
+        the page decides on its own exactly as it always did — losing E4
+        entirely would be far worse than sending it during a warmup.
+        """
+        match_id = observation.match_id
+        held = self.storage.pending_start_event(match_id)
+        if not first_time and held is None:
+            # Not the transition to LIVE and nothing was put aside: the message
+            # has already gone out. This is the ordinary polling of a running
+            # match, which must stay silent.
+            return None
+        if self.storage.start_event_sent(match_id):
+            # The live machine got there first.
+            self.storage.set_pending_start_event(match_id, None)
+            return None
+
+        event = self._event_e4(observation, row, team_id)
+        if not self._feed_says_warmup(match_id, now, feed_connected=feed_connected):
+            self.storage.set_pending_start_event(match_id, None)
+            return event
+
+        log.info("match %s is live on the page but the feed says warmup — "
+                 "the start message waits for the first round", match_id)
+        self.storage.set_pending_start_event(match_id, event.payload)
+        return None
+
+    def _feed_says_warmup(self, match_id: int, now: datetime, *,
+                          feed_connected: bool) -> bool:
+        if not feed_connected:
+            return False
+        state_row = self.storage.get_state(match_id)
+        if state_row is None or state_row["live_round_state"] != scorebot.ROUND_WARMUP:
+            return False
+        seen = state_row["live_frame_utc"]
+        if not seen:
+            return False
+        # A phase nobody has confirmed for minutes is not an answer. The feed
+        # may have dropped mid-warmup, and then there is nothing left to wait
+        # for.
+        return now - parse_iso(seen) <= timedelta(seconds=FEED_PHASE_FRESH_SECONDS)
 
     def _event_e4(self, observation: MatchObservation, row, team_id: int) -> Event:
         opponent_id, opponent_name = observation.opponent(team_id)

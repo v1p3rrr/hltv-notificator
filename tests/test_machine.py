@@ -193,3 +193,47 @@ def test_placeholder_opponent_resolves_without_new_match(storage, config):
                         entry(7, start=start, opponent_id=13901, opponent_name="ex-RUSTEC")], TEAM_ID)
     assert resolved == []
     assert storage.get_match(7)["opponent_name"] == "ex-RUSTEC"
+
+
+# ---------------------------------------------------------------- polling mode
+
+def poller(storage, config):
+    """current_mode only reads the database — the network is not involved."""
+    from hltv_notify.scheduler import SchedulePoller
+    return SchedulePoller(storage, config, http=None, notifier=None)
+
+
+def test_a_match_past_its_start_keeps_the_frequent_polling(storage, config):
+    """HLTV moves a match after its own slot has arrived as a matter of
+    routine. Judged only by "is the start ahead", such a match is nobody's
+    business and the schedule falls back to a poll every half hour."""
+    m = machine(storage, config)
+    bootstrap(m, [entry(1, start=later(-5))])
+    assert poller(storage, config).current_mode() == "prematch"
+
+
+def test_a_match_that_started_lets_the_schedule_rest(storage, config):
+    m = machine(storage, config)
+    bootstrap(m, [entry(1, start=later(-5))])
+    storage.set_state(1, MatchState.LIVE, source="match_page")
+    assert poller(storage, config).current_mode() == "idle"
+
+
+def test_a_match_long_past_stops_holding_the_schedule(storage, config):
+    """It may never have happened at all."""
+    m = machine(storage, config)
+    bootstrap(m, [entry(1, start=later(-180))])
+    assert poller(storage, config).current_mode() == "idle"
+
+
+def test_a_move_made_after_the_slot_passed_is_reported_at_once(storage, config):
+    """The whole story: 18:00 comes, nothing starts, at 18:03 the page says
+    18:15. The frequent polling is what sees it, and there is no time left to
+    debounce, so the message goes out on the spot."""
+    m = machine(storage, config)
+    bootstrap(m, [entry(1, start=later(-3))])
+    assert poller(storage, config).current_mode() == "prematch"
+
+    events = m.apply([entry(1, start=later(15))], TEAM_ID)
+    assert [e.type for e in events] == ["E2"]
+    assert poller(storage, config).current_mode() == "prematch"

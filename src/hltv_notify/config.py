@@ -97,6 +97,14 @@ class Config:
         default_factory=lambda: _int("POLL_LIVE_WITH_FEED_SECONDS", 300))
     prematch_window_minutes: int = field(
         default_factory=lambda: _int("PREMATCH_WINDOW_MINUTES", 30))
+    # How long a match that should have started keeps the schedule on the
+    # frequent cadence. That is the window in which HLTV moves it — by five
+    # minutes, then ten — and the only way to catch such a move is to keep
+    # looking. Deliberately not the same thing as watchdog.START_GRACE_MINUTES,
+    # which answers a different question: for how long being blind around this
+    # match is still urgent.
+    late_start_grace_minutes: int = field(
+        default_factory=lambda: _int("LATE_START_GRACE_MINUTES", 60))
 
     # the live score message kept up to date during a map
     live_message: bool = field(default_factory=lambda: _bool("LIVE_MESSAGE", True))
@@ -116,6 +124,10 @@ class Config:
     # alert on a multikill by a player of OUR team, so a highlight can be clipped
     multikill_alerts: bool = field(default_factory=lambda: _bool("MULTIKILL_ALERTS", True))
     multikill_threshold: int = field(default_factory=lambda: _int("MULTIKILL_THRESHOLD", 4))
+
+    # alert on the half and on every new overtime. Off by default: it is one
+    # more message per map for something the live card already shows.
+    phase_alerts: bool = field(default_factory=lambda: _bool("PHASE_ALERTS", False))
 
     # Pre-match reminders: the defaults handed to a new subscriber, who then
     # edits them via /remind.

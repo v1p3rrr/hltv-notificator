@@ -182,6 +182,23 @@ def render(event: Event, *, team_name: str, tz_name: str,
             _link(url, "Match page"),
         ])
 
+    if event.type == "E12":
+        overtime = payload.get("overtime") or 0
+        headline = f"Overtime {overtime} begins" if overtime else "Half time"
+        # The round count is taken from the score, not written down: the half
+        # is at 12 rounds under MR12 and somewhere else under any other format.
+        played = (payload.get("score_team") or 0) + (payload.get("score_opponent") or 0)
+        note = ("Level after the previous one" if overtime
+                else f"{played} rounds played, sides swap")
+        return "\n".join([
+            f"{'🕗' if overtime else '🔄'} <b>{headline}</b>",
+            f"{_esc(payload.get('map_name'))} — "
+            f"<b>{payload.get('score_team')}:{payload.get('score_opponent')}</b>",
+            f"{team} — {opponent}",
+            note,
+            _link(url, "Watch the match"),
+        ])
+
     if event.type == "E11":
         ours = payload.get("score_team") or 0
         theirs = payload.get("score_opponent") or 0

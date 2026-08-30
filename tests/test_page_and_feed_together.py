@@ -231,3 +231,37 @@ def test_a_disagreeing_page_says_it_is_a_correction(match, config):
     assert e7, "the page must still report a result it does not agree with"
     assert e7[0].idempotency_key != finished[0].idempotency_key
     assert e7[0].payload["corrected"] is True
+
+
+# ----------------------------------------------------------------------
+# E4: the page raises LIVE during the warmup, the feed says when it is over
+# ----------------------------------------------------------------------
+
+
+def test_the_start_message_waits_for_the_first_round(match, config):
+    """The page cannot tell a warmup from a game — it flips to LIVE when the
+    teams connect to the server. The feed can, and it is the one that decides
+    the moment."""
+    page_machine = MatchMachine(match, config)
+    live = LiveMachine(match, config)
+    now = utcnow()
+
+    # The feed connects first and reports a warmup.
+    live.apply(MATCH_ID, frame("de_dust2", rnd=1, state="warmup", live=False))
+
+    events = page_machine.apply(page("match-2397053-live.html"), now,
+                                feed_connected=True)
+    assert "E4" not in [e.type for e in events]
+    assert match.pending_start_event(MATCH_ID) is not None
+
+    # The warmup ends: the start goes out, and the map start with it.
+    events = live.apply(MATCH_ID, frame("de_dust2", rnd=1, state="started"))
+    assert [e.type for e in events] == ["E4", "E5"]
+    assert events[0].payload["picks"], "the picks come from the page, not the feed"
+
+    # And the next page poll adds nothing: the message is in the journal.
+    for event in events:
+        match.record_event(idempotency_key=event.idempotency_key, event_type=event.type,
+                           match_id=MATCH_ID, body="x", chat_id="1")
+    again = page_machine.apply(page("match-2397053-live.html"), now, feed_connected=True)
+    assert "E4" not in [e.type for e in again]

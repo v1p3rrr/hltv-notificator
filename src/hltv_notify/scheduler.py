@@ -46,6 +46,18 @@ class SchedulePoller:
 
     def current_mode(self, now: Optional[datetime] = None) -> str:
         now = now or utcnow()
+        overdue = self.storage.matches_awaiting_start(
+            now, grace_minutes=self.config.late_start_grace_minutes)
+        if overdue:
+            # The slot has arrived and the match has not. This is exactly when
+            # HLTV moves it — by five minutes, then ten, then fifteen — and
+            # exactly when the old rule stopped looking: with the start behind
+            # us the match was no longer "upcoming", the mode fell to idle and
+            # the next look at the page came half an hour later.
+            log.debug("%d match(es) past their start and not running yet — "
+                      "staying on the frequent schedule", len(overdue))
+            return "prematch"
+
         upcoming = self.storage.upcoming_matches(now)
         if not upcoming:
             return "idle"

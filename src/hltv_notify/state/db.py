@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS match_state (
     -- wrote last" is undefined there. Decisions must not be made from it.
     -- Below are private memos: each is written and read by exactly one machine.
     live_map_name      TEXT,   -- the last map the LIVE FEED saw
+    live_round_state   TEXT,   -- the phase the LIVE FEED reports (warmup/started/...)
+    live_frame_utc     TEXT,   -- when that phase was last seen: it goes stale
     page_seen_utc      TEXT,   -- when the MATCH PAGE first saw this match
     regulation_rounds  INTEGER,-- map format: half of regulation (usually 12)
     overtime_rounds    INTEGER,-- half of an overtime (usually 3)
@@ -204,6 +206,8 @@ class Storage:
                 "regulation_rounds": "INTEGER",
                 "overtime_rounds": "INTEGER",
                 "best_of": "INTEGER",
+                "live_round_state": "TEXT",
+                "live_frame_utc": "TEXT",
             },
             "matches": {
                 "team_id": "INTEGER",
@@ -506,6 +510,37 @@ class Storage:
             (iso(now),),
         ))
 
+    def matches_awaiting_start(self, now: Optional[datetime] = None, *,
+                               grace_minutes: int = 60) -> List[sqlite3.Row]:
+        """Matches whose time has come and gone without them starting.
+
+        HLTV moves a match after its own slot has arrived as a matter of
+        routine: 18:00 passes, nothing happens, and at 18:03 the page says
+        18:15, then 18:30. Judged only by "is the start still ahead", such a
+        match is nobody's business any more — the schedule falls back to idle
+        and looks at the page again half an hour later, by which time the move
+        no longer matters.
+
+        A match that really started drops out on its own: the page sets the
+        state to LIVE (even when the "match started" message itself is being
+        held back for the warmup). The window is bounded so a match that never
+        happens does not keep the polling up forever.
+        """
+        now = now or utcnow()
+        return list(self.conn.execute(
+            "SELECT COALESCE(s.pending_start_utc, m.start_utc) AS start_utc, "
+            "       m.*, s.state AS state, m.start_utc AS confirmed_start_utc "
+            "FROM matches m "
+            "LEFT JOIN match_state s ON s.match_id = m.match_id "
+            "WHERE COALESCE(s.pending_start_utc, m.start_utc) <= ? "
+            "  AND COALESCE(s.pending_start_utc, m.start_utc) >= ? "
+            "  AND m.missing_since_utc IS NULL "
+            "  AND (s.state IS NULL OR s.state NOT IN "
+            "       ('LIVE', 'MAP_LIVE', 'MAP_BREAK', 'FINISHED', 'CANCELLED')) "
+            "ORDER BY COALESCE(s.pending_start_utc, m.start_utc)",
+            (iso(now), iso(now - timedelta(minutes=grace_minutes))),
+        ))
+
     def upsert_match(self, *, match_id: int, opponent_id: Optional[int], opponent_name: str,
                      event_name: str, start_utc: datetime, url: str, snapshot: Dict[str, Any],
                      snapshot_hash: str, match_format: Optional[str] = None,
@@ -748,6 +783,17 @@ class Storage:
         ).fetchone()
         return row["oldest"] if row and row["oldest"] else None
 
+    def is_queued(self, idempotency_key: str) -> bool:
+        """Is this message still waiting in the queue.
+
+        Used where the ORDER between two messages matters: the live card must
+        not overtake the "match has started" it continues.
+        """
+        row = self.conn.execute(
+            "SELECT 1 FROM outbox WHERE status = 'pending' AND idempotency_key LIKE ? "
+            "LIMIT 1", (f"%{idempotency_key}",)).fetchone()
+        return row is not None
+
     def pending_count(self) -> int:
         return self.conn.execute(
             "SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0]
@@ -778,6 +824,63 @@ class Storage:
         self.conn.execute(
             "UPDATE match_state SET live_map_name = ? WHERE match_id = ?",
             (map_name, match_id))
+
+    def set_live_phase(self, match_id: int, round_state: str,
+                       when: Optional[datetime] = None) -> None:
+        """What phase the feed reports, and when it said so. Live machine only.
+
+        The match page cannot tell a warmup from a game — it raises its LIVE
+        flag the moment the teams connect to the server, and the warmup before
+        the first map can run twenty minutes. The feed says it outright, so the
+        page machine reads this to decide whether "the match has started" is
+        true yet.
+
+        The timestamp is half the answer: a phase nobody has confirmed for
+        minutes means the feed is not talking, and then the page must go back
+        to deciding on its own rather than waiting for a warmup to end that
+        nobody is watching.
+        """
+        self.conn.execute(
+            "UPDATE match_state SET live_round_state = ?, live_frame_utc = ? "
+            "WHERE match_id = ?",
+            (round_state, iso(when or utcnow()), match_id))
+
+    def start_event_sent(self, match_id: int) -> bool:
+        """Has "the match has started" already gone out for this match.
+
+        Both machines can produce E4 — the page from its LIVE flag, the feed
+        from the first round actually played — with the same idempotency key,
+        so the journal is the one place that knows. Asking it is what lets the
+        page retry on every poll instead of relying on a state transition that
+        happens exactly once.
+        """
+        row = self.conn.execute(
+            "SELECT 1 FROM sent_events WHERE event_type = 'E4' AND match_id = ? LIMIT 1",
+            (match_id,)).fetchone()
+        return row is not None
+
+    def set_pending_start_event(self, match_id: int,
+                                payload: Optional[Dict[str, Any]]) -> None:
+        """The "match started" message, written and waiting for the warmup to end.
+
+        The payload is stored rather than rebuilt later on purpose: the map
+        picks and the opponent's real name come from the page observation, and
+        a second builder somewhere else would drift away from this one.
+        """
+        key = f"start_event:{match_id}"
+        if payload is None:
+            self.set_meta(key, "")
+        else:
+            self.set_meta(key, json.dumps(payload, ensure_ascii=False))
+
+    def pending_start_event(self, match_id: int) -> Optional[Dict[str, Any]]:
+        raw = self.get_meta(f"start_event:{match_id}")
+        if not raw:
+            return None
+        try:
+            return dict(json.loads(raw))
+        except (ValueError, TypeError):
+            return None
 
     def mark_page_seen(self, match_id: int) -> None:
         """A marker: "the match page has already observed this match". Set once.

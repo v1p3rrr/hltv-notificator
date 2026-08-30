@@ -19,9 +19,10 @@ One process, one user, no web interface: the interface is a chat with the bot.
 | E1 | A new match in the schedule | team page |
 | E2 | The match time changed | team page |
 | E3 | The match was cancelled or postponed | team page |
-| E4 | The match started, the map lineup and whose pick each is | match page |
+| E4 | The match started, the map lineup and whose pick each is | match page, held back through the warmup |
 | E5 | A map started | live feed |
 | E11 | A map point: somebody is one round from taking the map | live feed |
+| E12 | The half, and the start of every overtime (off by default) | live feed |
 | E6 | **A map finished, with the score** | live feed (instantly), the page confirms |
 | E7 | The match finished, the result by maps | live feed by the map count, the page confirms |
 | E8 | The service has gone blind: the source is silent, the feed will not come up, the queue is not draining | watchdog |

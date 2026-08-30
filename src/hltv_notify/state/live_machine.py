@@ -55,13 +55,14 @@ class LiveMachine:
         # must not be muted for the sake of the other. They live in the
         # worker's memory and survive reconnects inside it.
         self._multikill: Dict[int, MultikillTracker] = {}
-        # Map points already announced. The journal would swallow the repeats
-        # anyway — the key is the same one — but the score stays at map point
-        # for a whole round, i.e. some hundreds of frames, and each of them
-        # would otherwise mean a write to the queue and a line in the log.
-        # In memory, like the multikill trackers: after a restart the journal
-        # is still there to keep the message from going out twice.
-        self._map_points: set = set()
+        # Score milestones already announced — map points, halves, the start
+        # of an overtime. The journal would swallow the repeats anyway (the key
+        # is the same one), but a score stands for a whole round, i.e. some
+        # hundreds of frames, and each of them would otherwise mean a write to
+        # the queue and a line in the log. In memory, like the multikill
+        # trackers: after a restart the journal is still there to keep the
+        # message from going out twice.
+        self._announced: set = set()
 
     def _tracker(self, team_id: int) -> MultikillTracker:
         if team_id not in self._multikill:
@@ -105,6 +106,9 @@ class LiveMachine:
         map_number = self._map_number(match_id, map_name, len(recorded))
 
         events: List[Event] = []
+        started = self._released_start_event(match_id, frame)
+        if started is not None:
+            events.append(started)
         events.extend(self._multikill_events(match_id, frame, map_number, map_name))
         if self._is_new_map(previous_map, map_name, frame):
             events.append(self._event_e5(match_id, frame, map_number, map_name, len(recorded)))
@@ -125,6 +129,9 @@ class LiveMachine:
             if finished is not None:
                 events.append(finished)
         else:
+            phase = self._event_e12(match_id, frame, map_number, map_name, ours, theirs)
+            if phase is not None:
+                events.append(phase)
             point = self._event_e11(match_id, frame, map_number, map_name, ours, theirs)
             if point is not None:
                 events.append(point)
@@ -135,6 +142,11 @@ class LiveMachine:
             current_map_number=map_number, current_map_name=map_name,
             current_map_score=f"{ours}-{theirs}",
             series_score=f"{series[0]}-{series[1]}")
+        # Written after set_state, which is what creates the row on the very
+        # first frame. On every frame, warmup included: the page machine reads
+        # it to decide whether "the match has started" is true yet, and a phase
+        # that stops being refreshed goes stale on purpose.
+        self.storage.set_live_phase(match_id, frame.round_state)
         if not self._warming_up(frame):
             # The memo is advanced only once the map is really being played —
             # see _is_new_map.
@@ -345,6 +357,83 @@ class LiveMachine:
             },
         )
 
+    def _event_e12(self, match_id: int, frame: LiveFrame, map_number: int,
+                   map_name: str, ours: int, theirs: int) -> Optional[Event]:
+        """The half, and the start of every overtime.
+
+        Two moments where the map turns over: the sides swap after
+        `regulation` rounds have been played (7-5, 6-6, 12-0 — the split does
+        not matter), and a new overtime begins whenever the score is level at
+        the end of the previous one: 12-12, 15-15, 18-18. The side swap inside
+        an overtime is deliberately not reported — under MR3 that would be a
+        message every three rounds.
+
+        Off by default. The live card shows all of this already; this is for
+        someone who wants to be pulled back to the screen.
+        """
+        if not self.config.phase_alerts or self._warming_up(frame):
+            return None
+
+        regulation, overtime = frame.regulation, frame.overtime
+        if regulation < 1 or overtime < 1:
+            return None
+
+        if ours + theirs == regulation:
+            key = f"E12:{match_id}:map:{map_number}:half"
+            number = 0
+        elif (ours == theirs and ours >= regulation
+              and (ours - regulation) % overtime == 0):
+            number = (ours - regulation) // overtime + 1
+            key = f"E12:{match_id}:map:{map_number}:overtime:{number}"
+        else:
+            return None
+
+        if key in self._announced:
+            return None
+        self._announced.add(key)
+        log.info("match %s: %s on %s at %d:%d", match_id,
+                 "half time" if not number else f"overtime {number} begins",
+                 map_name, ours, theirs)
+        return Event(
+            type="E12",
+            idempotency_key=key,
+            match_id=match_id,
+            payload={
+                **self._context(match_id, frame),
+                "map_number": map_number,
+                "map_name": map_name,
+                "score_team": ours,
+                "score_opponent": theirs,
+                "overtime": number,
+            },
+        )
+
+    def _released_start_event(self, match_id: int,
+                              frame: LiveFrame) -> Optional[Event]:
+        """"The match has started", held back by the page until a round is played.
+
+        The page raises its LIVE flag when the teams connect to the server, so
+        it cannot tell a warmup from a game; the feed can. The message itself
+        was written by the page machine and put aside — this only decides the
+        moment. The key is the one the page would have used, so if the page
+        gave up waiting and sent it after all, the unique index swallows this
+        copy in silence.
+        """
+        if self._warming_up(frame):
+            return None
+        payload = self.storage.pending_start_event(match_id)
+        if payload is None or self.storage.start_event_sent(match_id):
+            return None
+        self.storage.set_pending_start_event(match_id, None)
+        log.info("match %s: the first round is being played, sending the start "
+                 "message held back through the warmup", match_id)
+        return Event(
+            type="E4",
+            idempotency_key=f"E4:{match_id}:started",
+            match_id=match_id,
+            payload=payload,
+        )
+
     def _event_e11(self, match_id: int, frame: LiveFrame, map_number: int,
                    map_name: str, ours: int, theirs: int) -> Optional[Event]:
         """Map point: somebody is one round away from taking the map.
@@ -378,9 +467,9 @@ class LiveMachine:
         # collapse into one.
         key = (f"E11:{match_id}:map:{map_number}:point"
                f":{'us' if ours > theirs else 'them'}:{target}")
-        if key in self._map_points:
+        if key in self._announced:
             return None
-        self._map_points.add(key)
+        self._announced.add(key)
         log.info("match %s: map point on %s at %d:%d (target %d)",
                  match_id, map_name, ours, theirs, target)
         return Event(

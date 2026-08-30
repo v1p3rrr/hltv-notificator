@@ -71,6 +71,7 @@ E7:<match>:finished:<maps_ours>-<maps_theirs>
 E8:<subsystem>:<reason>:<utc_hour>
 E9:<match>:map:<n>:round:<r>:<steam_id>:<kills>
 E11:<match>:map:<n>:point:<us|them>:<target_score>
+E12:<match>:map:<n>:half | E12:<match>:map:<n>:overtime:<k>
 ```
 
 A key must depend **only on the content**. Let the time the response arrived
@@ -91,6 +92,15 @@ and the reschedule goes out on the first sighting. Measured on match 2397343:
 the move 18:00 -> 18:20 appeared on the page at 17:57:43, the window still had
 seven minutes to run, and E2 would have been born at 18:29 — nine minutes into
 a match that had started at 18:20.
+
+**And the schedule keeps being polled while a match is overdue.** The slot
+arrives, nothing starts, and that is exactly when HLTV moves the match — by
+five minutes, then ten. Judged only by "is the start still ahead", such a match
+is nobody's business: it is not upcoming, the mode falls to idle and the next
+look at the page comes half an hour later. So a match past its start and not
+yet running keeps the frequent cadence for `LATE_START_GRACE_MINUTES`, and
+drops out the moment the page says LIVE. The window is bounded because a match
+may never happen at all.
 
 And once the new time itself has passed, E2 is not sent at all. It is no longer
 news but history, and E4 is about to report the start anyway.
@@ -192,6 +202,50 @@ The warmup is ignored — that is deathmatch.
 
 Errors lean the safe way: after a reconnect mid-round the baseline is taken
 afresh, so a multikill can be **missed but never invented**.
+
+## When a match starts (E4)
+
+Not when the match page says LIVE. HLTV raises that flag when the teams connect
+to the server, and the warmup before the first map can run twenty minutes with
+the score at 0:0 — "the match has started" during it is not true, and it was
+the first thing the owner complained about.
+
+The page cannot tell a warmup from a game; the feed can. So the same division
+of labour as everywhere else, only the other way round: **the page writes the
+message, the feed decides the moment.** The page machine builds E4 as it always
+did — the picks and the opponent's real name are page data — and, while the
+feed is reporting a warmup this very second, puts it aside instead of sending
+it (`start_event:<match>`). The live machine sends that payload on the first
+non-warmup frame, under the key the page would have used, so whoever gets there
+first wins and the other copy is swallowed by the unique index.
+
+The state still flips to LIVE at the page's word: the feed has to be brought
+up, and the schedule has to stop treating the match as one that has not begun.
+Only the message waits.
+
+**The fallbacks matter more than the gate.** With no feed at all — a 403
+cooldown, a feed that never comes up, a phase nobody has refreshed for two
+minutes — the page decides on its own exactly as before. Losing E4 entirely
+would be far worse than sending it during a warmup.
+
+The card that follows must not overtake it. E4 goes through the queue while the
+card goes straight to Telegram, so the worker holds the card back until the
+start message has left the queue (30 seconds at the outside — a stuck queue
+must not cost the live score). The queue now wakes on a new message instead of
+sleeping out its five seconds, which is what makes that wait about a second.
+
+## The half and the overtimes (E12)
+
+Off by default, `PHASE_ALERTS`. Two moments where the map turns over: the sides
+swap once `regulation` rounds have been played (7-5, 6-6, 12-0 — the split does
+not matter), and a new overtime begins whenever the score is level at the end
+of the previous one (12-12, 15-15, 18-18). The side swap INSIDE an overtime is
+deliberately not reported: under MR3 that would be a message every three
+rounds.
+
+Both numbers come from the frame's own `regulationHalfLength` and
+`overtimeHalfLength`, never from a hardcoded 12 — the same rule as everywhere
+in `hltv_notify.scoring`.
 
 ## Map point (E11)
 

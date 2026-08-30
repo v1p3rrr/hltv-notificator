@@ -195,6 +195,23 @@ The sequence is `warmup/live=False` (177 frames), then `started/live=False`
 (64 frames — the map really running), then `ended/live=True` with the score
 already 0:1. The only reliable warmup signal is `currentRoundState == "warmup"`.
 
+**The page's LIVE flag is not the start of play.** HLTV raises it when the
+teams connect to the server, and the warmup before the first map runs twenty
+minutes. So E4 is written by the page but put aside (`start_event:<match>`)
+while the feed reports a warmup, and the live machine sends it under the same
+key on the first real round. Without a feed the page still decides on its own —
+losing E4 would be worse than sending it early.
+
+**The page must not decide "already announced" from the shared state.** Both
+machines write `MatchState.LIVE`, so "previous != LIVE" is not the page's
+transition — if the feed had written it first, the page would stay quiet
+forever. Use the page's own memo, `page_seen_utc`.
+
+**A message that continues another must not overtake it.** The card goes
+straight to Telegram, events wait in the queue: after releasing a held E4 the
+worker holds the card until that message has left the queue. Same class of bug
+as E5 racing its own score.
+
 **The live message is not opened during the warmup.** It IS the map's card —
 it carries E5, it says the map has started — so creating it at 0:0 in a warmup
 that can run twenty minutes is a lie told several times a second. Only creation
@@ -206,7 +223,10 @@ the start, which would have been announced nine minutes into the match. And the
 other half of it: `upcoming_matches` judged by the CONFIRMED start, which during
 a debounce is stale by definition, so the match dropped out of "upcoming" at its
 old time and the schedule fell to idle. Both halves cost the same
-notification.
+notification. And the third: HLTV moves a match AFTER its slot has arrived, so
+one that should have started and has not keeps the frequent cadence
+(`matches_awaiting_start`) — otherwise nobody is looking at the page precisely
+when the moves happen.
 
 **The live message carries E5, and it is not a stylistic choice.** The two
 delivery paths differ: the live message goes straight to Telegram, an event is
@@ -279,7 +299,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 365 tests
+python -m pytest                                    # 387 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

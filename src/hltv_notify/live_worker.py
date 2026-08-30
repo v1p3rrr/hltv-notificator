@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from dataclasses import replace
 from typing import Dict, Optional
 
@@ -34,6 +35,10 @@ log = logging.getLogger(__name__)
 # back off, and config must not lower it below something reasonable.
 MIN_REJECTED_COOLDOWN_SECONDS = 60.0
 MAX_BACKOFF_SECONDS = 60.0
+# How long the map's card may wait for the "match has started" message it
+# continues. If the queue is stuck for longer than that, the card goes anyway:
+# a live score is worth more than the order of two messages.
+START_MESSAGE_WAIT_SECONDS = 30.0
 
 
 class LiveWorker:
@@ -50,6 +55,12 @@ class LiveWorker:
         self.machine = LiveMachine(storage, config)
         self.connected = False
         self.rejected_until: float = 0.0
+        # Set when this worker released the held "match has started": until it
+        # leaves the queue the card must not overtake it. An in-memory flag so
+        # the queue is not consulted on every frame the rest of the time.
+        self._awaiting_start_message: float = 0.0
+        # The map start, waiting for the card that carries it.
+        self._map_started: Optional[Event] = None
 
     async def run(self, stop: asyncio.Event) -> None:
         attempt = 0
@@ -109,7 +120,35 @@ class LiveWorker:
                 for event in events:
                     if event is not started:
                         self.notifier.enqueue(event)
-                await self._refresh_live_message(frame, events, started)
+                    if event.type == "E4":
+                        # The start message was held back through the warmup
+                        # and has only just been queued. The map's card
+                        # continues it, so it must not arrive first.
+                        self._awaiting_start_message = (
+                            time.monotonic() + START_MESSAGE_WAIT_SECONDS)
+                if started is not None:
+                    # Kept across frames rather than used on the spot: the card
+                    # may be waiting for the start message, and the map start
+                    # must not be lost while it waits.
+                    self._map_started = started
+                if self._start_message_pending():
+                    continue
+                await self._refresh_live_message(frame, events, self._map_started)
+                self._map_started = None
+
+    def _start_message_pending(self) -> bool:
+        """Is the "match has started" message still on its way out."""
+        if not self._awaiting_start_message:
+            return False
+        if time.monotonic() > self._awaiting_start_message:
+            log.warning("the start message of match %s is still in the queue, "
+                        "the live card will not wait any longer", self.match_id)
+            self._awaiting_start_message = 0.0
+            return False
+        if self.storage.is_queued(f"E4:{self.match_id}:started"):
+            return True
+        self._awaiting_start_message = 0.0
+        return False
 
     async def _refresh_live_message(self, frame, events, started=None) -> None:
         """The live message is redrawn after apply, so that the final edit

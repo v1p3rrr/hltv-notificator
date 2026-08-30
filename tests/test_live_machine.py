@@ -139,6 +139,109 @@ def test_e6_at_the_winning_round(storage, config):
     assert (events[0].payload["series_team"], events[0].payload["series_opponent"]) == (1, 0)
 
 
+# ---------------------------------------------------------------- E4 release
+
+def test_live_machine_releases_the_held_start(storage, config):
+    """The page wrote the message and put it aside; the feed decides when."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1, state="warmup", live=False))
+    storage.set_pending_start_event(MATCH_ID, {"team_name": "FORZE Reload",
+                                               "opponent": "Color", "url": "u"})
+
+    # Still the warmup: nothing yet.
+    assert m.apply(MATCH_ID, frame("de_mirage", rnd=1, state="warmup",
+                                   live=False)) == []
+
+    events = m.apply(MATCH_ID, frame("de_mirage", rnd=1, state="started"))
+    assert [e.type for e in events] == ["E4", "E5"]
+    assert events[0].idempotency_key == "E4:777:started"
+    assert events[0].payload["opponent"] == "Color"
+    # Put aside once, sent once.
+    assert storage.pending_start_event(MATCH_ID) is None
+    assert m.apply(MATCH_ID, frame("de_mirage", ours=1, rnd=2)) == []
+
+
+def test_the_feed_stays_quiet_when_nothing_was_held(storage, config):
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    assert [e.type for e in m.apply(MATCH_ID, frame("de_mirage", rnd=1))] == ["E5"]
+
+
+def test_the_live_phase_is_recorded_for_the_page_machine(storage, config):
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1, state="warmup", live=False))
+    assert storage.get_state(MATCH_ID)["live_round_state"] == "warmup"
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1, state="started"))
+    assert storage.get_state(MATCH_ID)["live_round_state"] == "started"
+
+
+# ---------------------------------------------------------------- E12
+
+def phase_config(config):
+    from dataclasses import replace
+    return replace(config, phase_alerts=True)
+
+
+def test_e12_is_off_by_default(storage, config):
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    assert m.apply(MATCH_ID, frame("de_mirage", ours=7, theirs=5, rnd=13)) == []
+
+
+def test_e12_at_half_time(storage, config):
+    """Any split of the first twelve rounds: 7-5, 6-6, 12-0."""
+    add_match(storage)
+    m = LiveMachine(storage, phase_config(config))
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    events = m.apply(MATCH_ID, frame("de_mirage", ours=7, theirs=5, rnd=13))
+    assert [e.type for e in events] == ["E12"]
+    assert events[0].idempotency_key == "E12:777:map:1:half"
+    assert events[0].payload["overtime"] == 0
+    for _ in range(5):
+        assert m.apply(MATCH_ID, frame("de_mirage", ours=7, theirs=5, rnd=13)) == []
+
+
+def test_e12_for_every_new_overtime(storage, config):
+    add_match(storage)
+    m = LiveMachine(storage, phase_config(config))
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    keys = []
+    for ours, theirs, rnd in [(6, 6, 13),        # half
+                              (11, 11, 23),      # nothing: not a boundary
+                              (12, 12, 25),      # overtime 1
+                              (13, 13, 27),      # nothing: inside the overtime
+                              (15, 15, 31),      # overtime 2
+                              (18, 18, 37)]:     # overtime 3
+        for event in m.apply(MATCH_ID, frame("de_mirage", ours=ours, theirs=theirs, rnd=rnd)):
+            keys.append((event.idempotency_key, event.payload["overtime"]))
+    assert keys == [
+        ("E12:777:map:1:half", 0),
+        ("E12:777:map:1:overtime:1", 1),
+        ("E12:777:map:1:overtime:2", 2),
+        ("E12:777:map:1:overtime:3", 3),
+    ]
+
+
+def test_e12_and_the_map_point_can_coincide(storage, config):
+    """12:0 is both the half and a map point. Both are true; the phase first."""
+    add_match(storage)
+    m = LiveMachine(storage, phase_config(config))
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    events = m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=0, rnd=13))
+    assert [e.type for e in events] == ["E12", "E11"]
+
+
+def test_no_e12_during_the_warmup(storage, config):
+    add_match(storage)
+    m = LiveMachine(storage, phase_config(config))
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    assert m.apply(MATCH_ID, frame("de_mirage", ours=6, theirs=6, rnd=13,
+                                   state="warmup", live=False)) == []
+
+
 # ---------------------------------------------------------------- E11
 
 def test_e11_at_map_point(storage, config):

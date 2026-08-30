@@ -35,6 +35,11 @@ class Notifier:
         self.storage = storage
         self.config = config
         self.telegram = telegram
+        # Set by enqueue so the worker does not sleep out its five seconds
+        # with a message already waiting. It matters where two messages have
+        # to arrive in order — the live card waits for the "match started" it
+        # continues — and it costs nothing anywhere else.
+        self._arrived = asyncio.Event()
 
     def enqueue(self, event: Event) -> bool:
         """Queue the event for EVERYONE it concerns.
@@ -61,6 +66,7 @@ class Notifier:
         if created:
             log.info("event %s queued for %d recipient(s): %s",
                      event.type, created, event.idempotency_key)
+            self._arrived.set()
         else:
             log.debug("event went to nobody (duplicate or muted): %s",
                       event.idempotency_key)
@@ -115,14 +121,20 @@ class Notifier:
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
+            self._arrived.clear()
             try:
                 await self._drain()
             except Exception:  # noqa: BLE001 - the worker is not allowed to die
                 log.exception("queue worker failed")
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                pass
+            # Whichever comes first: a new message, the stop signal, or the
+            # five seconds. The timeout is still needed — a retry becomes due
+            # on its own, with nobody enqueueing anything.
+            waiters = [asyncio.create_task(stop.wait()),
+                       asyncio.create_task(self._arrived.wait())]
+            done, pending = await asyncio.wait(
+                waiters, timeout=5, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
 
         # The final pass, already on shutdown. An event may have been born a
         # second ago — the end of a map in a match that finished right during

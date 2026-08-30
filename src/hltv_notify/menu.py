@@ -29,6 +29,7 @@ MUTABLE = (
     ("E3", "cancellation"),
     ("E4", "match start"),
     ("E5", "map start"),
+    ("E12", "half / overtime"),
     ("E11", "map point"),
     ("E6", "map end"),
     ("E7", "match end"),
