@@ -246,3 +246,43 @@ def test_match_start_message_carries_a_copyable_block():
     text = fmt.render(event, team_name="FORZE Reload", tz_name="Europe/Moscow")
     assert "<pre>" in text and "</pre>" in text
     assert "Mirage" in text and "our pick" in text and "decider" in text
+
+
+def _map_point_event():
+    return Event(type="E11", idempotency_key="k", match_id=1, payload={
+        "team_name": "FORZE Reload", "team_id": 12857,
+        "opponent": "Color", "opponent_id": 13973,
+        "event_name": "GLuck", "url": "u",
+        "map_number": 1, "map_name": "Mirage",
+        "score_team": 12, "score_opponent": 9, "round": 22, "overtime": 0})
+
+
+def test_map_point_message_names_the_leader():
+    from hltv_notify.notify import format as fmt
+
+    text = fmt.render(_map_point_event(), team_name="FORZE Reload",
+                      tz_name="Europe/Moscow")
+    assert text.splitlines()[0] == "🏁 <b>Map point — FORZE Reload</b>"
+    assert "Mirage — <b>12:9</b>" in text
+
+
+def test_map_point_turns_around_for_the_other_side():
+    """Whose map point it is follows from the score, and the score is flipped
+    for a subscriber who follows the opponent. A stored "whose" would not have
+    flipped with it."""
+    from hltv_notify.notify import format as fmt
+
+    text = fmt.render(_map_point_event(), team_name="Color",
+                      tz_name="Europe/Moscow", for_team_id=13973)
+    assert text.splitlines()[0] == "🚨 <b>Map point — FORZE Reload</b>"
+    assert "Mirage — <b>9:12</b>" in text
+
+
+def test_map_point_in_overtime_says_which_one():
+    from hltv_notify.notify import format as fmt
+
+    payload = {**_map_point_event().payload, "score_team": 18,
+               "score_opponent": 17, "overtime": 2}
+    event = Event(type="E11", idempotency_key="k", match_id=1, payload=payload)
+    text = fmt.render(event, team_name="FORZE Reload", tz_name="Europe/Moscow")
+    assert "(overtime 2)" in text

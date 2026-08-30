@@ -66,6 +66,32 @@ def test_first_update_creates_a_message(messenger):
     assert row["telegram_message_id"] == 1001
 
 
+def test_no_card_during_the_warmup(messenger):
+    """The card IS the map's card — it says the map has started. During the
+    warmup that is untrue, and the warmup before the first map can run for
+    twenty minutes."""
+    m, telegram, storage = messenger
+    warm = {**snapshot(score=(0, 0), rnd=1), "round_state": "warmup",
+            "warmup": True, "in_play": False}
+    asyncio.run(m.update(MATCH_ID, warm))
+    assert telegram.sent == []
+    assert storage.live_message(CHAT, MATCH_ID, 1) is None
+
+    asyncio.run(m.update(MATCH_ID, snapshot(score=(0, 0), rnd=1)))
+    assert len(telegram.sent) == 1
+
+
+def test_a_warmup_in_the_middle_of_a_map_still_updates(messenger):
+    """Only creation is held back: a server restart mid-map finds the card
+    already there."""
+    m, telegram, _ = messenger
+    asyncio.run(m.update(MATCH_ID, snapshot(score=(7, 5))))
+    warm = {**snapshot(score=(7, 5), rnd=13), "round_state": "warmup", "warmup": True}
+    asyncio.run(m.update(MATCH_ID, warm, force=True))
+    assert len(telegram.sent) == 1
+    assert len(telegram.edited) == 1
+
+
 def test_second_update_edits_instead_of_sending(messenger):
     m, telegram, _ = messenger
     asyncio.run(m.update(MATCH_ID, snapshot(score=(3, 2))))

@@ -112,6 +112,54 @@ def test_e2_key_depends_only_on_new_time(storage, config):
     assert key == f"E2:1:moved:{moved.replace(microsecond=0).isoformat()}"
 
 
+def test_e2_does_not_wait_when_the_match_is_about_to_start(storage, config):
+    """The window never runs past the start.
+
+    This is match 2397343: 18:00 moved to 18:20, noticed at 17:57. Waiting out
+    the ten-minute window would have put the message nine minutes into the
+    match — and in fact it never came at all, because the schedule had already
+    dropped to idle by then.
+    """
+    m = machine(storage, config)
+    start = later(3)
+    bootstrap(m, [entry(1, start=start)])
+    moved = start + timedelta(minutes=20)
+
+    events = m.apply([entry(1, start=moved)], TEAM_ID)
+    assert [e.type for e in events] == ["E2"]
+    assert storage.get_match(1)["start_utc"].startswith(moved.isoformat()[:16])
+
+
+def test_e2_is_not_sent_once_the_new_time_has_passed(storage, config):
+    """A reschedule reported after the fact is not news, it is history."""
+    m = machine(storage, config)
+    start = later(-60)
+    bootstrap(m, [entry(1, start=start)])
+    moved = start + timedelta(minutes=20)          # still in the past
+
+    assert m.apply([entry(1, start=moved)], TEAM_ID) == []
+    # The time itself is accepted all the same — nothing is lost.
+    assert storage.get_match(1)["start_utc"].startswith(moved.isoformat()[:16])
+
+
+def test_a_pending_move_keeps_the_match_upcoming(storage, config):
+    """Everything hangs off upcoming_matches: the polling cadence, the
+    reminders, /next. Judged by the confirmed time, a match moved forward drops
+    out of the list at its old start — and that is how the reschedule was
+    lost."""
+    m = machine(storage, config)
+    start = later(20)
+    bootstrap(m, [entry(1, start=start)])
+    moved = start + timedelta(minutes=20)
+    m.apply([entry(1, start=moved)], TEAM_ID)      # the window opens, no event yet
+
+    after_the_old_start = start + timedelta(minutes=1)
+    rows = storage.upcoming_matches(after_the_old_start)
+    assert [row["match_id"] for row in rows] == [1]
+    assert rows[0]["start_utc"].startswith(moved.isoformat()[:16])
+    assert rows[0]["confirmed_start_utc"].startswith(start.isoformat()[:16])
+
+
 def test_e3_when_future_match_disappears(storage, config):
     m = machine(storage, config)
     bootstrap(m, [entry(1, start=later(600)), entry(2, start=later(900))])

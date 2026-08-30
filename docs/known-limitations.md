@@ -99,6 +99,23 @@ fallback: if the message cannot be CREATED for a chat, a plain E5 is queued for
 that one chat instead. A failed later EDIT is still only skipped — by then the
 map start has already been delivered.
 
+## A reschedule spotted after its own new time is not reported
+
+E2 says "the match has moved to 18:20". Delivered at 18:25 that is not a
+notification but a post-mortem, and E4 is about to report the start anyway. So
+if the new time has already passed by the moment the service gets to look, the
+time is accepted silently and no message is sent. It happens when the service
+was blind across the reschedule — HLTV timing out for several polls in a row is
+enough.
+
+## Map point is only about the MAP
+
+E11 fires when somebody is one round from taking the map, in regulation and
+once per overtime. There is no separate warning for "one map from taking the
+match" — instead the map point says so in its own text when winning that map
+would decide the series. A team that goes 1-0 up in a BO3 gets no warning of
+its own; the next map's map point carries it.
+
 ## The map start is not reported during the warmup
 
 "A map has started" waits for `currentRoundState` to leave `warmup`. That is

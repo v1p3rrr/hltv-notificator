@@ -38,9 +38,11 @@ def test_dump_is_readable():
 def test_replay_produces_the_expected_events(prepared, config):
     """A recorded match always yields one and the same list of events."""
     events = replay(DUMP, prepared, config, MATCH_ID)
-    assert [e.type for e in events] == ["E5", "E6"]
+    # The map went 10:13, so the map point on this dump belongs to the opponent.
+    assert [e.type for e in events] == ["E5", "E11", "E6"]
     assert [e.idempotency_key for e in events] == [
         "E5:2397053:map:2:started:Dust2",
+        "E11:2397053:map:2:point:them:13",
         "E6:2397053:map:2:result:10-13",
     ]
 
@@ -59,7 +61,7 @@ def test_running_the_same_dump_twice_adds_nothing(prepared, config):
     """The project's main trap: the feed sends the full state all over again."""
     first = replay(DUMP, prepared, config, MATCH_ID)
     second = replay(DUMP, prepared, config, MATCH_ID)
-    assert len(first) == 2
+    assert len(first) == 3
     assert second == []
 
 
@@ -77,7 +79,7 @@ def test_break_in_the_middle_and_full_state_again(prepared, config):
     for frame in all_frames:
         produced += machine.apply(MATCH_ID, frame)
 
-    assert [e.type for e in produced] == ["E5", "E6"]
+    assert [e.type for e in produced] == ["E5", "E11", "E6"]
 
 
 def test_notifications_are_not_duplicated_across_replays(tmp_path, config):
@@ -91,8 +93,8 @@ def test_notifications_are_not_duplicated_across_replays(tmp_path, config):
         for event in replay(DUMP, storage, config, MATCH_ID):
             notifier.enqueue(event)
 
-    assert storage.sent_event_count() == 2
-    assert storage.pending_count() == 2
+    assert storage.sent_event_count() == 3
+    assert storage.pending_count() == 3
     storage.close()
 
 
@@ -130,7 +132,7 @@ def mouz_config():
 def test_boundary_dump_gives_map_start_multikill_and_map_end(mouz, mouz_config):
     """Recorded from a live BLAST match: the map Ancient from start to finish."""
     events = replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH)
-    assert [e.type for e in events] == ["E5", "E9", "E6"]
+    assert [e.type for e in events] == ["E5", "E9", "E11", "E6"]
 
 
 def test_real_multikill_is_detected(mouz, mouz_config):

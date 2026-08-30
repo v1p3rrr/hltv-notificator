@@ -195,6 +195,19 @@ The sequence is `warmup/live=False` (177 frames), then `started/live=False`
 (64 frames — the map really running), then `ended/live=True` with the score
 already 0:1. The only reliable warmup signal is `currentRoundState == "warmup"`.
 
+**The live message is not opened during the warmup.** It IS the map's card —
+it carries E5, it says the map has started — so creating it at 0:0 in a warmup
+that can run twenty minutes is a lie told several times a second. Only creation
+is held back: a warmup in the middle of a map finds the card already there.
+
+**The debounce must not outlive what it is debouncing.** E2 collapsed a burst
+of reschedules over ten minutes — including a move seen three minutes before
+the start, which would have been announced nine minutes into the match. And the
+other half of it: `upcoming_matches` judged by the CONFIRMED start, which during
+a debounce is stale by definition, so the match dropped out of "upcoming" at its
+old time and the schedule fell to idle. Both halves cost the same
+notification.
+
 **The live message carries E5, and it is not a stylistic choice.** The two
 delivery paths differ: the live message goes straight to Telegram, an event is
 merely queued and the outbox worker wakes every five seconds. So a separate E5
@@ -266,7 +279,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 349 tests
+python -m pytest                                    # 365 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

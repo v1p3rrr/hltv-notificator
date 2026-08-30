@@ -479,12 +479,30 @@ class Storage:
         return mine | unlinked
 
     def upcoming_matches(self, now: Optional[datetime] = None) -> List[sqlite3.Row]:
+        """Matches still ahead of us, by the NEWEST time known.
+
+        While a reschedule is being debounced the confirmed time is stale by
+        definition — the page already says otherwise. Judging by the confirmed
+        one, a match moved forward drops out of "upcoming" at its old start,
+        and with it goes everything that hangs off this query: the polling
+        cadence falls to idle, the reminders stop and /next hides the match.
+        That is exactly how a move from 18:00 to 18:20 was missed. So the
+        pending time wins where there is one, and `confirmed_start_utc` stays
+        available for whoever needs to tell the two apart.
+
+        The alias comes FIRST in the select on purpose: `m.*` brings its own
+        `start_utc` along, and when a name repeats sqlite3.Row answers with the
+        first column that carries it.
+        """
         now = now or utcnow()
         return list(self.conn.execute(
-            "SELECT m.*, s.state AS state FROM matches m "
+            "SELECT COALESCE(s.pending_start_utc, m.start_utc) AS start_utc, "
+            "       m.*, s.state AS state, m.start_utc AS confirmed_start_utc "
+            "FROM matches m "
             "LEFT JOIN match_state s ON s.match_id = m.match_id "
-            "WHERE m.start_utc >= ? AND m.missing_since_utc IS NULL "
-            "ORDER BY m.start_utc",
+            "WHERE COALESCE(s.pending_start_utc, m.start_utc) >= ? "
+            "  AND m.missing_since_utc IS NULL "
+            "ORDER BY COALESCE(s.pending_start_utc, m.start_utc)",
             (iso(now),),
         ))
 

@@ -182,6 +182,26 @@ def render(event: Event, *, team_name: str, tz_name: str,
             _link(url, "Match page"),
         ])
 
+    if event.type == "E11":
+        ours = payload.get("score_team") or 0
+        theirs = payload.get("score_opponent") or 0
+        # Whose map point it is follows from the score, and the score has
+        # already been turned around for this recipient. A stored "whose"
+        # would not have turned with it.
+        ours_leading = ours > theirs
+        icon = "🏁" if ours_leading else "🚨"
+        leader = team if ours_leading else opponent
+        overtime = payload.get("overtime") or 0
+        where = f" (overtime {overtime})" if overtime else ""
+        return "\n".join([
+            f"{icon} <b>Map point — {leader}</b>",
+            f"{_esc(payload.get('map_name'))} — <b>{ours}:{theirs}</b>{where}",
+            f"{team} — {opponent}",
+            ("One round from taking the map — and the match"
+             if payload.get("decides_match") else "One round from taking the map"),
+            _link(url, "Watch the match"),
+        ])
+
     if event.type == "E6":
         ours = payload.get("score_team")
         theirs = payload.get("score_opponent")

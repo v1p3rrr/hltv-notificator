@@ -94,6 +94,18 @@ class LiveMessenger:
         if row is not None and row["finalized"]:
             return True
 
+        if row is None and snapshot.get("warmup"):
+            # The card is not opened during the warmup. It IS the map's card —
+            # it says the map has started — and during the warmup that is
+            # simply untrue: the score sits at 0:0 and the warmup can run for
+            # twenty minutes. Seen in the chat: the card appeared with
+            # "round 1 · warmup" before anything had been played.
+            #
+            # Only creation is held back. A warmup in the middle of a map (a
+            # server restart, a technical pause) finds the card already there,
+            # and it keeps being updated.
+            return False
+
         key = (chat_id, match_id, map_number)
         if not force and row is not None:
             # The throttle applies to edits, never to creating the message:

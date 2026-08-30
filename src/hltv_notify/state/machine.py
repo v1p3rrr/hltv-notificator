@@ -134,6 +134,10 @@ class ScheduleMachine:
         irritating; not notifying loses the point. So: shifts below the
         threshold are swallowed silently, and a burst of edits within a short
         window collapses into a single event carrying the last value.
+
+        The window has a hard end though: it never runs past the start. A
+        reschedule reported after the match has begun is not a notification,
+        it is a post-mortem.
         """
         observed = entry.start_utc
         if observed == confirmed_start:
@@ -145,6 +149,19 @@ class ScheduleMachine:
             # A small shift: quietly accept the new time, do not call it an event.
             self._clear_pending(entry.match_id)
             return None, observed
+
+        if self._no_time_to_wait(confirmed_start, observed, now):
+            # There is no time left to debounce. The window exists to collapse
+            # a burst of edits, and it needs minutes to do that; with the start
+            # already within the window every one of them is spent on silence,
+            # and by the time the window closes the match has begun. Measured
+            # on match 2397343: the move 18:00 -> 18:20 was seen at 17:57:43,
+            # the window still had seven minutes to run, the schedule dropped to
+            # idle right after (its stored start had passed) and E2 would have
+            # been born at 18:29 — nine minutes into the match.
+            self._clear_pending(entry.match_id)
+            return self._settle(entry, confirmed_start=confirmed_start, now=now,
+                                bootstrap=bootstrap)
 
         state = self.storage.get_state(entry.match_id)
         pending_start = state["pending_start_utc"] if state else None
@@ -166,9 +183,32 @@ class ScheduleMachine:
             return None, None
 
         self._clear_pending(entry.match_id)
+        return self._settle(entry, confirmed_start=confirmed_start, now=now,
+                            bootstrap=bootstrap)
+
+    def _no_time_to_wait(self, confirmed_start: datetime, observed: datetime,
+                         now: datetime) -> bool:
+        """Is the match too close for the debounce to be worth its wait.
+
+        The EARLIER of the two times is what counts: that is the moment the
+        person is getting ready for, whichever of the two turns out to be real.
+        """
+        return min(confirmed_start, observed) - now <= timedelta(
+            minutes=self.config.e2_debounce_minutes)
+
+    def _settle(self, entry: ScheduleEntry, *, confirmed_start: datetime,
+                now: datetime, bootstrap: bool):
+        """Accept the new time; say so out loud unless saying so is pointless."""
         if bootstrap:
-            return None, observed
-        return self._event_e2(entry, old_start=confirmed_start), observed
+            return None, entry.start_utc
+        if entry.start_utc <= now:
+            # The new time has already arrived — this is no longer news but
+            # history, and the match-page polling is about to report the start
+            # itself. Seen when the service was blind across the reschedule.
+            log.info("match %s: the move to %s is not reported, that time has "
+                     "already passed", entry.match_id, entry.start_utc)
+            return None, entry.start_utc
+        return self._event_e2(entry, old_start=confirmed_start), entry.start_utc
 
     def _clear_pending(self, match_id: int) -> None:
         state = self.storage.get_state(match_id)

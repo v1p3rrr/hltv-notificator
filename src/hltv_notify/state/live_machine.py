@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..config import Config
 from ..models import Event, MatchState
-from ..scoring import map_completed, series_decided
+from ..scoring import map_completed, rounds_to_win, series_decided
 from ..sources.scorebot import ROUND_WARMUP, LiveFrame, PlayerLine
 from .db import Storage
 from .multikill import MultikillTracker
@@ -55,6 +55,13 @@ class LiveMachine:
         # must not be muted for the sake of the other. They live in the
         # worker's memory and survive reconnects inside it.
         self._multikill: Dict[int, MultikillTracker] = {}
+        # Map points already announced. The journal would swallow the repeats
+        # anyway — the key is the same one — but the score stays at map point
+        # for a whole round, i.e. some hundreds of frames, and each of them
+        # would otherwise mean a write to the queue and a line in the log.
+        # In memory, like the multikill trackers: after a restart the journal
+        # is still there to keep the message from going out twice.
+        self._map_points: set = set()
 
     def _tracker(self, team_id: int) -> MultikillTracker:
         if team_id not in self._multikill:
@@ -117,6 +124,10 @@ class LiveMachine:
             finished = self._event_e7(match_id, frame, team_id)
             if finished is not None:
                 events.append(finished)
+        else:
+            point = self._event_e11(match_id, frame, map_number, map_name, ours, theirs)
+            if point is not None:
+                events.append(point)
 
         series = self._series(match_id)
         self.storage.set_state(
@@ -156,6 +167,7 @@ class LiveMachine:
             "score_opponent": theirs,
             "round": frame.current_round,
             "round_state": frame.round_state,
+            "warmup": self._warming_up(frame),
             "in_play": frame.in_play,
             "series_team": series[0],
             "series_opponent": series[1],
@@ -332,6 +344,74 @@ class LiveMachine:
                 "series_opponent": series[1],
             },
         )
+
+    def _event_e11(self, match_id: int, frame: LiveFrame, map_number: int,
+                   map_name: str, ours: int, theirs: int) -> Optional[Event]:
+        """Map point: somebody is one round away from taking the map.
+
+        The threshold is not hardcoded anywhere — it is the same
+        hltv_notify.scoring that decides the map is over, so the warning cannot
+        drift apart from the result it warns about. That matters most in
+        overtime: every overtime moves the target three rounds up (13, then 16,
+        then 19), so every one of them has its own map point, and every one of
+        them is worth a warning of its own.
+
+        Both teams get one — a map point AGAINST us is the more urgent of the
+        two. Who it belongs to is not stored in the payload but read off the
+        score at render time: the score is turned around for a subscriber who
+        follows the opponent, and a separate "whose" field would not turn with
+        it.
+        """
+        if self._warming_up(frame) or ours == theirs:
+            return None
+        if rounds_to_win(ours, theirs,
+                         regulation=frame.regulation, overtime=frame.overtime) != 1:
+            return None
+
+        target = max(ours, theirs) + 1
+        overtime_number = max(0, (target - 1 - frame.regulation + frame.overtime - 1)
+                              // frame.overtime) if frame.overtime > 0 else 0
+        # The target is in the key, so each overtime brings its own map point,
+        # while the frames repeating the same score bring nothing. So is the
+        # leader: at 11:12 they are one round away, at 12:12 the score is level
+        # again, and at 12:11 it is us — two different warnings that must not
+        # collapse into one.
+        key = (f"E11:{match_id}:map:{map_number}:point"
+               f":{'us' if ours > theirs else 'them'}:{target}")
+        if key in self._map_points:
+            return None
+        self._map_points.add(key)
+        log.info("match %s: map point on %s at %d:%d (target %d)",
+                 match_id, map_name, ours, theirs, target)
+        return Event(
+            type="E11",
+            idempotency_key=key,
+            match_id=match_id,
+            payload={
+                **self._context(match_id, frame),
+                "map_number": map_number,
+                "map_name": map_name,
+                "score_team": ours,
+                "score_opponent": theirs,
+                "round": frame.current_round,
+                "overtime": overtime_number,
+                "decides_match": self._would_decide(match_id, ours > theirs),
+            },
+        )
+
+    def _would_decide(self, match_id: int, ours_leading: bool) -> bool:
+        """Would taking this map end the whole match.
+
+        That is the difference between "get ready" and "it is over in a
+        minute", and it is what the warning is for. Symmetric between the two
+        teams, so it needs no turning around at render time.
+        """
+        ours, theirs = self._series(match_id)
+        if ours_leading:
+            ours += 1
+        else:
+            theirs += 1
+        return series_decided(ours, theirs, self.storage.best_of(match_id))
 
     def _event_e7(self, match_id: int, frame: LiveFrame,
                   team_id: int) -> Optional[Event]:

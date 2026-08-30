@@ -70,12 +70,38 @@ E6:<match>:map:<n>:result:<ours>-<theirs>
 E7:<match>:finished:<maps_ours>-<maps_theirs>
 E8:<subsystem>:<reason>:<utc_hour>
 E9:<match>:map:<n>:round:<r>:<steam_id>:<kills>
+E11:<match>:map:<n>:point:<us|them>:<target_score>
 ```
 
 A key must depend **only on the content**. Let the time the response arrived
 into it and deduplication stops working. The hour in the E8 key is a
 compromise: we do not send "I have gone blind" on every failed attempt, but
 neither do we mute the problem forever.
+
+## The reschedule (E2) and its two deadlines
+
+Moving a match back and forth is routine, so a shift under
+`E2_MIN_SHIFT_MINUTES` is accepted silently and a bigger one waits out
+`E2_DEBOUNCE_MINUTES` before it is announced — a burst of edits then collapses
+into one message carrying the last value.
+
+The window has a hard end: **it never runs past the start.** With the earlier
+of the two times already inside the window there is no time left to debounce,
+and the reschedule goes out on the first sighting. Measured on match 2397343:
+the move 18:00 -> 18:20 appeared on the page at 17:57:43, the window still had
+seven minutes to run, and E2 would have been born at 18:29 — nine minutes into
+a match that had started at 18:20.
+
+And once the new time itself has passed, E2 is not sent at all. It is no longer
+news but history, and E4 is about to report the start anyway.
+
+That case also exposed a second half of the same bug. Everything hangs off
+`upcoming_matches`: the polling cadence, the reminders, `/next`. It judged by
+the CONFIRMED time, which during a debounce is stale by definition — so at
+18:00 the match dropped out of "upcoming", the schedule fell back to idle
+(polling every half hour) and the next look at the page came at 18:29. The
+query now takes the pending time where there is one, and keeps the confirmed
+one available as `confirmed_start_utc`.
 
 ## The sources and their quirks
 
@@ -167,6 +193,38 @@ The warmup is ignored — that is deathmatch.
 Errors lean the safe way: after a reconnect mid-round the baseline is taken
 afresh, so a multikill can be **missed but never invented**.
 
+## Map point (E11)
+
+One round from taking the map — time to stop what you are doing and watch.
+
+The threshold is not written down anywhere in this feature: it asks
+`hltv_notify.scoring.rounds_to_win`, the same module that decides the map is
+over. The warning therefore cannot drift apart from the result it warns about,
+and it follows the format the feed itself reports rather than a hardcoded 13.
+
+**Every overtime brings its own map point.** Under MR12/MR3 the target moves
+13, then 16, then 19, so a series of overtimes produces a warning per overtime
+— which is the point, since that is exactly when a map is most likely to end
+at any moment. The target is part of the idempotency key, which is what keeps
+them apart; the leader is in it too, because at 11:12 the map point is theirs
+and at 12:11 it is ours, and those are two different warnings.
+
+A repeat is not born while the round is played out: the score stands at map
+point for a whole round, i.e. some hundreds of frames. The journal would
+swallow them anyway, but the machine keeps an in-memory memo so the queue is
+not written to hundreds of times. After a restart the memo is gone and the
+journal takes over.
+
+The message also says whether taking this map ends the whole MATCH — that is
+the difference between "get ready" and "it is over in a minute", and it comes
+from the same `series_decided` the end-of-match event uses. It is symmetric
+between the two teams, so unlike the score it needs no turning around.
+
+Both teams get a warning. A map point against us is the more urgent of the two,
+and the message is written from the score, not from a stored "whose": the score
+is turned around for a subscriber who follows the opponent, and a "whose" field
+would not have turned with it.
+
 ## The live message
 
 It goes **around the outbox queue**, and that is deliberate: it has no
@@ -211,6 +269,11 @@ ended    live=True   round=1  0:1                  <- only now is live true
 
 `live` turns true only once the first round has been PLAYED. Gating on it would
 announce the map after its first round was already decided.
+
+The live message obeys the same rule, because it IS the announcement: the card
+is not opened during the warmup. Only creation is held back — a warmup in the
+middle of a map (a server restart, a technical pause) finds the card already
+there and keeps updating it.
 
 The private memo `live_map_name` is not advanced during the warmup either —
 otherwise the comparison would find nothing left to notice by the time the map

@@ -129,12 +129,116 @@ def test_e6_at_the_winning_round(storage, config):
     add_match(storage)
     m = LiveMachine(storage, config)
     m.apply(MATCH_ID, frame("de_mirage", rnd=1))
-    assert m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=9, rnd=22)) == []
+    # 12:9 is already a map point — that is E11, and it is tested on its own below.
+    assert [e.type for e in
+            m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=9, rnd=22))] == ["E11"]
     events = m.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=9, rnd=22, state="ended"))
     assert [e.type for e in events] == ["E6"]
     assert events[0].idempotency_key == "E6:777:map:1:result:13-9"
     assert events[0].payload["overtime"] is False
     assert (events[0].payload["series_team"], events[0].payload["series_opponent"]) == (1, 0)
+
+
+# ---------------------------------------------------------------- E11
+
+def test_e11_at_map_point(storage, config):
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    assert m.apply(MATCH_ID, frame("de_mirage", ours=11, theirs=9, rnd=21)) == []
+    events = m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=9, rnd=22))
+    assert [e.type for e in events] == ["E11"]
+    assert events[0].idempotency_key == "E11:777:map:1:point:us:13"
+    assert events[0].payload["overtime"] == 0
+    assert (events[0].payload["score_team"], events[0].payload["score_opponent"]) == (12, 9)
+
+
+def test_e11_says_when_the_map_would_end_the_match(storage, config):
+    """"Get ready" and "it is over in a minute" are different messages."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    storage.set_best_of(MATCH_ID, 3)   # the match page fills it in
+    events = m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=9, rnd=22))
+    # 0-0 in the series: taking Mirage makes it 1-0, the BO3 goes on.
+    assert events[0].payload["decides_match"] is False
+
+    m.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=9, rnd=22, state="ended"))
+    m.apply(MATCH_ID, frame("de_dust2", rnd=1))
+    events = m.apply(MATCH_ID, frame("de_dust2", ours=12, theirs=9, rnd=22))
+    assert [e.type for e in events] == ["E11"]
+    assert events[0].payload["decides_match"] is True
+
+
+def test_e11_for_the_opponent_too(storage, config):
+    """A map point AGAINST us is the more urgent of the two."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    events = m.apply(MATCH_ID, frame("de_mirage", ours=4, theirs=12, rnd=17))
+    assert [e.type for e in events] == ["E11"]
+    assert events[0].idempotency_key == "E11:777:map:1:point:them:13"
+
+
+def test_e11_not_repeated_while_the_round_is_played(storage, config):
+    """The score stays at map point for a whole round — hundreds of frames."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    assert [e.type for e in m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=9,
+                                                    rnd=22))] == ["E11"]
+    for state in ("started", "ended", "freezePeriod", "started"):
+        assert m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=9, rnd=22,
+                                       state=state)) == []
+
+
+def test_every_overtime_has_its_own_map_point(storage, config):
+    """MR12/MR3: the target moves 13, 16, 19 — and every one of them is a map
+    point of its own, with its own warning."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    keys = []
+    for ours, theirs, rnd in [(12, 11, 23),      # map point in regulation
+                              (12, 12, 24),      # levelled, overtime starts
+                              (15, 14, 29),      # map point in overtime 1
+                              (15, 15, 30),      # levelled again
+                              (18, 17, 35)]:     # map point in overtime 2
+        for event in m.apply(MATCH_ID, frame("de_mirage", ours=ours, theirs=theirs, rnd=rnd)):
+            keys.append((event.type, event.idempotency_key,
+                         event.payload.get("overtime")))
+    assert keys == [
+        ("E11", "E11:777:map:1:point:us:13", 0),
+        ("E11", "E11:777:map:1:point:us:16", 1),
+        ("E11", "E11:777:map:1:point:us:19", 2),
+    ]
+
+
+def test_no_map_point_when_the_scores_are_level(storage, config):
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    for ours, theirs, rnd in [(11, 11, 22), (12, 12, 24), (15, 15, 30)]:
+        assert m.apply(MATCH_ID, frame("de_mirage", ours=ours, theirs=theirs, rnd=rnd)) == []
+
+
+def test_no_map_point_during_the_warmup(storage, config):
+    """A leftover score in a warmup frame between maps must not fire it."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    assert m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=9, rnd=22,
+                                   state="warmup", live=False)) == []
+
+
+def test_map_point_and_map_end_do_not_collide(storage, config):
+    """The winning round produces E6 alone — the map is over, warning about it
+    is pointless."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    events = m.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=9, rnd=22, state="ended"))
+    assert [e.type for e in events] == ["E6"]
 
 
 def test_e6_not_repeated_while_feed_keeps_sending_final_score(storage, config):
@@ -153,7 +257,8 @@ def test_e6_survives_mr3_overtime(storage, config):
     m = LiveMachine(storage, config)
     m.apply(MATCH_ID, frame("de_mirage", rnd=1))
     assert m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=12, rnd=24)) == []
-    assert m.apply(MATCH_ID, frame("de_mirage", ours=15, theirs=14, rnd=29)) == []
+    assert [e.type for e in
+            m.apply(MATCH_ID, frame("de_mirage", ours=15, theirs=14, rnd=29))] == ["E11"]
     events = m.apply(MATCH_ID, frame("de_mirage", ours=16, theirs=14, rnd=30, state="ended"))
     assert [e.type for e in events] == ["E6"]
     assert events[0].payload["overtime"] is True
