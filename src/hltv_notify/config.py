@@ -56,10 +56,6 @@ class Config:
     # По умолчанию список закрытый: у бота публичный адрес, и без него команду
     # ему сможет отдать кто угодно, кто его найдёт.
     chat_id: str = field(default_factory=lambda: _str("TELEGRAM_CHAT_ID", ""))
-
-    # Старое имя той же настройки. Оставлено, чтобы обновление не разломало
-    # уже написанные .env; в новых достаточно TELEGRAM_CHAT_ID.
-    allowed_chats: str = field(default_factory=lambda: _str("TELEGRAM_ALLOWED_CHATS", ""))
     whitelist_only: bool = field(default_factory=lambda: _bool("TELEGRAM_WHITELIST_ONLY", True))
 
     # режим
@@ -153,22 +149,20 @@ class Config:
         """Разрешённые чаты в порядке объявления, без повторов.
 
         Источник один — `TELEGRAM_CHAT_ID`, где id перечисляются через запятую
-        (точка с запятой и пробелы тоже принимаются). `TELEGRAM_ALLOWED_CHATS`
-        читается следом: это прежнее имя, оставленное ради уже написанных .env.
+        (точка с запятой и пробелы тоже принимаются).
         """
         ids: List[str] = []
-        for raw in (self.chat_id, self.allowed_chats):
-            for part in raw.replace(";", ",").split(","):
-                part = part.strip()
-                if not part or part in ids:
-                    continue
-                if not _CHAT_ID_RE.match(part):
-                    # Не роняем запуск: остальные id рабочие, а этот всё равно
-                    # ничего не получит — Telegram адресуется числом.
-                    log.warning("в списке чатов пропущено значение %r: "
-                                "нужен числовой id, его подскажет /whoami", part)
-                    continue
-                ids.append(part)
+        for part in self.chat_id.replace(";", ",").split(","):
+            part = part.strip()
+            if not part or part in ids:
+                continue
+            if not _CHAT_ID_RE.match(part):
+                # Не роняем запуск: остальные id рабочие, а этот всё равно
+                # ничего не получит — Telegram адресуется числом.
+                log.warning("в списке чатов пропущено значение %r: "
+                            "нужен числовой id, его подскажет /whoami", part)
+                continue
+            ids.append(part)
         return ids
 
     @property

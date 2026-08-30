@@ -93,3 +93,76 @@ def test_event_and_queue_row_are_written_atomically(storage, config):
     keys = [row["idempotency_key"] for row in storage.due_outbox()]
     assert keys == ["E1:7:new"]
     assert storage.sent_event_count() == 1
+
+
+# ---------------------------------------------------------------- остановка
+
+
+class SlowTelegram:
+    """Отправляет медленно — чтобы дедлайн последнего прохода был осязаем."""
+
+    def __init__(self, delay=0.0):
+        self.delay = delay
+        self.sent = []
+
+    async def send_message(self, chat_id, text, reply_markup=None):
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        self.sent.append(chat_id)
+        return len(self.sent)
+
+
+def pending_event(number: int) -> Event:
+    return Event(type="E1", idempotency_key=f"E1:{number}:new", match_id=number,
+                 payload={"opponent": "X", "event_name": "E",
+                          "start_utc": later(60).isoformat(), "url": "u"})
+
+
+def test_stop_flushes_what_was_already_decided(storage, config):
+    """На остановке очередь дописывает начатое.
+
+    Событие могло родиться секунду назад — конец карты у матча, доигравшегося
+    прямо во время рестарта. Без последнего прохода оно пролежало бы до
+    следующего запуска, когда уведомление уже никому не нужно.
+    """
+    from dataclasses import replace
+
+    storage.add_subscriber(CHAT)
+    telegram = SlowTelegram()
+    live = Notifier(storage, replace(config, dry_run=False, chat_id=CHAT), telegram)
+    live.enqueue(pending_event(1))
+    assert storage.pending_count() == 1
+
+    stop = asyncio.Event()
+    stop.set()                      # останов пришёл раньше, чем воркер проснулся
+    asyncio.run(live.run(stop))
+
+    assert telegram.sent == [CHAT]
+    assert storage.pending_count() == 0
+
+
+def test_final_pass_respects_its_deadline(storage, config):
+    """Дедлайн важнее полноты: за нами SIGKILL, и лучше отправить сколько
+    успели, чем быть убитыми посреди записи. Остаток уйдёт при следующем
+    запуске — он никуда из очереди не делся."""
+    from dataclasses import replace
+
+    from hltv_notify.notify import outbox as outbox_module
+
+    storage.add_subscriber(CHAT)
+    telegram = SlowTelegram(delay=0.05)
+    live = Notifier(storage, replace(config, dry_run=False, chat_id=CHAT), telegram)
+    for number in range(1, 4):
+        live.enqueue(pending_event(number))
+
+    original = outbox_module.FINAL_DRAIN_SECONDS
+    outbox_module.FINAL_DRAIN_SECONDS = 0.0      # времени не отпущено вовсе
+    try:
+        stop = asyncio.Event()
+        stop.set()
+        asyncio.run(live.run(stop))
+    finally:
+        outbox_module.FINAL_DRAIN_SECONDS = original
+
+    assert telegram.sent == []
+    assert storage.pending_count() == 3          # ничего не потеряно

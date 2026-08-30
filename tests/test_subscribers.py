@@ -18,7 +18,7 @@ MATCH = 700
 
 @pytest.fixture()
 def config():
-    return Config(chat_id=ILYA, allowed_chats="222", bot_token="t")
+    return Config(chat_id=f"{ILYA},{FRIEND}", bot_token="t")
 
 
 @pytest.fixture()
@@ -200,10 +200,10 @@ def test_whitelist_can_be_switched_off():
     assert open_config.chat_allowed(STRANGER) is True
 
 
-def test_main_chat_is_always_allowed():
-    """Даже если TELEGRAM_ALLOWED_CHATS пуст, владелец не должен закрыть себе
-    доступ к собственному боту."""
-    assert Config(chat_id=ILYA, allowed_chats="").chat_allowed(ILYA) is True
+def test_a_single_id_is_a_valid_list():
+    """Один аккаунт — это просто список из одного id."""
+    assert Config(chat_id=ILYA).chat_allowed(ILYA) is True
+    assert Config(chat_id=ILYA).chat_allowed(FRIEND) is False
 
 
 def test_single_user_mode_still_works(tmp_path):
@@ -233,19 +233,10 @@ def test_main_chat_is_the_first_in_the_list():
     assert Config(chat_id="111,222").main_chat_id == "111"
 
 
-def test_legacy_variable_still_works():
-    """TELEGRAM_ALLOWED_CHATS — прежнее имя, .env с ним не должен сломаться."""
-    cfg = Config(chat_id="111", allowed_chats="222,333")
-    assert cfg.allowed_chat_ids() == ["111", "222", "333"]
-
-
-def test_only_the_legacy_variable_still_yields_a_main_chat():
-    """Раньше при пустом TELEGRAM_CHAT_ID основного чата не оставалось вовсе,
-    и первый посев команды тихо не выполнялся."""
-    cfg = Config(chat_id="", allowed_chats="222,333")
-    assert cfg.main_chat_id == "222"
-    assert cfg.telegram_enabled() is False       # токена нет
-    assert Config(chat_id="", allowed_chats="222", bot_token="t").telegram_enabled()
+def test_empty_list_means_telegram_is_not_configured():
+    assert Config(chat_id="", bot_token="t").telegram_enabled() is False
+    assert Config(chat_id="111", bot_token="t").telegram_enabled() is True
+    assert Config(chat_id="", bot_token="t").main_chat_id == ""
 
 
 def test_duplicates_and_junk_are_dropped():

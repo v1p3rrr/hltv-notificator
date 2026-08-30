@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Optional
 
 from ..config import Config
@@ -22,6 +23,9 @@ log = logging.getLogger(__name__)
 # Telegram разрешает примерно одно сообщение в секунду в один чат.
 SEND_INTERVAL_SECONDS = 1.2
 MAX_ATTEMPTS = 8
+# Сколько отпущено последнему проходу при остановке. Дальше решает вызывающий:
+# у него свой таймер, а за ним SIGKILL от докера.
+FINAL_DRAIN_SECONDS = 6.0
 
 
 class Notifier:
@@ -118,10 +122,33 @@ class Notifier:
             except asyncio.TimeoutError:
                 pass
 
-    async def _drain(self) -> None:
-        for row in self.storage.due_outbox():
+        # Последний проход, уже на остановке. Событие могло родиться секунду
+        # назад — например, конец карты у матча, который доигрался прямо во
+        # время рестарта. Без этого прохода оно пролежит в очереди до
+        # следующего запуска, а к тому времени уведомление уже никому не нужно.
+        try:
+            await self._drain(deadline=time.monotonic() + FINAL_DRAIN_SECONDS)
+        except Exception:  # noqa: BLE001 - остановке падать нельзя
+            log.exception("сбой при досылке очереди на остановке")
+
+    async def _drain(self, deadline: Optional[float] = None) -> None:
+        """Отправить всё, чему пришёл срок.
+
+        `deadline` (момент по monotonic) ограничивает проход при остановке:
+        сервису отпущено немного времени, и лучше отправить сколько успеем,
+        чем быть убитым посреди отправки.
+        """
+        rows = self.storage.due_outbox()
+        for index, row in enumerate(rows):
+            if deadline is not None and time.monotonic() >= deadline:
+                log.warning("очередь: отпущенное время вышло, осталось %d",
+                            len(rows) - index)
+                return
             await self._deliver(row)
-            await asyncio.sleep(SEND_INTERVAL_SECONDS)
+            if index + 1 < len(rows):
+                # Пауза между сообщениями, а не после последнего: на остановке
+                # лишняя секунда — это секунда, которой может не хватить.
+                await asyncio.sleep(SEND_INTERVAL_SECONDS)
 
     async def _deliver(self, row) -> None:
         if self.config.dry_run or self.telegram is None:

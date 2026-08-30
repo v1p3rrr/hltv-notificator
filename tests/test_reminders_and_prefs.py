@@ -18,7 +18,7 @@ MATCH = 800
 
 @pytest.fixture()
 def config():
-    return Config(chat_id=ILYA, allowed_chats="222", bot_token="t")
+    return Config(chat_id=f"{ILYA},{FRIEND}", bot_token="t")
 
 
 @pytest.fixture()
@@ -175,7 +175,7 @@ def test_pause_covers_the_live_score_message(store, config):
             pass
 
     telegram = FakeTelegram()
-    messenger = LiveMessenger(store, Config(chat_id=ILYA, allowed_chats="222",
+    messenger = LiveMessenger(store, Config(chat_id=f"{ILYA},{FRIEND}",
                                             bot_token="t", dry_run=False), telegram)
     snapshot = {"map_number": 1, "map_name": "Mirage", "score_team": 5,
                 "score_opponent": 3, "round": 9, "round_state": "started",

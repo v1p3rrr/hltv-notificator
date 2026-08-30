@@ -43,6 +43,27 @@ def load_dotenv(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
+# Сколько ждём, пока очередь допишет уже решённое к отправке. Меньше, чем
+# stop_grace_period в compose (15s): за ним докер присылает SIGKILL, и не
+# успеть дописаться лучше, чем быть убитым посреди записи.
+SHUTDOWN_DRAIN_SECONDS = 8.0
+
+
+def _warn_about_retired_variables(config) -> None:
+    """Убранные переменные обязаны сообщать о себе.
+
+    `TELEGRAM_ALLOWED_CHATS` больше не читается — id перечисляются в
+    `TELEGRAM_CHAT_ID` через запятую. Промолчать здесь нельзя: если весь список
+    был в старой переменной, белый список окажется пустым, и бот перестанет
+    отвечать вообще кому-либо. Снаружи это выглядит как «бот умер».
+    """
+    if not os.environ.get("TELEGRAM_ALLOWED_CHATS", "").strip():
+        return
+    known = ", ".join(config.allowed_chat_ids()) or "СПИСОК ПУСТ"
+    log.warning("TELEGRAM_ALLOWED_CHATS больше не читается: перенесите id в "
+                "TELEGRAM_CHAT_ID через запятую. Сейчас разрешены: %s", known)
+
+
 def setup_logging(level: str) -> None:
     # Логи и сообщения на русском: под Windows консоль по умолчанию cp1252,
     # и первая же кириллическая строка уронила бы обработчик логов.
@@ -66,6 +87,8 @@ async def run() -> int:
     load_dotenv(Path(".env"))
     config = config_module.load()
     setup_logging(config.log_level)
+
+    _warn_about_retired_variables(config)
 
     storage = Storage(config.db_path)
     # Первый посев: команда из .env становится первой отслеживаемой. Дальше
@@ -117,12 +140,15 @@ async def run() -> int:
 
     watchdog = Watchdog(storage, config)
     reminders = ReminderScheduler(storage, config)
+    # Очередь держим отдельно: при остановке её нельзя рвать наравне с
+    # остальными, см. ниже.
+    outbox = asyncio.create_task(notifier.run(stop), name="outbox")
     tasks: List[asyncio.Task] = [
         asyncio.create_task(reminders.run(stop, notifier), name="reminders"),
         asyncio.create_task(poller.run(stop), name="schedule-poller"),
         asyncio.create_task(watchdog.run(stop, notifier), name="watchdog"),
         asyncio.create_task(matches.run(stop), name="match-poller"),
-        asyncio.create_task(notifier.run(stop), name="outbox"),
+        outbox,
     ]
     if telegram is not None:
         bot = CommandBot(storage, config, telegram, poller, matches, http)
@@ -140,10 +166,28 @@ async def run() -> int:
         stop.set()
 
     log.info("останавливаемся")
-    for task in tasks:
+    # Всех, кроме очереди, гасим сразу: они только порождают новое, а нового
+    # нам уже не надо. Бот при этом висит в getUpdates до 25 секунд — ждать его
+    # мы не можем, у докера свой таймер.
+    others = [task for task in tasks if task is not outbox]
+    for task in others:
         task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.gather(*others, return_exceptions=True)
     await supervisor.shutdown()
+
+    # А очередь дописывает начатое сама и по своей воле выходит: stop уже
+    # взведён. Рвать её отменой нельзя — отмена посреди send_message оставила бы
+    # сообщение ОТПРАВЛЕННЫМ, но не отмеченным в базе, и при следующем запуске
+    # оно ушло бы человеку второй раз.
+    try:
+        await asyncio.wait_for(outbox, timeout=SHUTDOWN_DRAIN_SECONDS)
+    except asyncio.TimeoutError:
+        log.warning("очередь не успела дописаться за %.0f с; остаток (%d) уйдёт "
+                    "при следующем запуске", SHUTDOWN_DRAIN_SECONDS,
+                    storage.pending_count())
+    except asyncio.CancelledError:
+        pass
+
     await http.close()
     if telegram is not None:
         await telegram.close()
