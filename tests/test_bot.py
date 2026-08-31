@@ -153,12 +153,33 @@ def test_commands_from_other_chats_are_ignored(bot):
     assert telegram.sent == []
 
 
-def test_whoami_answers_anyone(bot):
-    """The one exception: a person must be able to learn their own chat_id,
-    otherwise there is nobody to add them to the whitelist."""
+def test_whoami_is_silent_to_strangers(bot):
+    """There is no exception to the whitelist. /whoami used to be one, so that
+    a newcomer could learn their own id — but it also handed anyone who found
+    the bot a command that always answers. @userinfobot reports the same
+    number without involving this bot at all."""
     command_bot, telegram, _ = bot
     send(command_bot, "/whoami", chat="999")
-    assert "999" in telegram.sent[-1][1]
+    assert telegram.sent == []
+
+
+def test_whoami_answers_an_allowed_chat(bot):
+    command_bot, telegram, _ = bot
+    send(command_bot, "/whoami")
+    assert CHAT in telegram.sent[-1][1]
+
+
+def test_only_the_main_chat_changes_the_log_level(bot, monkeypatch):
+    """The log level belongs to the whole process, unlike every other command,
+    which touches only the caller's own subscription."""
+    from hltv_notify.config import Config
+
+    command_bot, telegram, _ = bot
+    command_bot.config = Config(chat_id=f"{CHAT},222", bot_token="t")
+    send(command_bot, "/verbose on", chat="222")
+    assert "Only the main chat" in telegram.sent[-1][1]
+    send(command_bot, "/verbose on")
+    assert "Verbose mode on" in telegram.sent[-1][1]
 
 
 def test_allowed_chat_becomes_a_subscriber(bot):

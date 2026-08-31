@@ -634,8 +634,20 @@ mute notifications about the other.
 **The whitelist.** The bot has a public address, and without a restriction
 anyone who finds it could command it. By default we answer only those listed in
 `TELEGRAM_CHAT_ID` (comma separated); everyone else gets silence, so as not to
-confirm the bot exists. The exception is `/whoami`: a person has to be able to
-learn their own id, otherwise there is nobody to add them to the list.
+confirm the bot exists.
+
+There used to be one exception, `/whoami`, so that a newcomer could learn the
+id they need to be added under. It was the wrong place to solve that: a command
+that answers everybody is a command a stranger can lean on, and it tells them
+the bot is there. The id of whoever knocks is written to the log, which is where
+the owner reads it from, and [@userinfobot](https://t.me/userinfobot) reports
+the same number without involving this bot at all.
+
+**One command is narrower still than the whitelist.** `/verbose` changes the log
+level of the whole process, while every other command touches only the caller's
+own subscription. It answers the main chat alone — with several subscribers,
+and more so with the whitelist off, a service-wide setting must not be a lever
+anybody can pull.
 
 ## The watchdog: "I have gone blind"
 

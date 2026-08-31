@@ -365,8 +365,8 @@ Not everything has a button: a few commands carry a value that has to be typed
 | `/tz Europe/Berlin` | your timezone | **no** |
 | `/pause`, `/resume` | go completely quiet / start receiving again | yes |
 | `/check` | read the schedule now instead of waiting for the next cycle, which is up to 30 min when nothing is due | **no** |
-| `/whoami` | your numeric `chat_id` — the value that goes into `TELEGRAM_CHAT_ID`. Answered even to people who are not on the whitelist, so they have something to send the owner | **no** |
-| `/verbose on`, `/verbose off` | turn debug logging on and off without restarting the container. It changes the service's log only, never what arrives in the chat | **no** |
+| `/whoami` | your numeric `chat_id` — the value that goes into `TELEGRAM_CHAT_ID` | **no** |
+| `/verbose on`, `/verbose off` | turn debug logging on and off without restarting the container. It changes the service's log only, never what arrives in the chat. **Main chat only** — it is a setting of the whole service | **no** |
 
 `/mute` wants the codes from [Event codes](#event-codes) above: `/mute 9565
 E5,E9` keeps the team but drops its map-start and multikill messages. Muting by
@@ -420,10 +420,12 @@ that is where messages go while nobody has subscribed yet. Group and channel
 ids are negative — that is normal.
 
 With `TELEGRAM_WHITELIST_ONLY=true` (the default) the bot ignores everyone
-else, logging their `chat_id` so you have something to add to the list. Anyone
-can ask the bot `/whoami` and get their own id back. Turn the whitelist off
-only deliberately: a Telegram bot has a public address, and without it anyone
-who finds yours can command it.
+else completely — no command answers a stranger, not even `/whoami`, because a
+reply confirms the bot is there and gives them something to lean on. Their
+`chat_id` goes to the log, which is where you take it from to widen the list;
+they can also read it off [@userinfobot](https://t.me/userinfobot) themselves.
+Turn the whitelist off only deliberately: a Telegram bot has a public address,
+and without it anyone who finds yours can command it.
 
 An allowed account becomes a subscriber on its first message to the bot.
 

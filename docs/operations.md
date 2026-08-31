@@ -71,13 +71,13 @@ command the bot does not recognise.
 | `/remind` | the list of reminders; `/remind 1h` adds, `/remind rm 15m` removes |
 | `/tz` | your own timezone |
 | `/pause` / `/resume` | the global quiet switch, on top of per-type muting |
-| `/menu` | the inline menu: status, live, upcoming, teams and their mutes, reminders, quiet. `/track`, `/tz`, `/check`, `/whoami` and `/verbose` have no buttons — they carry a value that has to be typed |
-| `/whoami` | your own chat_id, answered for everyone |
+| `/menu` | the inline menu: status, live, upcoming, teams and their mutes, reminders, quiet. `/track`, `/tz`, `/check`, `/whoami` and `/verbose` have no buttons |
+| `/whoami` | your own chat_id, for allowed chats only |
 | `/status` | polling modes, live feed health, match counts, the queue, the last error |
 | `/live` | the running match: map, score, series score, map results and **which source** the data came from |
 | `/next` | upcoming matches as the service sees them |
 | `/check` | an out-of-turn schedule check |
-| `/verbose on\|off` | debug logging in the service log, without a restart |
+| `/verbose on\|off` | debug logging in the service log, without a restart. **The main chat only**: it is a setting of the whole process |
 
 When a notification did not arrive, start with `/live`: it shows whether the
 score reached the service at all and whether the live feed is working.

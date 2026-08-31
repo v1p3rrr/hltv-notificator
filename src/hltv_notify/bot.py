@@ -90,7 +90,7 @@ COMMANDS = (
     ("resume", "", "Start sending again"),
     ("check", "", "Read the schedule now, without waiting for the next cycle"),
     ("whoami", "", "Your chat_id"),
-    ("verbose", "on|off", "Debug logging in the service log"),
+    ("verbose", "on|off", "Debug logging in the service log (main chat only)"),
     ("help", "", "This list of commands"),
 )
 
@@ -175,17 +175,14 @@ class CommandBot:
         command = command.split("@")[0].lower()
         argument = argument.strip()
 
-        if command == "/whoami":
-            # Answered for everyone: a person has to learn their own id to get
-            # it whitelisted. There is nothing secret in that number.
-            await self._reply(chat_id, f"Your chat_id: <code>{fmt.escape(chat_id)}</code>")
-            return
-
         if not self.config.chat_allowed(chat_id):
-            # Silently: answering a stranger with a refusal confirms the bot
-            # exists to anyone who probes it. A person learns their own chat_id
-            # through /whoami, handled above, which answers everyone. The id
-            # goes to the log so the owner can add it to the whitelist.
+            # Silently, and with NO exceptions: any command that answers a
+            # stranger confirms the bot exists to whoever probes it, and hands
+            # them something to spam. /whoami used to be that exception, so
+            # that a newcomer could learn their own id — but @userinfobot
+            # tells them the same number without touching this bot, and the id
+            # of whoever knocked goes to the log below anyway, which is where
+            # the owner takes it from to widen the whitelist.
             log.warning("command %s from chat %s refused: not on the whitelist",
                         command, chat_id)
             return
@@ -205,10 +202,11 @@ class CommandBot:
             "/start": lambda: HELP,
             "/help": lambda: HELP,
             "/menu": lambda: self._menu_text(chat_id),
+            "/whoami": lambda: f"Your chat_id: <code>{fmt.escape(chat_id)}</code>",
         }
         try:
             if command == "/verbose":
-                reply = self._verbose(argument.lower())
+                reply = self._verbose(chat_id, argument.lower())
             elif command == "/track":
                 reply = await self._track(chat_id, argument)
             elif command == "/untrack":
@@ -661,7 +659,17 @@ class CommandBot:
         self.poller.request_poll()
         return "Checking the schedule. If anything changed, a notification will follow."
 
-    def _verbose(self, argument: str) -> str:
+    def _verbose(self, chat_id: str, argument: str) -> str:
+        """The log level of the whole process, so it is the owner's alone.
+
+        Every other command touches only the caller's own subscription; this
+        one changes what the service writes to disk for everybody. With
+        several subscribers — and more so with the whitelist off — it must not
+        be a lever anybody can pull.
+        """
+        if chat_id != self.config.main_chat_id:
+            return ("Only the main chat can change the log level "
+                    "— it is a setting of the whole service.")
         if argument not in {"on", "off"}:
             return "Usage: /verbose on | /verbose off"
         level = logging.DEBUG if argument == "on" else getattr(

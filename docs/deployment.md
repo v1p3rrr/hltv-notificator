@@ -32,8 +32,9 @@ curl -o .env https://raw.githubusercontent.com/v1p3rrr/hltv-notificator/main/.en
 
 **2. The bot and the chat.** Create a bot with
 [@BotFather](https://t.me/BotFather) and take the token. Find your `chat_id`
-with [@userinfobot](https://t.me/userinfobot) — or ask the bot itself later with
-`/whoami`. **Send the bot a `/start`**, otherwise it cannot write to you first.
+with [@userinfobot](https://t.me/userinfobot); this bot answers `/whoami` only
+once you are on the whitelist, which is what you are filling in now. **Send the
+bot a `/start`**, otherwise it cannot write to you first.
 
 **3. Fill in `.env`.** The required minimum is two lines:
 
