@@ -208,3 +208,59 @@ If Telegram is not accepting messages, the notification about it will join that
 same stuck queue and only get through together with the rest. There is no way
 around this while staying within a single delivery channel. Until then the state
 is visible in `/status` and in the logs.
+
+## It does not scale to a public audience, and the database is not why
+
+The service is built for one person or a handful, and the ceilings it runs into
+are both on the way out to the network. Neither is storage: SQLite is a distant
+third and swapping it for a database server would buy nothing, because the two
+walls in front of it are reached first.
+
+**How many people follow a team costs nothing.** Schedules are polled per
+distinct team (`tracked_teams()` groups by `team_id`), match pages per match,
+and the live feed keeps one connection per match. Ten people following the same
+team produce exactly the requests one person does.
+
+**Wall one: the request ceiling against the number of distinct teams.** One
+request every 30 seconds, hardcoded, strictly sequential. A full sweep of the
+schedule therefore costs *teams × 30 s*: five minutes for ten teams, ten for
+twenty, half an hour for sixty — while pre-match mode wants to look every three
+minutes and the match pages draw from the same budget. The practical ceiling is
+somewhere around **10-20 distinct teams per instance**, regardless of the number
+of subscribers. Raising the rate is not the answer (see the ceiling in
+`config.py`); the live feed is, since a held connection does not draw on that
+budget at all.
+
+**Wall two: outgoing Telegram, against the number of recipients.** An event is
+rendered and queued per recipient, and the live score card is worse: its key is
+`(chat_id, match_id, map_number)`, so every subscriber has their own message and
+every one of them is edited every `LIVE_EDIT_SECONDS`. A hundred people watching
+one map is ten edits a second; a few hundred consumes Telegram's whole budget on
+the score of a single map. This is structural rather than a setting: the message
+is per chat because the score is turned around to face each recipient's team.
+
+What a public version would need is therefore a different delivery shape, not a
+bigger machine: one post per team into a channel instead of N private messages,
+which turns the cost from "per subscriber" into "per team" — at the price of the
+per-recipient orientation, since a channel can only show the score from one
+side. The live card would have to live in that channel too, or not exist.
+
+Two smaller things become real at that size as well: every chat that writes to
+the bot becomes a subscriber row, which with the whitelist off is unbounded, and
+command handling has no per-chat rate limit.
+
+## The queue's send spacing is stricter than Telegram requires
+
+`SEND_INTERVAL_SECONDS = 1.2` in `notify/outbox.py` is applied between every two
+messages, whoever they are addressed to. It is derived from the right number —
+Telegram tolerates about one message per second **into one chat** — but that
+limit is per chat, while across *different* chats the guidance is roughly thirty
+a second. For a single subscriber the two are the same thing, which is the case
+the service was written for; for a fan-out it is some twenty-five times more
+cautious than it has to be.
+
+Deliberately left alone rather than tuned blind: sending concurrently means
+holding the ordering guarantee that a message continuing another must not
+overtake it (see "the live message carries E5"). That guarantee is per chat, so
+the shape that would work is per-chat spacing with concurrency across chats and
+a global cap — worth doing when there is a fan-out to justify it, not before.

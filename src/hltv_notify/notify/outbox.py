@@ -20,7 +20,12 @@ from .telegram import Telegram, TelegramError
 
 log = logging.getLogger(__name__)
 
-# Telegram allows roughly one message per second into a single chat.
+# Telegram tolerates roughly one message per second into ONE chat, and about
+# thirty a second across different ones. This pause is applied between every
+# two messages regardless of recipient, which for one subscriber — the case
+# this was written for — is the same thing, and for a fan-out is far stricter
+# than required. See docs/known-limitations.md before loosening it: sending
+# concurrently has to keep the per-chat ordering guarantee.
 SEND_INTERVAL_SECONDS = 1.2
 MAX_ATTEMPTS = 8
 # How long the final pass gets on shutdown. Beyond that it is the caller's
