@@ -116,6 +116,18 @@ hand-written `/help` never mentioned `/live`. `tests/test_commands.py` checks
 both directions — nothing advertised that the bot cannot answer, nothing
 dispatched that is not advertised.
 
+**"Never happened" is None, not zero, whenever the clock is
+`time.monotonic()`.** It counts from the machine's boot, so on a freshly
+started host it is a small number and `now - 0.0` looks recent. The refusal
+log was swallowed for the first ten minutes of uptime because of it — green
+on a developer's machine with days of uptime, red on a CI runner booted a
+minute earlier. `_log_refusal` and the card's edit throttle both check
+`is not None` now.
+
+**CI runs Linux and Python 3.12, the dev machine does not.** When the suite
+is green locally and red in Actions, reproduce it in the container above
+before touching the tests.
+
 **Nothing answers a chat that is not on the whitelist, and the refusal is
 logged at most once per chat per ten minutes.** That log line is the only
 way to learn the id of a GROUP that is not allowed yet — @userinfobot reports
@@ -371,7 +383,9 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 437 tests
+python -m pytest                                    # 438 tests
+docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
+                                                    # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

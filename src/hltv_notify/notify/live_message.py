@@ -230,8 +230,12 @@ class LiveMessenger:
             # The throttle applies to edits, never to creating the message:
             # holding the first one back would delay the map's card by the
             # whole interval.
-            elapsed = time.monotonic() - self._last_edit.get(key, 0.0)
-            if elapsed < (self._interval(0) if interval is None else interval):
+            # "Never drawn" is None, not zero: time.monotonic() counts from
+            # the machine's boot, so on a freshly started host zero looks like
+            # a very recent edit and the redraw would be skipped.
+            last = self._last_edit.get(key)
+            if last is not None and time.monotonic() - last < (
+                    self._interval(0) if interval is None else interval):
                 return True
 
         text = fmt.render_live(fmt.orient(snapshot, for_team_id),

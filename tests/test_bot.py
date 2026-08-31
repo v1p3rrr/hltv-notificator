@@ -428,3 +428,24 @@ def test_button_presses_from_strangers_cannot_flood_the_log(bot, caplog):
     assert len(refusals) == 1
     # Every press is still answered, or Telegram spins the button forever.
     assert len(telegram.answered) == 30
+
+
+def test_the_first_refusal_is_logged_on_a_freshly_booted_machine(bot, caplog,
+                                                                 monkeypatch):
+    """time.monotonic() counts from boot, so on a host started a minute ago it
+    is a small number. With 0.0 standing in for "last logged", the very first
+    refusal from every chat looked recent and was swallowed for the first ten
+    minutes of uptime — exactly the window in which somebody adds the bot to a
+    group and goes looking for its id in the log. It passed on a machine with
+    days of uptime and failed on a CI runner.
+    """
+    import logging
+
+    from hltv_notify import bot as module
+
+    command_bot, telegram, _ = bot
+    monkeypatch.setattr(module.time, "monotonic", lambda: 12.0)   # just booted
+    with caplog.at_level(logging.WARNING, logger="hltv_notify.bot"):
+        send(command_bot, "/status", chat="999")
+    assert [r for r in caplog.records if "refused" in r.getMessage()]
+    assert telegram.sent == []

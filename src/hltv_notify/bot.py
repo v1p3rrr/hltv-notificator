@@ -350,9 +350,19 @@ class CommandBot:
 
         The interval is per chat, so a second person knocking is still seen
         immediately.
+
+        "Never heard from" is `None`, not zero. `time.monotonic()` counts from
+        the machine's boot, so on a freshly started host it is a small number:
+        with 0.0 standing in for "last logged", the very first refusal from
+        every chat looked recent and was swallowed for the first ten minutes
+        of uptime — which is exactly the window in which somebody adds the bot
+        to a group and goes looking for its id in the log. It passed on a
+        developer's machine, whose uptime is days, and failed on a CI runner
+        booted a minute earlier.
         """
         now = time.monotonic()
-        if now - self._refused.get(chat_id, 0.0) < REFUSAL_LOG_INTERVAL:
+        last = self._refused.get(chat_id)
+        if last is not None and now - last < REFUSAL_LOG_INTERVAL:
             return
         # Whoever has gone quiet is forgotten, so a flood from many different
         # ids cannot grow this map without bound.
