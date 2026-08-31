@@ -208,7 +208,7 @@ map-start notifications, some of them about maps finished long ago. E5 must be
 born on a **transition** of the match state (the current map number changed),
 not on the fact that an event arrived.
 
-This is exactly the trap the spec warns about: the logic "a score of 13 arrived,
+It is the same trap in another guise: the logic "a score of 13 arrived,
 send E6" is guaranteed to produce duplicates. An event is born only on a
 **transition** of state, and the idempotency key is written to `sent_events`
 under a unique index.

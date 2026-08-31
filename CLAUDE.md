@@ -285,7 +285,8 @@ own by the stop flag and makes a final pass with a deadline; `__main__` waits
 for it with `wait_for` and cancels only everything else.
 
 **libcurl ignores uppercase `HTTP_PROXY`.** Deliberately, a CGI legacy. And
-uppercase is exactly how it is written in `compose.yaml`, so the service reads
+uppercase is exactly how it is written in `docker-compose.yml`, so the service
+reads
 the variables itself (`proxy.py`) and passes them into the session explicitly.
 The non-obvious part lives there too: when an address matches `NO_PROXY` the
 proxy is set to an EMPTY STRING rather than "not set" — otherwise libcurl picks

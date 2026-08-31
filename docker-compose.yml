@@ -4,11 +4,13 @@ services:
     # with no sources. There is deliberately no build key: with it,
     # `docker compose up` would try to build and fail with no Dockerfile at hand.
     #
-    # The image name is set by the IMAGE variable in .env: it depends on your
-    # Docker Hub login. CI prints the exact name in the run summary.
-    # A local build lives in a separate file:
-    #   docker compose -f compose.yaml -f compose.dev.yaml up -d --build
-    image: ${IMAGE:?set IMAGE in .env, for example your-login/hltv-notificator:latest}
+    # The default is the published image (linux/amd64). Override IMAGE in .env
+    # to pin a version or to use your own build:
+    #   IMAGE=vprlol/hltv-notificator:0.1.0-build.42
+    # On arm (a Raspberry Pi, an Apple-silicon machine) build it locally
+    # instead — that lives in a separate file:
+    #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+    image: ${IMAGE:-vprlol/hltv-notificator:latest}
     container_name: hltv-notify
     restart: unless-stopped
     env_file: .env

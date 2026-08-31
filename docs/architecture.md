@@ -4,6 +4,10 @@ This document answers "why this way", not just "how". Almost every decision
 here came out of watching the live HLTV, and without that context parts of the
 code look over-engineered.
 
+It is written for someone about to read or change the code. To just run the
+service, [../README.md](../README.md) and [operations.md](operations.md) are
+enough and this document is not needed.
+
 ## The overall shape
 
 ```
@@ -171,7 +175,7 @@ it becomes `false`.
 
 Details and raw measurements: [recon/R4-scorebot.md](recon/R4-scorebot.md).
 
-## The map-completion rule (D7): two sources, different roles
+## When a map counts as finished: two sources, different roles
 
 **The feed decides, the page confirms.**
 
@@ -207,8 +211,8 @@ afresh, so a multikill can be **missed but never invented**.
 
 Not when the match page says LIVE. HLTV raises that flag when the teams connect
 to the server, and the warmup before the first map can run twenty minutes with
-the score at 0:0 — "the match has started" during it is not true, and it was
-the first thing the owner complained about.
+the score at 0:0 — "the match has started" during it is not true, and it is
+the first thing anyone watching notices.
 
 The page cannot tell a warmup from a game; the feed can. So the same division
 of labour as everywhere else, only the other way round: **the page writes the
@@ -449,7 +453,7 @@ there and the request goes to `10.0.0.1`. Verified against a live libcurl — it
 goes exactly there. The variant `.evil.example/matches/1/x` did not even need
 the at-sign. The address was saved to the database and then requested every
 minute, meaning foreign markup could make the service hammer the local network
-from the owner's home IP.
+from the home IP it runs on.
 
 The fix has two layers:
 
@@ -481,7 +485,8 @@ precautions:
   it does not affect proxy selection — there is simply no code under it;
 * libcurl does read it, but deliberately ignores `HTTP_PROXY` in UPPERCASE (a
   CGI legacy, where the variable came from the client). And uppercase is
-  exactly how it is written in `compose.yaml` — the setting would have silently
+  exactly how it is written in `docker-compose.yml` — the setting would have
+silently
   done nothing;
 * CIDR support in `NO_PROXY` depends on the libcurl version.
 

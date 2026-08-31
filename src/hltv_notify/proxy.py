@@ -13,7 +13,7 @@ Why we parse them ourselves instead of relying on libcurl:
 * libcurl underneath does read them, but by its own rules: it deliberately
   ignores `HTTP_PROXY` in UPPERCASE (a CGI legacy, where that variable comes
   from the client). And uppercase is exactly how people write it in
-  `compose.yaml`;
+  `docker-compose.yml`;
 * CIDR support (`10.0.0.0/8`) in `NO_PROXY` depends on the libcurl version.
 
 So the decision is made here and handed to the session as an explicit dict.

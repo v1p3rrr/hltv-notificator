@@ -1,8 +1,8 @@
 # R3 — The schedule source
 
-Date of observation: 2026-08-29. **Variant B (HTML)** was chosen: by the
-owner's decision, recon of the mobile endpoint (proxying the app's traffic
-through mitmproxy) is deferred. The mobile API remains a candidate for a second
+Date of observation: 2026-08-29. **Variant B (HTML)** was chosen; recon of
+the mobile endpoint, which needs the app's traffic proxied through mitmproxy,
+was deliberately deferred. The mobile API remains a candidate for a second
 source should the HTML turn out to be brittle.
 
 ## Access: the TLS fingerprint is confirmed as a real barrier
@@ -86,7 +86,8 @@ finished : map1 Mirage scores=['13','10'] halves=( 8 : 4 ; 5 : 6 )
            map3 Nuke   scores=['-','-']            (the decider was not played)
 ```
 
-Hence the map-completion rule (D7): **a `.mapholder` gained a numeric score
+Hence the first version of the map-completion rule: **a `.mapholder` gained a
+numeric score
 instead of a dash ⇒ the map is played**. It does not depend on round arithmetic,
 so it survives an overtime, while an unplayed decider naturally stays with a
 dash and no E6 is born for it.

@@ -15,11 +15,11 @@ interface is a chat with your bot.
 
 ```
 ✅ Map 2 finished
-Dust2 — 13:11 (overtime)
-FORZE Reload — Color
+Dust2 — 13:11
+Vitality — Spirit
 Series score: 2:0
-🔥 Comeback: FORZE Reload turned 3:11 around — a swing of 10 rounds
-GLuck Moscow Cyber Games 2026 Closed Qualifier
+🔥 Comeback: Vitality turned 3:11 around — a swing of 10 rounds
+BLAST Premier World Final 2026
 Match page
 ```
 
@@ -67,25 +67,26 @@ games, no other sites, no dashboards.
 
 ## What arrives in the chat
 
-Every notification type can be muted individually, per team, from the bot.
+Roughly in the order they turn up over the life of a match. Every type can be
+switched off individually, per team, from the bot.
 
-| | Notification | Where it comes from |
-|---|---|---|
-| **E10** | Reminder, N minutes before the match | schedule |
-| **E1** | A new match appeared in the team's schedule | team page |
-| **E2** | The match time changed | team page |
-| **E3** | The match was cancelled or removed | team page |
-| **E4** | The match started — with the map lineup and whose pick each map is | match page |
-| **E5** | A map started | live feed |
-| **E11** | **Map point** — someone is one round from taking the map | live feed |
-| **E12** | Half time, and the start of every overtime *(off by default)* | live feed |
-| **E6** | **A map finished, with the score** — plus a comeback line when there was one | live feed, confirmed by the page |
-| **E7** | The match finished, with the result map by map | live feed, confirmed by the page |
-| **E9** | A player of a followed team took 4+ kills in one round | live feed |
-| **E8 / E8R** | The service has gone blind / has recovered | internal watchdog |
+| Notification | Where it comes from |
+|---|---|
+| A new match appeared in the team's schedule | team page |
+| The match time changed | team page |
+| The match was cancelled or removed | team page |
+| A reminder, N minutes before the start | your own setting |
+| **The match started** — with the map lineup and whose pick each map is | match page |
+| A map started | live feed |
+| A player of a followed team took 4+ kills in one round | live feed |
+| Half time, and the start of every overtime *(off by default)* | live feed |
+| **Map point** — someone is one round from taking the map | live feed |
+| **A map finished, with the score** — plus a comeback line when there was one | live feed, confirmed by the page |
+| The match finished, with the result map by map | live feed, confirmed by the page |
 
-The `E`-codes are internal shorthand; you never have to type them, and the
-bot's menu shows plain names.
+And one that is not about a match at all: the service says when it has **gone
+blind** — the source is unreachable, the live feed will not come up, messages
+are not reaching Telegram — and says again when it has recovered.
 
 ### The live map card
 
@@ -94,7 +95,7 @@ place with the current score and frozen on the final one:
 
 ```
 🗺 Map 1: Nuke
-FORZE Reload 7:5 Color · round 13 · freeze time
+Vitality 7:5 Spirit · round 13 · freeze time
 Series score: 0:0
 ```
 
@@ -106,16 +107,16 @@ off with `LIVE_MESSAGE=false` if you would rather have a quiet chat.
 
 ```
 🆕 New match
-FORZE Reload — ex-RUSTEC
-Thunderpick World Championship 2026
+Natus Vincere — FaZe
+ESL Pro League Season 25
 🕒 Sat 6 Sep, 18:00
 Match page
 ```
 
 ```
 🔴 Match started
-FORZE Reload — Color
-GLuck Moscow Cyber Games 2026 · BO3
+Vitality — Spirit
+BLAST Premier World Final 2026 · BO3
 Nuke      our pick
 Dust2     their pick
 Inferno   decider
@@ -123,16 +124,16 @@ Match page
 ```
 
 ```
-🚨 Map point — Color
+🚨 Map point — Spirit
 Inferno — 11:12
-FORZE Reload — Color
+Vitality — Spirit
 One round from taking the map — and the match
 ```
 
 ```
-💥 sh1ro — ACE
+💥 ZywOo — ACE
 Mirage, round 14 · score 8:6
-FORZE Reload — Color
+Vitality — Spirit
 ```
 
 Times are shown in your own timezone (`/tz`); everything is stored in UTC.
@@ -144,6 +145,12 @@ Times are shown in your own timezone (`/tz`); everything is stored in UTC.
 **With Docker (recommended):** Docker with the Compose plugin
 (`docker compose version`), and a machine that stays on — a mini-server, a NAS,
 a VPS, a Raspberry Pi. A few megabytes of disk.
+
+A prebuilt image is published at
+[**`vprlol/hltv-notificator`**](https://hub.docker.com/r/vprlol/hltv-notificator)
+for `linux/amd64`, so on an ordinary x86 server nothing has to be compiled. On
+arm — a Raspberry Pi, an Apple-silicon Mac — build it locally instead; it is
+one extra flag, shown below.
 
 **Without Docker:** Python 3.10 or newer.
 
@@ -169,12 +176,22 @@ write to someone who has never written to it first.
 
 ### 3. Get the files
 
+**Pulling the published image** — two files are all you need, no sources, no
+build:
+
 ```bash
-git clone https://github.com/v1p3rrr/hltv-notificator.git
+mkdir hltv-notify && cd hltv-notify
 ```
 
 ```bash
-cd hltv-notificator && cp .env.example .env
+curl -O https://raw.githubusercontent.com/v1p3rrr/hltv-notificator/main/docker-compose.yml && curl -o .env https://raw.githubusercontent.com/v1p3rrr/hltv-notificator/main/.env.example
+```
+
+**Or building it yourself** — clone the repository instead; you get the docs
+and the tests with it, and this is the path to take on arm:
+
+```bash
+git clone https://github.com/v1p3rrr/hltv-notificator.git && cd hltv-notificator && cp .env.example .env
 ```
 
 ### 4. Fill in `.env`
@@ -190,19 +207,25 @@ Leave `DRY_RUN=true` for the first run — notifications go to the log instead o
 Telegram, so you can see what the service *would* have sent.
 
 Set `TEAM_ID`, `TEAM_SLUG` and `TEAM_NAME` to the team you want seeded on the
-first run, or leave the defaults and add teams later from the chat. All three
-come straight out of a team's URL:
-`https://www.hltv.org/team/`**`12857`**`/`**`forze-reload`**.
+first run — the file ships with the author's team as an example. All three come
+straight out of a team's URL: `https://www.hltv.org/team/9565/vitality` gives
+`TEAM_ID=9565`, `TEAM_SLUG=vitality`, `TEAM_NAME=Vitality`. You can also leave
+it as it is and add your teams from the chat afterwards.
 
-Leave the `IMAGE=` line alone. It only matters if you pull a prebuilt image;
-its value is ignored when you build locally, but it must be present.
+Leave `IMAGE=` commented out unless you want to pin a specific version — with
+nothing set, Compose pulls `vprlol/hltv-notificator:latest`.
 
 ### 5. Start it
 
-Build from the sources you just cloned:
+```bash
+docker compose up -d
+```
+
+Building from source instead — add the dev overlay, which swaps the pulled
+image for a local build:
 
 ```bash
-docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 Watch it come up:
@@ -214,11 +237,11 @@ docker compose logs -f
 You should see something like:
 
 ```
-first tracked team taken from the config: FORZE Reload (id 12857)
+first tracked team taken from the config: Vitality (id 9565)
 DRY_RUN is on: notifications go to the log, not to Telegram
-service started: 1 subscriber(s), 1 team(s) watched (FORZE Reload)
-GET https://www.hltv.org/team/12857/forze-reload -> 200 in 0.28s
-team 12857 taken under observation: 17 matches recorded silently
+service started: 1 subscriber(s), 1 team(s) watched (Vitality)
+GET https://www.hltv.org/team/9565/vitality -> 200 in 0.28s
+team 9565 taken under observation: 17 matches recorded silently
 ```
 
 **The first run is always silent.** The whole schedule is written into the
@@ -236,20 +259,19 @@ still talks to you — only the *notifications* are held back.)
 Set `DRY_RUN=false` in `.env` and restart:
 
 ```bash
-docker compose -f compose.yaml -f compose.dev.yaml up -d
+docker compose up -d
 ```
 
 ### 8. Set it up to taste, from the chat
 
 ```
-/track https://www.hltv.org/team/12857/forze-reload
+/track https://www.hltv.org/team/9565/vitality
 /tz Europe/Berlin
 /remind 15m
 ```
 
-If you publish your own image to a registry, see
-[docs/deployment.md](docs/deployment.md) — then the server needs only
-`compose.yaml` and `.env`, no sources at all.
+Publishing an image of your own, pinning a version, backups and CI are covered
+in [docs/deployment.md](docs/deployment.md).
 
 ---
 
@@ -316,6 +338,15 @@ The text commands are shorter when you know exactly what you want:
 | `/whoami` | your `chat_id` |
 | `/verbose on`, `/verbose off` | verbose logging |
 
+**Event codes.** The menu names every notification type in words, but the text
+`/mute` command wants a code: **E1** new match · **E2** time changed ·
+**E3** cancelled · **E4** match started · **E5** map started · **E6** map
+finished · **E7** match finished · **E9** multikill · **E10** reminder ·
+**E11** map point · **E12** half / overtime. So `/mute 9565 E5,E9` keeps a team
+but drops its map-start and multikill messages. The "service has gone blind"
+alarm is deliberately not mutable — silencing it means never learning that the
+service stopped seeing anything.
+
 `/pause` silences everything, including the live card and the service's own
 alarms. Nothing is queued while you are paused — the point is silence, not
 deferred delivery.
@@ -329,7 +360,7 @@ The list of teams lives in the database and is edited **through the bot**.
 still empty.
 
 ```
-/track https://www.hltv.org/team/12857/forze-reload
+/track https://www.hltv.org/team/9565/vitality
 ```
 
 Filtering is strictly by **numeric team id**, never by name: names change,
@@ -483,7 +514,13 @@ the whole directory, not just `hltv.db`.
 ## Updating
 
 ```bash
-git pull && docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+docker compose pull && docker compose up -d
+```
+
+If you build from source, pull the sources instead:
+
+```bash
+git pull && docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 The schema migrates itself on startup: new columns are added, old ones are

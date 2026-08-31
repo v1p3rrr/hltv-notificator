@@ -18,13 +18,15 @@ not through a webhook.
 ## The first run on the server
 
 The sources are not needed on the server: the image comes from the registry and
-only two files are needed from the repository.
+only two files are needed from the repository. The published image is
+[**`vprlol/hltv-notificator`**](https://hub.docker.com/r/vprlol/hltv-notificator)
+(`linux/amd64`); to build your own instead, see "Building locally" below.
 
 **1. Directory and files.**
 
 ```bash
 mkdir -p ~/hltv-notify && cd ~/hltv-notify
-curl -O https://raw.githubusercontent.com/v1p3rrr/hltv-notificator/main/compose.yaml
+curl -O https://raw.githubusercontent.com/v1p3rrr/hltv-notificator/main/docker-compose.yml
 curl -o .env https://raw.githubusercontent.com/v1p3rrr/hltv-notificator/main/.env.example
 ```
 
@@ -33,10 +35,9 @@ curl -o .env https://raw.githubusercontent.com/v1p3rrr/hltv-notificator/main/.en
 with [@userinfobot](https://t.me/userinfobot) — or ask the bot itself later with
 `/whoami`. **Send the bot a `/start`**, otherwise it cannot write to you first.
 
-**3. Fill in `.env`.** The required minimum is three lines:
+**3. Fill in `.env`.** The required minimum is two lines:
 
 ```
-IMAGE=your-docker-hub-login/hltv-notificator:latest
 TELEGRAM_BOT_TOKEN=123456:AA...
 TELEGRAM_CHAT_ID=123456789
 ```
@@ -46,13 +47,15 @@ There can be several accounts — then list the ids separated by commas,
 from `TEAM_ID` is seeded there. The separate variable `TELEGRAM_ALLOWED_CHATS`
 no longer exists: if it is still in an old `.env`, move its ids here.
 
-`IMAGE` depends on the Docker Hub login CI publishes under. The build itself
-prints the exact name: in GitHub Actions open the latest run, the "Published"
-section — all the tags and the digest are listed there.
+`IMAGE` can stay commented out: Compose then pulls
+`vprlol/hltv-notificator:latest`. Set it to pin a version, or to point at an
+image you publish yourself — CI prints the exact name it pushed in the run
+summary, under "Published", with all the tags and the digest.
 
 Leave `DRY_RUN` as `true` for now.
 
-**4. If the Docker Hub repository is private** — log in once:
+**4. If you are pulling from a private repository of your own** — log in
+once:
 
 ```bash
 docker login
@@ -108,8 +111,11 @@ separate overlay for that, so that `docker compose up` on the server never tries
 to build:
 
 ```bash
-docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
+
+This is also the path on **arm** — a Raspberry Pi, an Apple-silicon machine —
+because the published image is `linux/amd64` only.
 
 ## Updating
 
@@ -124,7 +130,7 @@ To pin a specific version instead of `latest`, use the `IMAGE` variable in
 `.env`:
 
 ```
-IMAGE=your-login/hltv-notificator:0.1.0-build.42
+IMAGE=vprlol/hltv-notificator:0.1.0-build.42
 ```
 
 To build from source, see "Building locally instead of pulling" above.
@@ -194,7 +200,7 @@ cosign verify <image>@<digest> --certificate-identity-regexp '.*' --certificate-
 ## Rolling back
 
 ```bash
-IMAGE=your-login/hltv-notificator:sha-<previous commit> docker compose up -d
+IMAGE=vprlol/hltv-notificator:sha-<previous commit> docker compose up -d
 ```
 
 The database schema is backwards compatible: new columns are added by a

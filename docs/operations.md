@@ -185,7 +185,7 @@ and that is usually the one you need to get out of a closed network.
 Credentials go in the address (`socks5h://user:pass@host:1080`); they never
 reach the log.
 
-In `compose.yaml` it looks like this:
+In `docker-compose.yml` it looks like this:
 
 ```yaml
     environment:
@@ -220,7 +220,8 @@ the log. No line means the variables never reached the process.
 
 Uppercase works. That is worth calling out: libcurl, which the HTTP layer sits
 on, **deliberately ignores** uppercase `HTTP_PROXY`, and had the service relied
-on it, the setting from `compose.yaml` would have silently done nothing. So the
+on it, the setting from `docker-compose.yml` would have silently done nothing.
+So the
 variables are read by the service itself and passed into the requests
 explicitly.
 

@@ -13,8 +13,8 @@ protocol from [R4](R4-scorebot.md) plus parsing match pages.
 | `2397047` FORZE Reload–Black Phoenix (finished) | GLuck Moscow Cyber Games 2026 Closed Qualifier | online qualifier | n/a | per-map and per-half scores on the page |
 
 The key check is the third row: that is a match of **the tracked team itself**,
-at a qualifier, i.e. the riskiest scenario according to the spec. The feed is
-complete.
+at a qualifier — the case there was most reason to doubt, since a live feed
+might plausibly exist only at top-tier events. The feed is complete.
 
 An illustrative fragment of state captured from FORZE's live match (the moment
 the first map ended):
@@ -39,7 +39,8 @@ outcome types: `Target_Bombed`, `Target_Saved`, `CTs_Win`, `Terrorists_Win`,
 - **E6 should nonetheless not be taken from the feed directly** — the feed does
   not report the end of a map (see below). The match page was chosen as the
   source of truth for map completion, with the feed providing the speed-up.
-  Details in the plan, decision D7.
+  Details in [architecture.md](../architecture.md), "When a map counts as
+  finished".
 - Match-page polling remains a full-fledged fallback: per-map and per-half
   scores are visible on finished matches too.
 
@@ -69,5 +70,5 @@ What remains is to capture a full dump across a boundary for the replay tests �
 
 The maps section on the match page updates by halves and with a delay (see
 `docs/known-limitations.md`). So page polling gives a correct but late E6. The
-live feed knows the round score at the moment rounds end, so at stage 4 it
-becomes the primary source of speed while the page confirms the score.
+live feed knows the round score at the moment rounds end, so it became the
+primary source of speed, with the page confirming the score.

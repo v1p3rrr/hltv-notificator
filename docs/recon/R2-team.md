@@ -1,6 +1,7 @@
 # R2 — The team identifier
 
-Date of observation: 2026-08-29.
+Date of observation: 2026-08-29. A worked example on one team; the conclusion
+it reaches is general — teams are identified by number, never by name.
 
 | | |
 |---|---|
@@ -8,10 +9,6 @@ Date of observation: 2026-08-29.
 | Canonical name | `FORZE Reload` |
 | Page URL | https://www.hltv.org/team/12857/forze-reload |
 | Country | Russia |
-| World ranking | #120 |
-| Valve ranking (Beta) | #149 |
-| Coach | Pavel 'PASHANOJ' Legostaev |
-| Average roster age | 24.1 |
 
 ## Why we filter by id and not by name
 
@@ -22,9 +19,10 @@ site-wide practice of an `ex-` prefix when a roster breaks up (`ex-RUSTEC`,
 `ex-RUBY`, `ex-Zero Tenacity` all appeared in the schedule on the day of the
 recon). A team's name can change; its id cannot.
 
-**Conclusion: every filter in the service is built on `team_id == 12857`.** The
-name is kept only for rendering messages and is refreshed from the latest
-observation.
+**Conclusion: every filter in the service is built on the numeric `team_id`.**
+The name is kept only for rendering messages and is refreshed from the latest
+observation. It is also why `/track` takes a link to a team page rather than a
+name: the id is in the link.
 
 ## Tournament tier
 
@@ -33,6 +31,6 @@ regional leagues: GLuck Moscow Cyber Games 2026 Closed Qualifier, Kibertochka
 Season 2, CCT 2026 Contenders Europe Series 8, Exort Fiesta Series 1 Closed
 Qualifier, European Pro League Series 5, Exort Meteor Season 2.
 
-This is exactly the level the spec warned about: "at lower-tier tournaments
-there may be no feed at all". Checked separately — see
-[R1](R1-live-data-availability.md), the feed is there.
+That is the level at which the live feed was most in doubt — it might well
+have existed only at top-tier events. Checked separately — see
+[R1](R1-live-data-availability.md): the feed is there.
