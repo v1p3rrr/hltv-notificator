@@ -126,8 +126,18 @@ with a line in the log.
 > the bot stops answering anyone at all.
 
 With `TELEGRAM_WHITELIST_ONLY=true` (the default) the bot stays silent to
-everyone else — their `chat_id` goes to the log so there is something to add to
-the list.
+everyone else, `/whoami` included: any answer at all confirms the bot exists
+to whoever probed it. The refused `chat_id` goes to the log, and that is
+where an id that is not on the list yet comes from:
+
+```
+command /start from chat -1001234567890 refused: not on the whitelist
+```
+
+It is also how a **group** is added, since the id needed there belongs to the
+group rather than to any person: put the bot in the group, send it anything,
+take the number out of the log. A person's own id also comes from
+@userinfobot.
 
 An allowed account becomes a subscriber on its first message to the bot and
 builds its own team list through `/track`.

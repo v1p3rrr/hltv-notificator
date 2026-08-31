@@ -421,11 +421,17 @@ ids are negative — that is normal.
 
 With `TELEGRAM_WHITELIST_ONLY=true` (the default) the bot ignores everyone
 else completely — no command answers a stranger, not even `/whoami`, because a
-reply confirms the bot is there and gives them something to lean on. Their
-`chat_id` goes to the log, which is where you take it from to widen the list;
-they can also read it off [@userinfobot](https://t.me/userinfobot) themselves.
-Turn the whitelist off only deliberately: a Telegram bot has a public address,
-and without it anyone who finds yours can command it.
+reply confirms the bot is there and gives them something to lean on. Turn the
+whitelist off only deliberately: a Telegram bot has a public address, and
+without it anyone who finds yours can command it.
+
+**Finding an id that is not yet on the list.** A person reads their own off
+[@userinfobot](https://t.me/userinfobot). For a **group or channel** the id is
+the group's, not yours, so: add the bot there, send it anything, and take the
+number out of the service log — every refused message is written down as
+`command /x from chat -1001234567890 refused: not on the whitelist`. Then put
+it in `TELEGRAM_CHAT_ID` and restart. `/whoami` answers once the chat is
+allowed, which makes it a way to check where you are, not a way to get in.
 
 An allowed account becomes a subscriber on its first message to the bot.
 
