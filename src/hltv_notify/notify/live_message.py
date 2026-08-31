@@ -201,8 +201,17 @@ class LiveMessenger:
 
     @staticmethod
     def _buried(row) -> bool:
-        """Has something been sent below this card since it was last posted."""
+        """Has something been sent below this card since it was last posted.
+
+        A finalized card is never buried, and the check has to be HERE rather
+        than only in the query that finds them: the map can end between
+        `buried_live_messages` and the re-read under the lock, and a move that
+        went ahead anyway would delete the frozen final card, send it again and
+        clear the freeze — the score would then keep being overwritten after
+        the map was over.
+        """
         return (row is not None
+                and not row["finalized"]
                 and row["telegram_message_id"] is not None
                 and (row["bury_seq"] or 0) > (row["posted_seq"] or 0))
 
@@ -231,6 +240,13 @@ class LiveMessenger:
             return
         for row in self.storage.buried_live_messages(chat_id):
             match_id = row["match_id"]
+            if chat_id not in {chat for chat, _ in self._recipients(match_id)}:
+                # Moving a card means SENDING one, so this path answers "who
+                # gets this" the same way every other path does — through
+                # `_recipients`, which is where the pause and `/settings card`
+                # live. A row left over from before someone switched the card
+                # off must not be re-sent to them.
+                continue
             # A background redraw may be editing this very message. Waited for,
             # never cancelled: a cancel inside send_message leaves a card in
             # the chat whose id was never saved, and the next start would open
@@ -270,7 +286,8 @@ class LiveMessenger:
                         "%s, it stays where it is: %s", match_id, chat_id, exc)
             self.storage.save_live_message(
                 chat_id, match_id, map_number, telegram_message_id=None,
-                text=row["last_text"], posted_seq=seen)
+                text=row["last_text"], finalized=bool(row["finalized"]),
+                posted_seq=seen)
             return None
         # Recorded before anything is sent: from here on the old message does
         # not exist, so a send that fails must leave the next redraw creating a
@@ -287,9 +304,12 @@ class LiveMessenger:
                         "sent again: %s", match_id, chat_id, exc)
             return False
         self._last_edit[(chat_id, match_id, map_number)] = time.monotonic()
+        # `finalized` is carried over deliberately: it defaults to False and
+        # the statement writes `finalized = excluded.finalized`, so omitting it
+        # would unfreeze a card that was frozen while this move was in flight.
         self.storage.save_live_message(
             chat_id, match_id, map_number, telegram_message_id=new_id,
-            text=text, posted_seq=seen)
+            text=text, finalized=bool(row["finalized"]), posted_seq=seen)
         log.info("live card of match %s map %d moved down for %s (new id %s)",
                  match_id, map_number, chat_id, new_id)
         return True
@@ -367,55 +387,67 @@ class LiveMessenger:
             self._last_edit[key] = time.monotonic()
             return True
 
-        message_id = row["telegram_message_id"] if row is not None else None
-        posted_seq = None
-        if buried and not (self.config.dry_run or self.telegram is None):
-            async with self._move_lock(key):
-                # Same re-read as in `repost_buried`, for the same reason: the
-                # queue may have moved this card while we were rendering.
-                row = self.storage.live_message(*key)
-                # The id too: if the queue moved the card while we were
-                # rendering, the one read above points at a deleted message.
-                message_id = row["telegram_message_id"] if row is not None else None
-                if self._buried(row):
-                    # The feed-driven half of the move, and the reason it is
-                    # not simply `_resend`: a fresh score is already in hand,
-                    # so the card is deleted and RE-CREATED with it. Going
-                    # through the stored text would cost a third call to edit
-                    # it straight afterwards.
-                    #
-                    # `_settle` is deliberately NOT called here: this runs
-                    # inside `_draw`, and waiting there would be waiting on
-                    # ourselves.
-                    posted_seq = await self._drop(chat_id, row)
-                    if posted_seq is not None:
-                        message_id = None
+        # Everything that decides which message this card IS, and then writes
+        # to it, happens under one lock per card. Not just the move: the queue
+        # can be moving this very card right now, and between its delete and
+        # its send the row carries NO id at all. A redraw that read the row in
+        # that window would conclude there is no card, send its own, and the
+        # map would end with two.
+        async with self._move_lock(key):
+            row = self.storage.live_message(*key)
+            if row is not None and row["finalized"]:
+                # Frozen while we were rendering: the map ended. Writing now
+                # would clear the freeze and hand the card a stale score.
+                return True
+            message_id = row["telegram_message_id"] if row is not None else None
+            posted_seq = None
 
-        if self.config.dry_run or self.telegram is None:
-            reason = "DRY_RUN" if self.config.dry_run else "Telegram not configured"
-            log.debug("[%s] live message for match %s map %d:\n%s",
-                      reason, match_id, map_number, text)
-        else:
-            try:
-                if message_id is None:
-                    message_id = await self.telegram.send_message(chat_id, text)
-                    log.info("live message for match %s map %d created for %s (id %s)",
-                             match_id, map_number, chat_id, message_id)
-                else:
-                    await self.telegram.edit_message_text(chat_id, message_id, text)
-            except TelegramError as exc:
-                # The live message is auxiliary. Bringing the worker down over
-                # it and losing milestones is not acceptable.
-                log.warning("live message for match %s map %d was not updated: %s",
-                            match_id, map_number, exc)
-                self._last_edit[key] = time.monotonic()
-                return False
+            if self._buried(row) and not (self.config.dry_run or self.telegram is None):
+                # The feed-driven half of the move, and the reason it is not
+                # simply `_resend`: a fresh score is already in hand, so the
+                # card is deleted and RE-CREATED with it. Going through the
+                # stored text would cost a third call to edit it afterwards.
+                #
+                # `_settle` is deliberately NOT called here: this runs inside
+                # `_draw`, and waiting there would be waiting on ourselves.
+                posted_seq = await self._drop(chat_id, row)
+                if posted_seq is not None:
+                    message_id = None
 
-        self._last_edit[key] = time.monotonic()
-        self.storage.save_live_message(
-            chat_id, match_id, map_number, telegram_message_id=message_id,
-            text=text, finalized=finalize, posted_seq=posted_seq)
-        return True
+            if message_id is None and posted_seq is None:
+                # A card created from scratch lands at the bottom by
+                # construction, so it owes nothing to any burial recorded
+                # before it existed. Without this it would be born already
+                # "buried" — after a re-send that failed, for instance — and
+                # the next redraw would delete and re-post the message that
+                # had only just appeared.
+                posted_seq = (row["bury_seq"] or 0) if row is not None else 0
+
+            if self.config.dry_run or self.telegram is None:
+                reason = "DRY_RUN" if self.config.dry_run else "Telegram not configured"
+                log.debug("[%s] live message for match %s map %d:\n%s",
+                          reason, match_id, map_number, text)
+            else:
+                try:
+                    if message_id is None:
+                        message_id = await self.telegram.send_message(chat_id, text)
+                        log.info("live message for match %s map %d created for %s (id %s)",
+                                 match_id, map_number, chat_id, message_id)
+                    else:
+                        await self.telegram.edit_message_text(chat_id, message_id, text)
+                except TelegramError as exc:
+                    # The live message is auxiliary. Bringing the worker down
+                    # over it and losing milestones is not acceptable.
+                    log.warning("live message for match %s map %d was not updated: %s",
+                                match_id, map_number, exc)
+                    self._last_edit[key] = time.monotonic()
+                    return False
+
+            self._last_edit[key] = time.monotonic()
+            self.storage.save_live_message(
+                chat_id, match_id, map_number, telegram_message_id=message_id,
+                text=text, finalized=finalize, posted_seq=posted_seq)
+            return True
 
     async def finalize(self, match_id: int, snapshot: dict) -> None:
         """The last edit once the map is over: freeze the final score."""

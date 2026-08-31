@@ -1108,12 +1108,19 @@ class Storage:
         would sit above that message for the rest of the map.
 
         A finalized card is left alone: the map is over, its final score is
-        meant to stay where it was written.
+        meant to stay where it was written. And only the CURRENT map's card is
+        moved, not every unfinalized one: a card is left unfinalized whenever a
+        map ends while the live feed is down (the page emits E6, and only the
+        live worker calls `finalize`), and without this the stale card of a map
+        played an hour ago would be deleted and re-posted at the bottom of the
+        chat next to the running one.
         """
         self.conn.execute(
             "UPDATE live_messages SET bury_seq = bury_seq + 1 "
-            "WHERE chat_id = ? AND match_id = ? AND finalized = 0",
-            (str(chat_id), match_id))
+            "WHERE chat_id = ? AND match_id = ? AND finalized = 0 "
+            "AND map_number = (SELECT MAX(map_number) FROM live_messages "
+            "                  WHERE chat_id = ? AND match_id = ? AND finalized = 0)",
+            (str(chat_id), match_id, str(chat_id), match_id))
 
     def buried_live_messages(self, chat_id: str) -> List[sqlite3.Row]:
         """Cards of this chat that have something below them."""

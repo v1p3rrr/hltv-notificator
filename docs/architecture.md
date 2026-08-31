@@ -594,12 +594,34 @@ failed queue-side attempt) does have a fresh score in hand, so there it deletes
 and re-creates with it — going through the stored text would cost a third call
 to edit it straight afterwards.
 
+Only the CURRENT map's card is moved, not every unfinalized one. A card is
+left unfinalized whenever a map ends while the feed is down — `finalize` runs
+only when the LIVE machine emits E6, and a map decided from the page never
+reaches it — so without that restriction the stale card of a map played an hour
+ago would be dragged to the bottom of the chat beside the running one.
+
+Moving a card means SENDING one, so `repost_buried` answers "who gets this"
+through `_recipients` like every other delivery path: the pause and
+`/settings card off` are decided in one place, and a row left over from before
+someone switched the card off is not re-sent to them.
+
 Which types move it is a short list, `outbox.BURYING`: E11 and E12. E9 is
 deliberately absent — there are several multikills a map, and a card that
 deletes and re-posts itself after each would spend the budget jumping around.
 Events about other matches are absent for the same reason in reverse: moving
 this card for them would be noise, and with two matches live in one chat only
 one card can be last anyway.
+
+**One lock per card, around the whole write.** Not only around the move: the
+queue can be moving a card right now, and between its delete and its send the
+row carries no message id at all. A redraw reading the row in that window would
+conclude there is no card and send its own, and the map would end with two —
+the deleted-and-re-sent one plus an orphan nobody ever edits again. So
+`_update_one` takes `_move_lock` before it decides which message the card IS
+and holds it through the send or edit and the write. The row is re-read inside,
+because everything read before waiting may be stale, `finalized` included: a
+map that ends mid-move must not have its freeze cleared by the write that
+follows.
 
 Failure is handled by giving up rather than retrying. Telegram refuses deletes
 it considers impossible; `posted_seq` is advanced anyway so the card goes back

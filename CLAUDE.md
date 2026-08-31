@@ -212,12 +212,30 @@ order. `_update_one` keeps a copy of the logic as a safety net for a restart,
 but it must NOT call `_settle` — it runs inside `_draw` and would wait on
 itself.
 
-**Two things can move the card, so the move needs a lock.** `_drawing`
-serialises the feed's redraws, but the queue moves cards from its OWN task —
-without `_moving` both find the card buried, both delete it and both send a new
-one, and the map ends with two cards. Both movers re-read the row under the
-lock, the id included: the one read before waiting points at a message the
-other may already have deleted.
+**The card's whole write path is under `_moving`, not just the move.**
+`_drawing` serialises the feed's redraws, but the queue moves cards from its
+OWN task, and between that move's delete and its send the row carries NO
+message id. A redraw reading the row in that window concludes there is no card,
+sends its own, and the map ends with two — one of them an orphan nobody edits
+again. It fires on E11, when the feed is certainly running, so it is the
+ordinary case. Everything read before the lock is stale by definition: re-read
+the row inside it, the id and `finalized` included.
+
+**A move must carry `finalized` through.** `save_live_message` defaults it to
+False and writes `finalized = excluded.finalized`, so a move that omits it
+unfreezes a card frozen while the move was in flight — and the final score is
+then overwritten by later frames. `_buried()` checks `finalized` too, because
+the query that found the card ran before `_settle`.
+
+**Bury only the CURRENT map's card.** `finalize` runs only when the live
+machine emits E6, so a map that ends while the feed is down leaves its card
+unfinalized forever. Burying every unfinalized card of the match drags that
+stale one to the bottom of the chat next to the running map.
+
+**A newly created card owes nothing to an older burial.** It lands at the
+bottom by construction, so its `posted_seq` is caught up on creation. Without
+that it is born already "buried" — after a re-send that failed, say — and the
+next redraw deletes and re-posts the message that had only just appeared.
 
 **A deleted card must have its id forgotten before the re-send.**
 `save_live_message` COALESCEs `telegram_message_id`, so writing NULL through it
@@ -445,7 +463,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 482 tests
+python -m pytest                                    # 487 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

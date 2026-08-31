@@ -30,6 +30,7 @@ TEAM_ID = 12857
 class FakeTelegram:
     def __init__(self, *, fail_delete=False):
         self.sent = []
+        self.sent_ids = []
         self.edited = []
         self.deleted = []
         self.calls = []          # everything, in order
@@ -38,7 +39,9 @@ class FakeTelegram:
     async def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append(text)
         self.calls.append(("send", text))
-        return 1000 + len(self.sent)
+        message_id = 1000 + len(self.sent)
+        self.sent_ids.append(message_id)
+        return message_id
 
     async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
         self.edited.append((message_id, text))
@@ -372,4 +375,169 @@ def test_the_queue_and_a_redraw_cannot_both_move_it(tmp_path):
     row = storage.live_message(CHAT, MATCH_ID, 1)
     assert row["telegram_message_id"] == 1002
     assert storage.buried_live_messages(CHAT) == []
+    storage.close()
+
+
+# ---------- the five defects the review found ----------
+
+def test_a_redraw_during_a_move_does_not_leave_a_second_card(tmp_path):
+    """The move nulls the id between the delete and the send.
+
+    A redraw reading the row in that window used to conclude there was no card
+    and send its own, leaving an orphan in the chat for good. It fires on E11,
+    when the feed is certainly running, so it is the ordinary case rather than
+    an exotic one.
+    """
+    storage = Storage(tmp_path / "card.db")
+    storage.upsert_match(match_id=MATCH_ID, opponent_id=1, opponent_name="Color",
+                         event_name="Test", start_utc=utcnow(), url="u",
+                         snapshot={}, snapshot_hash="h")
+
+    class SlowSend(FakeTelegram):
+        async def send_message(self, chat_id, text, reply_markup=None):
+            if self.deleted:                    # only the re-send is slow
+                await asyncio.sleep(0.05)
+            return await FakeTelegram.send_message(self, chat_id, text)
+
+    telegram = SlowSend()
+    messenger = LiveMessenger(storage, live_config(), telegram)
+
+    async def scenario():
+        await messenger.update(MATCH_ID, snapshot(score=(12, 10), rnd=23))
+        storage.bury_live_card(CHAT, MATCH_ID)
+
+        async def an_ordinary_redraw():
+            await asyncio.sleep(0.02)           # lands mid-move
+            messenger._last_edit.clear()
+            await messenger.update(MATCH_ID, snapshot(score=(12, 11), rnd=24))
+
+        await asyncio.gather(messenger.repost_buried(CHAT), an_ordinary_redraw())
+
+    asyncio.run(scenario())
+    # One card at the start, one delete, one re-send: nothing orphaned.
+    assert len(telegram.sent) - len(telegram.deleted) == 1
+    assert storage.live_message(CHAT, MATCH_ID, 1)["telegram_message_id"] == telegram.sent_ids[-1]
+    storage.close()
+
+
+def test_a_map_that_ends_mid_move_keeps_its_freeze(tmp_path):
+    """The map can end between finding the buried card and acting on it.
+
+    The move then used to delete the frozen final card, send it again and
+    clear `finalized` on the way — after which later frames overwrote the
+    final score. That is the defect `_settle` was written for, coming back
+    through a new door.
+    """
+    storage = Storage(tmp_path / "card.db")
+    storage.upsert_match(match_id=MATCH_ID, opponent_id=1, opponent_name="Color",
+                         event_name="Test", start_utc=utcnow(), url="u",
+                         snapshot={}, snapshot_hash="h")
+    telegram = FakeTelegram()
+    messenger = LiveMessenger(storage, live_config(), telegram)
+    storage.save_live_message(CHAT, MATCH_ID, 1, telegram_message_id=1001,
+                              text="Mirage 13:10", finalized=False)
+    storage.bury_live_card(CHAT, MATCH_ID)
+
+    async def scenario():
+        async def the_map_ends():
+            storage.save_live_message(CHAT, MATCH_ID, 1, telegram_message_id=None,
+                                      text="Mirage 13:10", finalized=True)
+        # `repost_buried` waits on the draw in flight; the map ends in there.
+        messenger._drawing[MATCH_ID] = asyncio.create_task(the_map_ends())
+        await messenger.repost_buried(CHAT)
+
+    asyncio.run(scenario())
+    assert storage.live_message(CHAT, MATCH_ID, 1)["finalized"] == 1
+    assert telegram.deleted == []
+    storage.close()
+
+
+def test_only_the_current_map_is_moved(tmp_path):
+    """A map that ended while the feed was down leaves an unfinalized card.
+
+    `finalize` runs only when the LIVE machine emits E6; a map decided from the
+    page does not reach it. Burying every unfinalized card of the match then
+    dragged that stale one to the bottom of the chat next to the running map.
+    """
+    storage = Storage(tmp_path / "card.db")
+    storage.upsert_match(match_id=MATCH_ID, opponent_id=1, opponent_name="Color",
+                         event_name="Test", start_utc=utcnow(), url="u",
+                         snapshot={}, snapshot_hash="h")
+    telegram = FakeTelegram()
+    messenger = LiveMessenger(storage, live_config(), telegram)
+    storage.save_live_message(CHAT, MATCH_ID, 1, telegram_message_id=1001,
+                              text="map 1, stale 13:7", finalized=False)
+    storage.save_live_message(CHAT, MATCH_ID, 2, telegram_message_id=1002,
+                              text="map 2, live 6:6", finalized=False)
+
+    storage.bury_live_card(CHAT, MATCH_ID)
+    assert [row["map_number"] for row in storage.buried_live_messages(CHAT)] == [2]
+    asyncio.run(messenger.repost_buried(CHAT))
+    assert telegram.deleted == [1002]
+    assert telegram.sent == ["map 2, live 6:6"]
+    storage.close()
+
+
+def test_a_card_switched_off_is_not_re_sent(tmp_path):
+    """Moving a card means SENDING one, so it answers to the same rules.
+
+    `/settings card off` stops the card being edited, but the row survives —
+    and the move read rows straight from storage, so the next map point
+    delivered the very message the person had switched off.
+    """
+    storage = Storage(tmp_path / "card.db")
+    storage.upsert_match(match_id=MATCH_ID, opponent_id=1, opponent_name="Color",
+                         event_name="Test", start_utc=utcnow(), url="u",
+                         snapshot={}, snapshot_hash="h")
+    storage.add_subscriber(CHAT)
+    storage.set_setting(CHAT, "card", 0)
+    telegram = FakeTelegram()
+    messenger = LiveMessenger(storage, live_config(), telegram)
+    storage.save_live_message(CHAT, MATCH_ID, 1, telegram_message_id=1001,
+                              text="the card they switched off", finalized=False)
+    storage.bury_live_card(CHAT, MATCH_ID)
+
+    asyncio.run(messenger.repost_buried(CHAT))
+    assert telegram.deleted == []
+    assert telegram.sent == []
+    storage.close()
+
+
+def test_a_freshly_created_card_is_not_moved_again(tmp_path):
+    """A card created from scratch is already at the bottom.
+
+    After a re-send that failed, the row kept a burial the new card owes
+    nothing to, so the next redraw deleted and re-posted the message that had
+    only just appeared — the reader watched it jump twice.
+    """
+    storage = Storage(tmp_path / "card.db")
+    storage.upsert_match(match_id=MATCH_ID, opponent_id=1, opponent_name="Color",
+                         event_name="Test", start_utc=utcnow(), url="u",
+                         snapshot={}, snapshot_hash="h")
+
+    class FailingResend(FakeTelegram):
+        fail = False
+
+        async def send_message(self, chat_id, text, reply_markup=None):
+            if self.fail:
+                raise TelegramError("Telegram 500", retry_after=None)
+            return await FakeTelegram.send_message(self, chat_id, text)
+
+    telegram = FailingResend()
+    messenger = LiveMessenger(storage, live_config(), telegram)
+    asyncio.run(messenger.update(MATCH_ID, snapshot()))
+    storage.bury_live_card(CHAT, MATCH_ID)
+
+    telegram.fail = True                      # the re-send fails
+    messenger._last_edit.clear()
+    asyncio.run(messenger.update(MATCH_ID, snapshot(score=(7, 6), rnd=14)))
+
+    telegram.fail = False                     # a fresh card is created
+    messenger._last_edit.clear()
+    asyncio.run(messenger.update(MATCH_ID, snapshot(score=(7, 6), rnd=14)))
+    assert storage.buried_live_messages(CHAT) == []
+
+    messenger._last_edit.clear()              # and is left alone afterwards
+    asyncio.run(messenger.update(MATCH_ID, snapshot(score=(8, 6), rnd=15)))
+    assert len(telegram.deleted) == 1
     storage.close()
