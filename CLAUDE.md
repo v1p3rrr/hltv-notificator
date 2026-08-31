@@ -309,6 +309,17 @@ computation.
 event about a shared match would reach only the first subscriber: the unique
 index would cut the rest off as duplicates.
 
+**Every event payload names its own team — `team_name` AND `team_id`.**
+`format.render` falls back to `config.team_name` when the payload is silent,
+and that is the FIRST SEED's name, not the reader's team: E1, E2 and E3 carried
+no team at all, so a subscriber following Natus Vincere was told about a new
+match of "FORZE Reload". The id matters just as much: without it `format.orient`
+has nothing to compare against, hands the payload back untouched, and in a
+match between two tracked teams the second one reads its own opponent as
+itself. The live machine gets this right in one place — `_context` — and the
+schedule machine had no such place. `tests/test_multi_team.py` now renders every
+schedule event from BOTH followers' sides.
+
 **An event is built entirely from one team's point of view.** Take the canonical
 team's context and swap only the name in it — that is how E9 about a player of
 the second tracked team ended up with that same team as its opponent
@@ -505,7 +516,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 502 tests
+python -m pytest                                    # 506 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

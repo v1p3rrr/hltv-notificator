@@ -826,6 +826,15 @@ they read "13:10" where for them it is "10:13". `format.orient` does the
 turning at render time, so different subscribers have different texts of the
 same event sitting in the queue.
 
+Both halves of that depend on the payload naming its own team: `team_name`,
+because `format.render` otherwise falls back to `TEAM_NAME` from the
+environment — the first seed's name, which is wrong for every team added
+through the bot afterwards; and `team_id`, because that is what `orient`
+compares the reader's team against, and without it the event is handed back
+untouched. The live machine builds that header in one place (`_context`); the
+schedule machine builds it per event, and for a while built it not at all —
+E1, E2 and E3 went out naming the seed team whoever they were about.
+
 **The match perspective is remembered once** — in `matches.team_id`, by the
 team that saw the match first; `canonical_team()` reads exactly that. While it
 returned simply the lower id among the participants, the perspective flipped out

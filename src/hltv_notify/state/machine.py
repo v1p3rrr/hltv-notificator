@@ -95,7 +95,7 @@ class ScheduleMachine:
             )
             if bootstrap or entry.finished:
                 return []
-            return [self._event_e1(entry)]
+            return [self._event_e1(entry, team_id)]
 
         events: List[Event] = []
         confirmed_start = parse_iso(existing["start_utc"])
@@ -103,7 +103,8 @@ class ScheduleMachine:
 
         if not entry.finished:
             moved, new_start = self._check_time_change(
-                entry, confirmed_start=confirmed_start, now=now, bootstrap=bootstrap)
+                entry, team_id, confirmed_start=confirmed_start, now=now,
+                bootstrap=bootstrap)
             if moved is not None:
                 events.append(moved)
             if new_start is not None:
@@ -126,7 +127,8 @@ class ScheduleMachine:
 
     # ------------------------------------------------------------------
 
-    def _check_time_change(self, entry: ScheduleEntry, *, confirmed_start: datetime,
+    def _check_time_change(self, entry: ScheduleEntry, team_id: int, *,
+                           confirmed_start: datetime,
                            now: datetime, bootstrap: bool):
         """E2 with a threshold and a debounce.
 
@@ -160,8 +162,8 @@ class ScheduleMachine:
             # idle right after (its stored start had passed) and E2 would have
             # been born at 18:29 — nine minutes into the match.
             self._clear_pending(entry.match_id)
-            return self._settle(entry, confirmed_start=confirmed_start, now=now,
-                                bootstrap=bootstrap)
+            return self._settle(entry, team_id, confirmed_start=confirmed_start,
+                                now=now, bootstrap=bootstrap)
 
         state = self.storage.get_state(entry.match_id)
         pending_start = state["pending_start_utc"] if state else None
@@ -183,7 +185,7 @@ class ScheduleMachine:
             return None, None
 
         self._clear_pending(entry.match_id)
-        return self._settle(entry, confirmed_start=confirmed_start, now=now,
+        return self._settle(entry, team_id, confirmed_start=confirmed_start, now=now,
                             bootstrap=bootstrap)
 
     def _no_time_to_wait(self, confirmed_start: datetime, observed: datetime,
@@ -196,7 +198,8 @@ class ScheduleMachine:
         return min(confirmed_start, observed) - now <= timedelta(
             minutes=self.config.e2_debounce_minutes)
 
-    def _settle(self, entry: ScheduleEntry, *, confirmed_start: datetime,
+    def _settle(self, entry: ScheduleEntry, team_id: int, *,
+                confirmed_start: datetime,
                 now: datetime, bootstrap: bool):
         """Accept the new time; say so out loud unless saying so is pointless."""
         if bootstrap:
@@ -208,7 +211,8 @@ class ScheduleMachine:
             log.info("match %s: the move to %s is not reported, that time has "
                      "already passed", entry.match_id, entry.start_utc)
             return None, entry.start_utc
-        return self._event_e2(entry, old_start=confirmed_start), entry.start_utc
+        return (self._event_e2(entry, team_id, old_start=confirmed_start),
+                entry.start_utc)
 
     def _clear_pending(self, match_id: int) -> None:
         state = self.storage.get_state(match_id)
@@ -251,17 +255,25 @@ class ScheduleMachine:
 
             self.storage.set_state(match_id, MatchState.CANCELLED, source="team_page")
             if not bootstrap:
-                events.append(self._event_e3(row))
+                events.append(self._event_e3(row, team_id))
         return events
 
     # ------------------------------------------------------------------
 
-    def _event_e1(self, entry: ScheduleEntry) -> Event:
+    def _event_e1(self, entry: ScheduleEntry, team_id: int) -> Event:
         return Event(
             type="E1",
             idempotency_key=f"E1:{entry.match_id}:new",
             match_id=entry.match_id,
             payload={
+                # Which team this is about, by name AND by id. Several teams
+                # are tracked, and TEAM_NAME from the environment is only the
+                # first seed's: without this the renderer fell back to it and
+                # told a follower of Natus Vincere about a match of "FORZE
+                # Reload". The id is what lets `format.orient` turn the pair
+                # around for whoever follows the opponent.
+                "team_name": self.storage.team_name(team_id, self.config.team_name),
+                "team_id": team_id,
                 "opponent": entry.opponent_name,
                 "opponent_id": entry.opponent_id,
                 "event_name": entry.event_name,
@@ -271,13 +283,19 @@ class ScheduleMachine:
             },
         )
 
-    def _event_e2(self, entry: ScheduleEntry, *, old_start: datetime) -> Event:
+    def _event_e2(self, entry: ScheduleEntry, team_id: int, *,
+                  old_start: datetime) -> Event:
         return Event(
             type="E2",
             idempotency_key=f"E2:{entry.match_id}:moved:{_key_time(entry.start_utc)}",
             match_id=entry.match_id,
             payload={
+                # The entry is this team's page, so the whole pair is taken
+                # from it and nothing is mixed with another perspective.
+                "team_name": self.storage.team_name(team_id, self.config.team_name),
+                "team_id": team_id,
                 "opponent": entry.opponent_name,
+                "opponent_id": entry.opponent_id,
                 "event_name": entry.event_name,
                 "old_start_utc": old_start.isoformat(),
                 "start_utc": entry.start_utc.isoformat(),
@@ -285,13 +303,21 @@ class ScheduleMachine:
             },
         )
 
-    def _event_e3(self, row) -> Event:
+    def _event_e3(self, row, team_id: int) -> Event:
+        # The row is written from the CANONICAL team's side (`upsert_match`
+        # only lets that team's poll update the opponent), so the pair has to
+        # be named from there too. Taking this loop's team beside the row's
+        # opponent would be exactly the mix that once produced "FORZE — FORZE".
+        about = self.storage.canonical_team(row["match_id"]) or team_id
         return Event(
             type="E3",
             idempotency_key=f"E3:{row['match_id']}:cancelled",
             match_id=row["match_id"],
             payload={
+                "team_name": self.storage.team_name(about, self.config.team_name),
+                "team_id": about,
                 "opponent": row["opponent_name"],
+                "opponent_id": row["opponent_id"],
                 "event_name": row["event_name"],
                 "start_utc": row["start_utc"],
                 "url": row["url"],

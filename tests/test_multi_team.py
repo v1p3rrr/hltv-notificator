@@ -14,6 +14,7 @@ CHAT = "555"
 
 from conftest import later
 from hltv_notify.models import Event, ScheduleEntry
+from hltv_notify.notify import format as fmt
 from hltv_notify.notify.outbox import Notifier
 from hltv_notify.sources.scorebot import LiveFrame, PlayerLine
 from hltv_notify.state.db import utcnow
@@ -225,3 +226,79 @@ def test_map_end_of_a_shared_match_notifies_once(both, config):
     assert len(e6) == 1
     # the score is oriented on the canonical team (ALPHA), not on both at once
     assert e6[0] == "E6:500:map:1:result:13-7"
+
+
+# ---------- the schedule events name the team they are about ----------
+
+def _e1_for(machine, team_id, match_id):
+    return machine.apply([entry_for(team_id, match_id=match_id)], team_id)[0]
+
+
+def test_the_schedule_events_name_the_team_they_are_about(both, config):
+    """E1/E2/E3 used to carry no team at all.
+
+    The renderer then fell back to TEAM_NAME from the environment — the first
+    seed's name — so a subscriber following MOUZ was told about a new match of
+    "FORZE Reload". Every team but one had the wrong name on every schedule
+    event.
+    """
+    assert config.team_name == "FORZE Reload"       # the environment's seed
+    m = ScheduleMachine(both, config)
+    both.set_meta(f"bootstrapped:{ALPHA}", "seeded")
+
+    new = _e1_for(m, ALPHA, 701)
+    assert new.payload["team_name"] == "MOUZ"
+    assert new.payload["team_id"] == ALPHA
+    assert "MOUZ — FORZE Reload" in fmt.render(
+        new, team_name=config.team_name, tz_name="UTC", for_team_id=ALPHA)
+
+
+def test_a_schedule_event_turns_around_for_the_other_tracked_team(both, config):
+    """One match, two followers: each reads their own team first.
+
+    Impossible without the id in the payload — `format.orient` has nothing to
+    compare against and hands the event back untouched.
+    """
+    m = ScheduleMachine(both, config)
+    both.set_meta(f"bootstrapped:{ALPHA}", "seeded")
+    new = _e1_for(m, ALPHA, 702)
+
+    theirs = fmt.render(new, team_name=config.team_name, tz_name="UTC",
+                        for_team_id=BETA)
+    assert "FORZE Reload — MOUZ" in theirs
+
+
+def test_a_reschedule_names_the_team_and_turns_around(both, config):
+    m = ScheduleMachine(both, config)
+    both.set_meta(f"bootstrapped:{ALPHA}", "seeded")
+    start = later(600)
+    m.apply([entry_for(ALPHA, start=start, match_id=703)], ALPHA)
+
+    moved = start + timedelta(hours=2)
+    now = utcnow()
+    m.apply([entry_for(ALPHA, start=moved, match_id=703)], ALPHA, now=now)
+    events = m.apply([entry_for(ALPHA, start=moved, match_id=703)], ALPHA,
+                     now=now + timedelta(minutes=config.e2_debounce_minutes + 1))
+    assert [e.type for e in events] == ["E2"]
+    assert events[0].payload["team_name"] == "MOUZ"
+    assert "MOUZ — FORZE Reload" in fmt.render(
+        events[0], team_name=config.team_name, tz_name="UTC", for_team_id=ALPHA)
+    assert "FORZE Reload — MOUZ" in fmt.render(
+        events[0], team_name=config.team_name, tz_name="UTC", for_team_id=BETA)
+
+
+def test_a_cancellation_names_the_canonical_team(both, config):
+    """E3 is built from the stored row, which is written from the canonical
+    team's side — so the pair has to be named from there, not from whichever
+    team's sweep noticed the match had gone."""
+    m = ScheduleMachine(both, config)
+    both.set_meta(f"bootstrapped:{ALPHA}", "seeded")
+    both.set_meta(f"bootstrapped:{BETA}", "seeded")
+    m.apply([entry_for(ALPHA, match_id=704)], ALPHA)      # ALPHA is canonical
+    m.apply([entry_for(BETA, match_id=704)], BETA)
+
+    events = m.apply([], BETA)                            # gone from BETA's page
+    assert [e.type for e in events] == ["E3"]
+    assert events[0].payload["team_id"] == both.canonical_team(704) == ALPHA
+    assert "MOUZ — FORZE Reload" in fmt.render(
+        events[0], team_name=config.team_name, tz_name="UTC", for_team_id=ALPHA)
