@@ -372,6 +372,15 @@ Addresses are assembled from validated numbers, and `config.ALLOWED_HOSTS`
 checks the host at the network egress itself. Check the `hostname` from
 `urlparse`, not `startswith` — the attack is built on exactly that.
 
+**A scanner's CVE count is mostly Debian's, not ours.** Of ~150 findings on
+the image, everything with a fix is the base image's own lag (`python:3.12-slim`
+freezes Debian as of ITS build date) plus `pip`, which nothing at runtime needs.
+The `Dockerfile` handles both — `apt-get upgrade` and `pip uninstall -y pip` —
+and after that `trivy --ignore-unfixed` comes back empty. What remains has no
+Debian patch at all: the three CRITICALs are `perl-base`, pulled in by `dpkg`
+and never executed here. Judge the image by `--ignore-unfixed`; the raw total
+is noise and chasing it invites a base-image swap that fixes nothing.
+
 **Non-ASCII logs bring the handler down on Windows.** The console is cp1252.
 `setup_logging` forces the streams to UTF-8; in scripts use
 `PYTHONIOENCODING=utf-8`.

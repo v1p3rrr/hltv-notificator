@@ -195,6 +195,37 @@ itself for the duration of the step. Verifying the signature:
 cosign verify <image>@<digest> --certificate-identity-regexp '.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+## What a vulnerability scanner will say
+
+Scanning the image reports on the order of a hundred and fifty CVEs, three of
+them CRITICAL. That number is almost entirely about Debian, not about this
+service, and it is worth knowing which part of it can be acted on.
+
+Two lines in the `Dockerfile` handle everything that has a fix:
+
+* `apt-get upgrade` on top of the base image. `python:3.12-slim` carries
+  whatever Debian shipped on the day the base image itself was built, so even
+  a fresh rebuild lags by however long it has been since — that lag is exactly
+  where the fixable findings live (openssl was one release behind).
+* `pip uninstall -y pip` after the dependencies are installed. Nothing at
+  runtime imports pip, and an installer left in the image means every future
+  pip CVE shows up in a scan of something that cannot use it.
+
+After those, **nothing fixable is left** — every remaining finding is a package
+Debian has no patch for (`affected` or `fix_deferred`). The CRITICALs are all
+`perl-base`, which is in the image because `dpkg` depends on it and which this
+service never runs; the rest are `ncurses`, `gzip`, `libacl`, `libsqlite3`.
+Rebasing does not remove them, and there is no version to move to. Checking
+for yourself:
+
+```bash
+docker run --rm -v trivycache:/root/.cache/trivy aquasec/trivy image --ignore-unfixed vprlol/hltv-notificator:latest
+```
+
+`--ignore-unfixed` is the flag that matters: it turns the report into the list
+of things a rebuild would actually change. An empty result is the goal, and a
+non-empty one means the published image is behind — rebuild it.
+
 ## Rolling back
 
 ```bash
