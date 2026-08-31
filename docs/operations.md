@@ -12,14 +12,14 @@
 | E4 match started | done, from the match page; waits for the first round while the feed reports a warmup |
 | E7 match finished | done, from the live feed by the map count; the page confirms |
 | E11 map point | done, from the live feed; a separate one for every overtime |
-| E12 half / new overtime | done, from the live feed, `PHASE_ALERTS`, **off by default** |
+| E12 half / new overtime | done, from the live feed, `/settings phase` (default `PHASE_ALERTS`), **off by default** |
 | E6 map finished with the score | done, **at the winning round** from the live feed; the page confirms |
-| A comeback on the map | done, an extra line on E6, `COMEBACK_ROUNDS` |
+| A comeback on the map | done, an extra line on E6, `/settings comeback` (default `COMEBACK_ROUNDS`) |
 | E5 map started | done, from the live feed, once the warmup is over |
 | E8 degradation (the source is silent, the match has stalled) | done |
 | "The match has stalled" | only when there is no live feed; between maps the threshold is three times longer |
-| The live score message during a map | done, one per map, `LIVE_MESSAGE`; it is also the map's card and carries the map start, so it is not opened during the warmup |
-| A multikill by a player of our team | done, at the Nth kill, `MULTIKILL_THRESHOLD` |
+| The live score message during a map | done, one per map, `/settings card` (default `LIVE_MESSAGE`); it is also the map's card and carries the map start, so it is not opened during the warmup |
+| A multikill by a player of our team | done, at the Nth kill, `/settings multikill` (default `MULTIKILL_THRESHOLD`) |
 
 ## Starting up
 
@@ -70,8 +70,9 @@ command the bot does not recognise.
 | `/unmute <id>` | clear the mutes |
 | `/remind` | the list of reminders; `/remind 1h` adds, `/remind rm 15m` removes |
 | `/tz` | your own timezone |
+| `/settings` | your own thresholds; `/settings comeback 12` changes one, `/settings comeback default` returns it to the environment's value |
 | `/pause` / `/resume` | the global quiet switch, on top of per-type muting |
-| `/menu` | the inline menu: status, live, upcoming, teams and their mutes, reminders, quiet. `/track`, `/tz`, `/check`, `/whoami` and `/verbose` have no buttons |
+| `/menu` | the inline menu: status, live, upcoming, teams and their mutes, reminders, settings, quiet. `/track`, `/tz`, `/check`, `/whoami` and `/verbose` have no buttons |
 | `/whoami` | your own chat_id, for allowed chats only |
 | `/status` | polling modes, live feed health, match counts, the queue, the last error |
 | `/live` | the running match: map, score, series score, map results and **which source** the data came from |
@@ -97,7 +98,7 @@ The values live in `.env`; the defaults are a balanced profile:
 | `MAX_TEAMS_PER_SUBSCRIBER` | 10 | teams one person may follow; the sweep costs one request per distinct team |
 | `LIVE_EDIT_BUDGET` | 10 | card edits a second in total; the per-person interval stretches beyond that |
 | `COMMAND_RATE_LIMIT` | 0 | commands per chat per minute, 0 is off; meant for the open mode |
-| `COMEBACK_ROUNDS` | 9 | the swing that counts as a comeback; 0 removes the line |
+| `COMEBACK_ROUNDS` | 9 | the swing that counts as a comeback; 0 removes the line. A **default**: `/settings comeback` overrides it per person |
 | `DEGRADED_ALERT_SECONDS` | 300 | how long before reporting that the service has gone blind (max 600) |
 
 The ceiling of **1 request every 30 seconds** is hardcoded and cannot be raised
@@ -106,6 +107,42 @@ by config. Requests are sequential, with ±20% jitter.
 **The live feed's long poll does not fall under that ceiling.** It is a held
 connection (the equivalent of a websocket), one per active match, not frequent
 polling.
+
+## Settings that are per person
+
+`/mute` says "never this type for this team". `/settings` says "not this one":
+
+| Name | What it is | Default from |
+|---|---|---|
+| `multikill` | kills in a round worth an alert; `0` off | `MULTIKILL_THRESHOLD`, `MULTIKILL_ALERTS` |
+| `comeback` | swing in the score difference worth a line on E6; `0` off | `COMEBACK_ROUNDS` |
+| `phase` | a message at the half and at each new overtime | `PHASE_ALERTS` |
+| `card` | the live score card during a map | `LIVE_MESSAGE` |
+
+A row is written only when somebody changes something, so raising a default in
+`.env` still reaches everyone who never touched it, and `/settings <name>
+default` deletes the row rather than freezing today's value into it.
+
+**How this survives "one event, many recipients".** An event is born once (see
+[architecture.md](architecture.md)), so the thresholds cannot live in the state
+machine — one machine cannot emit an E9 that is simultaneously a 3k and a 5k.
+Instead:
+
+* the machine builds at the **lowest** threshold anybody is using
+  (`threshold_in_use`), because an event never born cannot be given to the
+  person who wanted it, while one born too eagerly can be withheld;
+* the queue withholds it — `outbox._wants` compares the payload's number with
+  each recipient's own;
+* the comeback line is decided later still, in the renderer, because it is not
+  an event but a line inside E6, and the message is already being written per
+  reader.
+
+Two consequences worth knowing:
+
+* a threshold changed in the middle of a map takes effect on the **next** map:
+  the tracker is built when the map starts;
+* one person setting `multikill 3` makes the service track 3k rounds for
+  everybody. That is work, not messages — nobody else receives them.
 
 ## Several users
 

@@ -10,6 +10,7 @@ from datetime import timedelta
 
 import pytest
 
+from hltv_notify import settings as prefs
 from hltv_notify.bot import CommandBot
 from hltv_notify.models import MatchState
 from hltv_notify.state.db import Storage, utcnow
@@ -22,6 +23,7 @@ class FakeTelegram:
     def __init__(self):
         self.sent = []
         self.answered = []
+        self.edited = []
 
     async def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append((chat_id, text))
@@ -29,6 +31,9 @@ class FakeTelegram:
 
     async def answer_callback_query(self, callback_id, text=""):
         self.answered.append((callback_id, text))
+
+    async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+        self.edited.append((chat_id, message_id, text))
 
     async def get_updates(self, offset, timeout=25):
         return []
@@ -94,6 +99,12 @@ def bot(tmp_path, config, monkeypatch):
 def send(command_bot, text, chat=CHAT):
     update = {"update_id": 1, "message": {"chat": {"id": chat}, "text": text}}
     asyncio.run(command_bot._handle(update))
+
+
+def press(command_bot, data, chat=CHAT):
+    query = {"id": "cb", "data": data,
+             "message": {"message_id": 7, "chat": {"id": chat}}}
+    asyncio.run(command_bot._handle_callback(query))
 
 
 def test_status_reports_what_matters(bot):
@@ -449,3 +460,76 @@ def test_the_first_refusal_is_logged_on_a_freshly_booted_machine(bot, caplog,
         send(command_bot, "/status", chat="999")
     assert [r for r in caplog.records if "refused" in r.getMessage()]
     assert telegram.sent == []
+
+
+# ---------- /settings ----------
+
+def test_settings_lists_everything_with_its_current_value(bot):
+    command_bot, telegram, _ = bot
+    send(command_bot, "/settings")
+    reply = telegram.sent[-1][1]
+    for item in prefs.SETTINGS:
+        assert item.name in reply
+    assert "4 kills" in reply          # the default from the environment
+
+
+def test_settings_changes_one_value(bot):
+    command_bot, telegram, storage = bot
+    send(command_bot, "/settings multikill 3")
+    assert storage.setting(CHAT, "multikill", 4) == 3
+    assert "3 kills" in telegram.sent[-1][1]
+
+
+def test_settings_accepts_off_for_a_number(bot):
+    """"off" is how a person says zero; refusing it here while accepting it
+    for the on/off knobs would be a distinction only the code can see."""
+    command_bot, telegram, storage = bot
+    send(command_bot, "/settings comeback off")
+    assert storage.setting(CHAT, "comeback", 9) == 0
+
+
+def test_settings_default_removes_the_row_rather_than_freezing_it(bot):
+    command_bot, telegram, storage = bot
+    send(command_bot, "/settings comeback 12")
+    send(command_bot, "/settings comeback default")
+    rows = storage.conn.execute(
+        "SELECT COUNT(*) FROM subscriber_settings WHERE chat_id = ? AND name = 'comeback'",
+        (CHAT,)).fetchone()[0]
+    assert rows == 0
+
+
+def test_settings_says_so_when_the_name_is_unknown(bot):
+    command_bot, telegram, _ = bot
+    send(command_bot, "/settings loudness 5")
+    reply = telegram.sent[-1][1]
+    assert "no setting called" in reply
+    assert "multikill" in reply
+
+
+def test_settings_refuses_a_value_out_of_range(bot):
+    command_bot, telegram, storage = bot
+    send(command_bot, "/settings multikill 40")
+    assert "could not read" in telegram.sent[-1][1]
+    assert storage.setting(CHAT, "multikill", 4) == 4
+
+
+def test_a_settings_button_is_always_answered(bot):
+    """The trap: an unanswered press leaves Telegram spinning until it times
+    out and the person decides the bot has hung. Even the caption row, which
+    changes nothing, has to come back with something."""
+    command_bot, telegram, storage = bot
+    press(command_bot, "s:multikill:3")
+    assert storage.setting(CHAT, "multikill", 4) == 3
+    assert telegram.answered
+    press(command_bot, "s:multikill")
+    assert len(telegram.answered) == 2
+
+
+def test_reading_settings_does_not_create_a_subscriber(bot):
+    """Same rule as the rest: only a command that STORES something makes a
+    subscriber. Otherwise anyone glancing at the bot would become one."""
+    command_bot, telegram, storage = bot
+    send(command_bot, "/status")
+    assert storage.get_subscriber(CHAT) is None
+    send(command_bot, "/settings")
+    assert storage.get_subscriber(CHAT) is not None

@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional, Tuple
 
+from .. import settings
 from ..config import Config
 from ..models import Event, MatchState
 from ..scoring import map_completed, rounds_to_win, series_decided
@@ -70,15 +71,31 @@ class LiveMachine:
         # understate a comeback but never invent one.
         self._comeback: Dict[str, ComebackTracker] = {}
 
+    def _threshold(self, name: str) -> int:
+        """The lowest threshold any subscriber is waiting for.
+
+        Thresholds are per person now, and an event is still born ONCE for
+        everybody (see the architecture doc). The way out is to build at the
+        lowest bar in use and let the queue withhold the result from whoever
+        set a higher one — the payload carries the number it was measured
+        against. The other direction does not work: an event never born cannot
+        be given to the person who wanted it.
+
+        Read on every map rather than cached: someone changes a setting between
+        maps and expects the next one to obey it.
+        """
+        return self.storage.threshold_in_use(
+            name, settings.default_for(self.config, name))
+
     def _comeback_tracker(self, map_name: str) -> ComebackTracker:
         """One tracker per map: a new map starts from an empty score."""
         if map_name not in self._comeback:
-            self._comeback[map_name] = ComebackTracker(self.config.comeback_rounds)
+            self._comeback[map_name] = ComebackTracker(self._threshold("comeback"))
         return self._comeback[map_name]
 
     def _tracker(self, team_id: int) -> MultikillTracker:
         if team_id not in self._multikill:
-            self._multikill[team_id] = MultikillTracker(self.config.multikill_threshold)
+            self._multikill[team_id] = MultikillTracker(self._threshold("multikill"))
         return self._multikill[team_id]
 
     # ------------------------------------------------------------------
@@ -212,7 +229,9 @@ class LiveMachine:
     def _multikill_events(self, match_id: int, frame: LiveFrame, map_number: int,
                           map_name: str) -> List[Event]:
         """A multikill by a player of OUR team — so a highlight can be clipped."""
-        if not self.config.multikill_alerts:
+        if self._threshold("multikill") <= 0:
+            # Nobody is waiting for one. Not the same as a threshold of four
+            # that no round reaches: this skips the work entirely.
             return []
         # Every tracked participant of the match, not only the canonical team:
         # if tracked teams play each other, a 4k by a player of either is its
@@ -385,10 +404,12 @@ class LiveMachine:
         an overtime is deliberately not reported — under MR3 that would be a
         message every three rounds.
 
-        Off by default. The live card shows all of this already; this is for
-        someone who wants to be pulled back to the screen.
+        Off by default, and per subscriber (`/settings phase on`): the live
+        card shows all of this already, so this is for someone who wants to be
+        pulled back to the screen. Born whenever at least one person wants it;
+        the queue then withholds it from the rest.
         """
-        if not self.config.phase_alerts or self._warming_up(frame):
+        if self._threshold("phase") <= 0 or self._warming_up(frame):
             return None
 
         regulation, overtime = frame.regulation, frame.overtime

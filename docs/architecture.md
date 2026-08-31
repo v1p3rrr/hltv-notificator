@@ -512,6 +512,54 @@ fixed is the total instead (`LIVE_EDIT_BUDGET`, ten a second): a hundred people
 still get the configured ten seconds, three hundred get thirty. A card that
 updates more slowly is honest; one stuck on a five-minute-old score is not.
 
+## Thresholds that differ per person
+
+`MULTIKILL_THRESHOLD` and `COMEBACK_ROUNDS` are matters of taste — a four-kill
+round is a highlight to one person and noise to another — so they are per
+subscriber, edited with `/settings`. That collides head-on with the rule an
+event is born ONCE (see "an event is born on a TRANSITION"): a single machine
+cannot emit an E9 that is a 3k for one reader and nothing at all for another.
+
+The way through is to split the decision in two, and the split is not
+arbitrary — it follows where the recipient is known:
+
+| Stage | Knows | Decides |
+|---|---|---|
+| the machine | nothing about recipients | whether to MEASURE at all, at the lowest bar in use |
+| the queue (`outbox._wants`) | the recipient | whether this particular event reaches them |
+| the renderer (`format.comeback_line`) | the recipient and the text | whether a LINE inside a message is printed |
+
+**Why the lowest bar.** `Storage.threshold_in_use` returns the smallest
+non-zero value among subscribers. Built too eagerly, an event can still be
+withheld from whoever wanted more; built too conservatively, it does not exist
+and cannot be given to whoever wanted less. Zero means "off" and is skipped
+rather than being the minimum — one person switching multikills off must not
+switch the tracker off for everybody. With no subscribers at all, single-user
+mode, the config is the answer.
+
+**Why the comeback goes to the renderer instead.** It is not an event; it is a
+line inside E6, and E6 goes out whatever happens. The message is already being
+composed for one reader — `format.orient` turns the score around there — so the
+bar is applied where the sentence is written. The deficit floor
+(`max(2, threshold // 2)`, see `state/comeback.py`) has to be recomputed with
+the reader's bar too: it is derived from the bar rather than being a second
+setting, and leaving it at the machine's value would tell somebody who asked
+for 12 about a 13:1 win "from 0:1".
+
+**The environment is a default, not an override.** A row in
+`subscriber_settings` exists only once somebody changes something, so raising a
+value in `.env` still reaches everyone who left it alone. This is the same
+shape as `REMINDERS` and `/remind`, and it has one non-obvious requirement: the
+consumer must not check the config first. `LiveMessenger.update` used to start
+with `if not self.config.live_message: return` — with that line, `LIVE_MESSAGE=false`
+would make `/settings card on` impossible to satisfy. The check belongs in
+`_recipients`, per person, and nowhere else.
+
+**What it costs.** A threshold changed mid-map takes effect on the next one:
+the tracker is constructed when the map starts. And one person asking for 3k
+makes the service track 3k rounds for everybody — that is arithmetic on frames
+already being read, not messages, and nobody else receives them.
+
 ## Who a notification goes to
 
 The recipients are computed by `notify/audience.py` — and that is the ONLY

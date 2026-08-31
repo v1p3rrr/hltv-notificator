@@ -21,6 +21,7 @@ from .notify import format as fmt
 from .sources import team_page
 from .notify.telegram import Telegram, TelegramError
 from . import menu
+from . import settings as prefs
 from .models import MatchState
 from .scheduler import LAST_ERROR_KEY, LAST_POLL_KEY, SchedulePoller
 from .state.db import Storage, parse_iso, utcnow
@@ -58,6 +59,11 @@ def _human(minutes: int) -> str:
     return f"{hours} h" if rest == 0 else f"{hours} h {rest} min"
 
 
+def _quoted(text: str) -> str:
+    """A word a person typed, quoted and escaped for Telegram's HTML."""
+    return '"' + fmt.escape(text) + '"'
+
+
 def _parse_team_ref(argument: str):
     """id and slug out of a team link, or out of a bare id."""
     argument = (argument or "").strip()
@@ -76,7 +82,7 @@ MUTABLE_EVENTS = tuple(code for code, _ in menu.MUTABLE)
 # Commands that STORE something for the person sending them. Only these
 # create a subscriber: looking at /status or /next leaves no trace.
 WRITING_COMMANDS = frozenset({"/track", "/untrack", "/mute", "/unmute",
-                             "/remind", "/tz", "/pause", "/resume"})
+                             "/remind", "/tz", "/pause", "/resume", "/settings"})
 
 # One list of commands, in the order a person meets them. The /help text and
 # the hint list Telegram shows when you type "/" are both generated from it —
@@ -98,6 +104,7 @@ COMMANDS = (
     ("unmute", "<id>", "Clear all mutes for a team"),
     ("remind", "[15m|1h]", "Pre-match reminders; /remind rm 15m removes one"),
     ("tz", "<Europe/Berlin>", "Your timezone"),
+    ("settings", "[name] [value]", "Your thresholds: multikill, comeback, phase, card"),
     ("pause", "", "Go quiet"),
     ("resume", "", "Start sending again"),
     ("check", "", "Read the schedule now, without waiting for the next cycle"),
@@ -264,6 +271,8 @@ class CommandBot:
                 reply = self._remind(chat_id, argument)
             elif command == "/tz":
                 reply = self._timezone(chat_id, argument)
+            elif command == "/settings":
+                reply = self._settings(chat_id, argument)
             elif command == "/pause":
                 reply = self._pause(chat_id, True)
             elif command == "/resume":
@@ -381,6 +390,8 @@ class CommandBot:
             return menu.teams(self.storage.teams(chat_id, enabled_only=False))
         if command == "/remind":
             return menu.reminders(self.storage.reminders(chat_id))
+        if command == "/settings":
+            return menu.settings_screen(self._setting_values(chat_id))
         return None
 
     async def _reply(self, chat_id: str, text: str, markup=None) -> None:
@@ -467,6 +478,8 @@ class CommandBot:
             if section == "rem":
                 return (self._remind_list(chat_id),
                         menu.reminders(self.storage.reminders(chat_id)), "")
+            if section == "set":
+                return self._settings_screen(chat_id, "")
             return self._menu_text(chat_id), menu.main(
                 self.storage.subscriber_paused(chat_id)), ""
 
@@ -485,6 +498,9 @@ class CommandBot:
                 toast = "Added"
             return (self._remind_list(chat_id),
                     menu.reminders(self.storage.reminders(chat_id)), toast)
+
+        if kind == "s" and args:
+            return self._settings_callback(chat_id, args)
 
         if kind == "t" and args:
             return self._team_callback(chat_id, args)
@@ -749,6 +765,93 @@ class CommandBot:
                     "It must be an IANA name, for example Europe/Moscow or Asia/Tbilisi.")
         self.storage.set_subscriber_timezone(chat_id, argument)
         return f"Times will be shown in <b>{fmt.escape(argument)}</b>."
+
+    # ---------- per-person settings ----------
+
+    def _setting_values(self, chat_id: str):
+        """This person's knobs, with the environment filling in the gaps."""
+        return self.storage.settings_for(chat_id, prefs.defaults(self.config))
+
+    def _settings(self, chat_id: str, argument: str) -> str:
+        """`/settings`, `/settings multikill 5`, `/settings comeback default`."""
+        parts = (argument or "").split()
+        if not parts:
+            return self._settings_text(chat_id)
+
+        name = parts[0].lower()
+        item = prefs.get(name)
+        if item is None:
+            known = ", ".join(f"<code>{one.name}</code>" for one in prefs.SETTINGS)
+            return (f"There is no setting called {_quoted(parts[0])}.\n"
+                    f"There is: {known}")
+
+        if len(parts) == 1:
+            current = self._setting_values(chat_id)[name]
+            return (f"<b>{fmt.escape(item.label)}</b>: {item.describe(current)}\n"
+                    f"{fmt.escape(item.summary)}\n"
+                    f"Change it: /settings {name} {item.minimum}-{item.maximum}, "
+                    f"or /settings {name} default")
+
+        raw = parts[1].lower()
+        if raw in {"default", "reset"}:
+            self.storage.clear_setting(chat_id, name)
+            restored = prefs.default_for(self.config, name)
+            return (f"<b>{fmt.escape(item.label)}</b> is back to the service "
+                    f"default: {item.describe(restored)}")
+
+        value = prefs.parse_value(item, raw)
+        if value is None:
+            return (f"I could not read {_quoted(parts[1])}.\n"
+                    f"{fmt.escape(item.label)} takes {item.minimum}-{item.maximum}, "
+                    "or off.")
+        if value < 0:
+            # "on" for a numeric setting means "back to the service default".
+            self.storage.clear_setting(chat_id, name)
+            value = prefs.default_for(self.config, name)
+            if value <= 0:
+                # The default is itself "off", so there is nothing to return
+                # to. Saying so beats silently doing nothing.
+                return (f"The service default for <b>{fmt.escape(item.label)}</b> "
+                        f"is off. Give a number: /settings {name} "
+                        f"{max(1, item.minimum)}")
+        else:
+            value = item.clamp(value)
+            self.storage.set_setting(chat_id, name, value)
+        return (f"<b>{fmt.escape(item.label)}</b>: {item.describe(value)}\n"
+                f"{fmt.escape(item.summary)}")
+
+    def _settings_text(self, chat_id: str) -> str:
+        values = self._setting_values(chat_id)
+        lines = ["<b>Your settings</b>", ""]
+        lines += prefs.summary_lines(values)
+        lines += ["", "Change one: /settings multikill 3",
+                  "Back to the service default: /settings multikill default"]
+        return "\n".join(lines)
+
+    def _settings_screen(self, chat_id: str, toast: str):
+        return (self._settings_text(chat_id),
+                menu.settings_screen(self._setting_values(chat_id)), toast)
+
+    def _settings_callback(self, chat_id: str, args):
+        """`s:<name>` is the caption row — pressing it only redraws.
+
+        It still has to come back with something: a button press that is not
+        answered leaves Telegram spinning until it times out, and the person
+        decides the bot has hung.
+        """
+        name = args[0]
+        item = prefs.get(name)
+        if item is None:
+            return self._settings_screen(chat_id, "")
+        if len(args) < 2:
+            return self._settings_screen(chat_id, item.summary)
+        try:
+            value = item.clamp(int(args[1]))
+        except ValueError:
+            return self._settings_screen(chat_id, "")
+        self.storage.set_setting(chat_id, name, value)
+        return self._settings_screen(
+            chat_id, f"{item.label}: {item.describe(value)}")
 
     def _pause(self, chat_id: str, paused: bool) -> str:
         self.storage.set_subscriber_paused(chat_id, paused)

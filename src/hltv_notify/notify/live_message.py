@@ -16,6 +16,7 @@ import logging
 import time
 from typing import Dict, List, Optional, Tuple
 
+from .. import settings
 from ..config import Config
 from ..state.db import Storage
 from . import audience
@@ -79,7 +80,12 @@ class LiveMessenger:
         where that did NOT get through — the caller sends them a plain E5
         instead, because a milestone must not be lost on the best-effort path.
         """
-        if not self.config.live_message or not snapshot:
+        if not snapshot:
+            # `config.live_message` is no longer checked here: it is the
+            # default handed to a subscriber who never touched the
+            # setting, and `_recipients` applies it per person. Checking
+            # it again here would make the environment an override and
+            # someone who turned the card ON could never get it.
             return []
         if finalize or map_started:
             # The two moments that must not run beside a background redraw.
@@ -195,10 +201,17 @@ class LiveMessenger:
 
         Having its own computation here is exactly what was missing: the live
         message used to reach someone who had asked for quiet with `/pause`.
+
+        The card is also the one thing a person can switch off on its own
+        (`/settings card off`) — there is no event type to mute, because the
+        card is not an event. LIVE_MESSAGE in the environment stays the
+        default for anyone who has not said otherwise.
         """
         return [(chat, teams[0] if teams else None)
                 for chat, teams in audience.match_audience(
-                    self.storage, self.config, match_id)]
+                    self.storage, self.config, match_id)
+                if self.storage.setting(
+                    chat, "card", settings.default_for(self.config, "card"))]
 
     async def _update_one(self, chat_id: str, for_team_id, match_id: int, snapshot: dict,
                           *, force: bool = False, finalize: bool = False,

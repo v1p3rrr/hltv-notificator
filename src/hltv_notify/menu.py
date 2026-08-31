@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+from . import settings as prefs
+
 # Event types worth muting one by one. Service alerts (E8) are deliberately not
 # here: muting those means not finding out that the service has gone blind.
 MUTABLE = (
@@ -51,7 +53,7 @@ def main(paused: bool) -> Dict:
     return keyboard([
         [("📊 Status", "m:status"), ("🔴 Live now", "m:live")],
         [("📅 Upcoming", "m:next"), ("⭐ Teams", "m:teams")],
-        [("⏰ Reminders", "m:rem")],
+        [("⏰ Reminders", "m:rem"), ("🎚 Settings", "m:set")],
         [("🔔 Turn notifications on", "p:off")] if paused
         else [("🔕 Quiet", "p:on")],
     ])
@@ -99,6 +101,24 @@ def reminders(active: List[int]) -> Dict:
             row = []
     if row:
         rows.append(row)
+    return keyboard(rows + [back()])
+
+
+def settings_screen(values: Dict[str, int]) -> Dict:
+    """One row per setting: its presets, with the active one ticked.
+
+    The rows are generated from `settings.SETTINGS` rather than written out,
+    for the same reason MUTABLE is: a knob added to the registry has to appear
+    on the buttons by itself, or the buttons and the command drift apart.
+    """
+    rows: List[List[tuple]] = []
+    for item in prefs.SETTINGS:
+        current = values.get(item.name, 0)
+        # A caption row, then the choices. One wide row would fit, but four
+        # presets beside a label is unreadable on a phone.
+        rows.append([(f"{item.label}: {item.describe(current)}", f"s:{item.name}")])
+        rows.append([(("🔘 " if value == current else "○ ") + item.describe_short(value),
+                      f"s:{item.name}:{value}") for value in item.presets])
     return keyboard(rows + [back()])
 
 

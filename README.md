@@ -101,7 +101,8 @@ Series score: 0:0
 
 That card *is* the map's announcement — it carries "the map started", which is
 why E5 does not arrive as a separate message when the card is enabled. Turn it
-off with `LIVE_MESSAGE=false` if you would rather have a quiet chat.
+off with `/settings card off` if you would rather have a quiet chat
+(`LIVE_MESSAGE=false` sets that as the default for everybody).
 
 ### A few more examples
 
@@ -363,6 +364,7 @@ Not everything has a button: a few commands carry a value that has to be typed
 | `/unmute <id>` | clear that team's mutes | yes |
 | `/remind 15m` | remind 15 min before a match; `/remind rm 15m` removes it | partly — 10, 15, 30 min, 1 h and 2 h are buttons, any other interval is typed |
 | `/tz Europe/Berlin` | your timezone | **no** |
+| `/settings` | your own thresholds — multikill, comeback, half/overtime, the live card. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
 | `/pause`, `/resume` | go completely quiet / start receiving again | yes |
 | `/check` | read the schedule now instead of waiting for the next cycle, which is up to 30 min when nothing is due | **no** |
 | `/whoami` | your numeric `chat_id` — the value that goes into `TELEGRAM_CHAT_ID` | **no** |
@@ -373,6 +375,24 @@ E5,E9` keeps the team but drops its map-start and multikill messages. Muting by
 button needs no codes at all. `E8`, the "service has gone blind" alarm, is
 deliberately not mutable — silencing it means never learning that the service
 stopped seeing anything.
+
+`/mute` is "never this type"; `/settings` is "not this one". A four-kill round
+is a multikill to somebody and not to somebody else, and the same is true of
+what counts as a comeback — so those are **numbers, per person**, not switches
+in `.env`:
+
+```
+/settings                     what you have now
+/settings multikill 3         alert from three kills instead of four
+/settings comeback 12         only really big swings get the line on a map
+/settings phase on            a message at the half and at each overtime
+/settings card off            no live score card, just the milestones
+/settings multikill default   back to whatever the service is configured with
+```
+
+The variables in `.env` did not go away — they are now the **default** handed
+to someone who has never touched a setting. Raising one in `.env` still reaches
+everybody who left it alone.
 
 `/pause` silences everything, including the live card and the service's own
 alarms. Nothing is queued while you are paused — the point is silence, not
@@ -469,14 +489,14 @@ are most likely to touch:
 |---|---|---|
 | `DRY_RUN` | `true` | notifications go to the log instead of Telegram |
 | `TZ_DISPLAY` | `Europe/Moscow` | timezone used in messages |
-| `LIVE_MESSAGE` | `true` | the live score card during a map |
+| `LIVE_MESSAGE` | `true` | the live score card during a map — the **default** for `/settings card` |
 | `LIVE_EDIT_SECONDS` | `10` | how often that card is edited (do not go below 5) |
 | `LIVE_EDIT_BUDGET` | `10` | card edits a second in total; the interval above stretches when there are more subscribers than that allows |
 | `REMINDERS` | `15` | default pre-match reminders for a new subscriber, in minutes |
 | `MULTIKILL_ALERTS` | `true` | alert on a big round by one of your players |
-| `MULTIKILL_THRESHOLD` | `4` | how many kills counts as one |
-| `PHASE_ALERTS` | `false` | alert on half time and on each new overtime |
-| `COMEBACK_ROUNDS` | `9` | swing that counts as a comeback; `0` removes the line |
+| `MULTIKILL_THRESHOLD` | `4` | how many kills counts as one — the **default** for `/settings multikill` |
+| `PHASE_ALERTS` | `false` | alert on half time and on each new overtime — the **default** for `/settings phase` |
+| `COMEBACK_ROUNDS` | `9` | swing that counts as a comeback; `0` removes the line — the **default** for `/settings comeback` |
 | `TELEGRAM_WHITELIST_ONLY` | `true` | answer only the listed chats |
 | `MAX_TEAMS_PER_SUBSCRIBER` | `10` | how many teams one person may follow; `0` removes the limit |
 | `COMMAND_RATE_LIMIT` | `0` | commands one chat may send per minute; `0` is off |

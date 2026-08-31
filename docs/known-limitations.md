@@ -277,3 +277,27 @@ which is what the live card depends on.
 What remains is Telegram's own ceiling of roughly thirty a second in total. The
 queue cannot go faster than that, and neither can anything else: it is the same
 budget the live card's edits are drawn from.
+
+## A per-person threshold reaches the next map, not this one
+
+`/settings multikill 3` and `/settings comeback 12` take effect on the next
+map. The trackers that measure both are built when a map starts, from the
+lowest threshold in use at that moment, and they are not rebuilt while the map
+runs — rebuilding would throw away the trajectory measured so far, which cannot
+be recovered from the current score.
+
+There is no plan to change it: the alternative is to keep the full round-by-round
+history so a tracker can be replayed at a new bar, and a map's worth of that per
+match is not worth the two minutes it saves anybody.
+
+## A raised threshold does not save any work
+
+The service measures at the LOWEST bar anybody is using, so one subscriber
+asking for three-kill rounds means three-kill rounds are counted for the whole
+service. Everyone else simply does not receive them — the queue withholds the
+event — but the arithmetic runs.
+
+That is deliberate and the cost is negligible: it is a comparison on frames
+already being read for the score. It is worth knowing only because "I raised my
+threshold, so the service does less" is a reasonable thing to assume, and it is
+not true.

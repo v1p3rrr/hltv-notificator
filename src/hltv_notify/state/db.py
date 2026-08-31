@@ -158,6 +158,19 @@ CREATE TABLE IF NOT EXISTS live_messages (
     PRIMARY KEY (chat_id, match_id, map_number)
 );
 
+-- Taste settings, per subscriber. A row exists only once someone has changed
+-- something: absence means "whatever the environment says", so raising a
+-- default in .env still reaches everybody who never touched it.
+--
+-- Everything is an INTEGER, booleans included. One type is one accessor and
+-- one parser; see hltv_notify.settings for what the names mean.
+CREATE TABLE IF NOT EXISTS subscriber_settings (
+    chat_id TEXT NOT NULL,
+    name    TEXT NOT NULL,
+    value   INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -359,6 +372,62 @@ class Storage:
     def subscriber_paused(self, chat_id: str) -> bool:
         row = self.get_subscriber(chat_id)
         return bool(row and row["paused"])
+
+    # ---------- per-subscriber settings ----------
+
+    def set_setting(self, chat_id: str, name: str, value: int) -> None:
+        self.conn.execute(
+            "INSERT INTO subscriber_settings (chat_id, name, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(chat_id, name) DO UPDATE SET value = excluded.value",
+            (str(chat_id), name, int(value)))
+
+    def clear_setting(self, chat_id: str, name: str) -> None:
+        """Back to the environment's default: the row goes away rather than
+        being written with today's default value. Otherwise raising the default
+        in `.env` would never reach someone who had once pressed "reset"."""
+        self.conn.execute(
+            "DELETE FROM subscriber_settings WHERE chat_id = ? AND name = ?",
+            (str(chat_id), name))
+
+    def setting(self, chat_id: str, name: str, default: int) -> int:
+        row = self.conn.execute(
+            "SELECT value FROM subscriber_settings WHERE chat_id = ? AND name = ?",
+            (str(chat_id), name)).fetchone()
+        return int(row["value"]) if row is not None else int(default)
+
+    def settings_for(self, chat_id: str, defaults: Dict[str, int]) -> Dict[str, int]:
+        values = dict(defaults)
+        for row in self.conn.execute(
+                "SELECT name, value FROM subscriber_settings WHERE chat_id = ?",
+                (str(chat_id),)):
+            if row["name"] in values:
+                values[row["name"]] = int(row["value"])
+        return values
+
+    def threshold_in_use(self, name: str, default: int) -> int:
+        """The lowest threshold anybody is actually waiting for; 0 means nobody.
+
+        The state machines need ONE number: an event is born once and reaches
+        many people (see the architecture doc). Born at the lowest threshold in
+        use, it can then be withheld from whoever wanted a higher one — the
+        queue filters on the payload. Born at the highest, it could not be
+        given to anyone who wanted more.
+
+        Zero means "off" and is therefore skipped rather than being the
+        minimum: one subscriber turning multikills off must not switch the
+        tracker off for everybody else.
+        """
+        wanted: List[int] = []
+        for chat_id in self.subscriber_ids():
+            value = self.setting(chat_id, name, default)
+            if value > 0:
+                wanted.append(value)
+        if not wanted:
+            # No subscribers at all is single-user mode, where the config IS
+            # the answer. Subscribers who have all turned it off is a real
+            # zero.
+            return int(default) if not self.subscriber_ids() else 0
+        return min(wanted)
 
     # ---------- pre-match reminders ----------
 

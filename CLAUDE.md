@@ -68,6 +68,7 @@ running, run the service in `DRY_RUN` and look at the logs.
 src/hltv_notify/
   __main__.py          entry point, brings tasks up, stops them on a signal
   config.py            environment variables + the rate CEILING
+  settings.py          the per-subscriber knobs; .env supplies the defaults
   http.py              the single point of egress to the network (curl_cffi)
   proxy.py             HTTP_PROXY/ALL_PROXY/NO_PROXY for all three sessions
   scoring.py           is the map over, from the score (thresholds from the format)
@@ -108,6 +109,29 @@ bot has hung. We answer even when there is nothing to do.
 `MUTABLE_EVENTS` for the text `/mute` comes from. Two copies would drift apart
 and a button would start muting what the command cannot. E8 is deliberately not
 on the list: mute the alarm and you may never learn the service has gone blind.
+
+**There is a third such list — `settings.SETTINGS`.** The `/settings` command,
+the buttons, the defaults and the parser all come out of it. Same reasoning as
+`menu.MUTABLE` and `bot.COMMANDS`.
+
+**A per-person threshold cannot live in the machine.** An event is born once
+for everybody, so the machine measures at the LOWEST bar in use
+(`Storage.threshold_in_use`) and the QUEUE withholds it from whoever wanted
+more — `outbox._wants`. The other direction is impossible: an event never born
+cannot be given to the person who wanted it. Zero means "off" and is skipped
+rather than being the minimum, or one person switching multikills off would
+switch the tracker off for everybody. The comeback goes further still and is
+decided in `format.comeback_line`, because it is a LINE inside E6 rather than
+an event, and the deficit floor is derived from the bar so it has to be
+recomputed for the reader too.
+
+**An environment variable behind a `/settings` knob is a DEFAULT, not an
+override.** The consumer must not check the config first and return early:
+`LiveMessenger.update` did, and with `LIVE_MESSAGE=false` no `/settings card
+on` could ever be satisfied. The check belongs where the recipient is known —
+`_recipients` — and a row in `subscriber_settings` exists only once someone
+changes something, so raising a default still reaches everybody who left it
+alone.
 
 **There is one list of commands** — `bot.COMMANDS`, which generates both
 the `/help` text and the `setMyCommands` payload (the list Telegram offers on
@@ -392,7 +416,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 438 tests
+python -m pytest                                    # 464 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

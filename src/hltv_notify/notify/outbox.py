@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Dict, Optional
 
+from .. import settings
 from ..config import Config
 from ..models import Event
 from ..state.db import Storage
@@ -71,7 +72,11 @@ class Notifier:
                 # Everyone has their own timezone: subscribers may live in
                 # different ones.
                 tz_name=self.storage.subscriber_timezone(chat_id, self.config.timezone),
-                for_team_id=for_team_id)
+                for_team_id=for_team_id,
+                # And their own bar for what counts as a comeback. The map was
+                # watched once, at the lowest bar in use; whether the line is
+                # worth printing is decided here, per reader.
+                comeback_threshold=self._threshold(chat_id, "comeback"))
             if self.storage.record_event(
                     idempotency_key=event.idempotency_key,
                     event_type=event.type,
@@ -88,6 +93,26 @@ class Notifier:
             log.debug("event went to nobody (duplicate or muted): %s",
                       event.idempotency_key)
         return bool(created)
+
+    def _threshold(self, chat_id: str, name: str) -> int:
+        return self.storage.setting(
+            chat_id, name, settings.default_for(self.config, name))
+
+    def _wants(self, chat_id: str, event: Event) -> bool:
+        """The recipient's own threshold, as opposed to muting.
+
+        Muting says "never this type for this team"; a threshold says "not
+        this one" — the same event reaches the person who asked for 3k and not
+        the one who asked for 5k. It is checked here rather than in the machine
+        because the machine writes ONE event for everybody: it is built at the
+        lowest bar in use and narrowed down at the moment it is addressed.
+        """
+        if event.type == "E9":
+            wanted = self._threshold(chat_id, "multikill")
+            return wanted > 0 and int(event.payload.get("kills") or 0) >= wanted
+        if event.type == "E12":
+            return self._threshold(chat_id, "phase") > 0
+        return True
 
     def _recipients(self, event: Event):
         """Who this event is addressed to and which team to show it from.
@@ -125,6 +150,9 @@ class Notifier:
 
         recipients = []
         for chat, their_teams in rows:
+            if not self._wants(chat, event):
+                log.debug("event %s is below %s's threshold", event.type, chat)
+                continue
             if not their_teams:
                 recipients.append((chat, None))
                 continue

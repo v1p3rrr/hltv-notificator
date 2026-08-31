@@ -105,7 +105,8 @@ def _minutes(value) -> str:
     return f"{hours} h" if rest == 0 else f"{hours} h {rest} min"
 
 
-def comeback_line(payload: dict, *, team: str, opponent: str) -> str:
+def comeback_line(payload: dict, *, team: str, opponent: str,
+                  threshold: Optional[int] = None) -> str:
     """The comeback line on a finished map, or "" when there was none.
 
     Whose comeback it was is worked out from the score, not taken from the
@@ -114,6 +115,12 @@ def comeback_line(payload: dict, *, team: str, opponent: str) -> str:
     the low point is the one that came back — and the deficit is written from
     THAT team's side, so "Color came back from 2:10" reads the way a person
     would say it.
+
+    `threshold` is the RECIPIENT's bar. The swing was measured against the
+    lowest bar anybody set, because the map is watched once and E6 is one
+    event; deciding whether it is worth saying is per person and therefore
+    happens here, where the message is already being written for one reader.
+    None means no bar — the payload speaks for itself.
     """
     if "comeback_swing" not in payload:
         return ""
@@ -123,6 +130,15 @@ def comeback_line(payload: dict, *, team: str, opponent: str) -> str:
     who = team if ours else opponent
     # Every score in the line is written from the comeback team's own side.
     behind, ahead = low if ours else low[::-1]
+    if threshold is not None:
+        # The deficit floor is derived from the bar rather than being a second
+        # setting (see state/comeback.py), so it has to move with the reader's
+        # bar too — otherwise someone asking for 12 would still be told about
+        # a 13:1 win "from 0:1".
+        if threshold <= 0 or int(payload.get("comeback_swing") or 0) < threshold:
+            return ""
+        if ahead - behind < max(2, threshold // 2):
+            return ""
     overtime = payload.get("comeback_overtime")
 
     if payload.get("comeback_result") == "won":
@@ -139,7 +155,8 @@ def comeback_line(payload: dict, *, team: str, opponent: str) -> str:
 
 
 def render(event: Event, *, team_name: str, tz_name: str,
-           for_team_id: Optional[int] = None) -> str:
+           for_team_id: Optional[int] = None,
+           comeback_threshold: Optional[int] = None) -> str:
     """Event -> finished text in Telegram's HTML markup."""
     payload = orient(event.payload, for_team_id)
     opponent = _esc(payload.get("opponent") or "TBD")
@@ -268,7 +285,8 @@ def render(event: Event, *, team_name: str, tz_name: str,
             f"{team} — {opponent}",
             f"Series score: <b>{payload.get('series_team')}:{payload.get('series_opponent')}</b>",
         ]
-        comeback = comeback_line(payload, team=team, opponent=opponent)
+        comeback = comeback_line(payload, team=team, opponent=opponent,
+                                 threshold=comeback_threshold)
         if comeback:
             lines.append(comeback)
         lines += [event_name, _link(url, "Match page")]
