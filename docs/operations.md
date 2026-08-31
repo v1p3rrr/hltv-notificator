@@ -142,6 +142,17 @@ take the number out of the log. A person's own id also comes from
 An allowed account becomes a subscriber on its first message to the bot and
 builds its own team list through `/track`.
 
+**`TELEGRAM_CHAT_ID` is required even with the whitelist off.** The first id is
+the main chat: the seed team goes there, messages go there while nobody has
+subscribed, and it is the only chat allowed to change the log level. With the
+variable empty the bot is not started at all and nothing is sent — which from
+the outside looks like a dead service, so the startup log says so explicitly.
+
+**Commands that act on the service rather than on a subscription** answer the
+main chat alone. Today that is `/verbose`. They are also kept out of everyone
+else's hint list: Telegram takes a separate command list scoped to one chat,
+so the main chat sees them and nobody else does.
+
 Muting applies **to the pair "subscriber + team"**. If tracked teams play each
 other, the event reaches a subscriber when at least one of their teams in that
 match wants it: otherwise one team would silently mute notifications about the

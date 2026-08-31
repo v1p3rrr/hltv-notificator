@@ -106,14 +106,23 @@ class Telegram:
         await self._call("answerCallbackQuery",
                          {"callback_query_id": callback_id, "text": text[:200]})
 
-    async def set_my_commands(self, commands: List[Dict[str, str]]) -> None:
+    async def set_my_commands(self, commands: List[Dict[str, str]],
+                              scope: Optional[Dict[str, Any]] = None) -> None:
         """Register the list Telegram offers when you type "/" in the chat.
 
         It is what fills the Menu button next to the input field. The list
-        replaces whatever was registered before, so it is enough to send the
-        current one on every start.
+        replaces whatever was registered before for that scope, so it is
+        enough to send the current one on every start.
+
+        Without a scope the list is the default one, shown to everybody. With
+        `{"type": "chat", "chat_id": ...}` it applies to one chat only and
+        takes precedence there — which is how a command meant for the owner
+        stays out of everyone else's hint list.
         """
-        await self._call("setMyCommands", {"commands": commands})
+        payload: Dict[str, Any] = {"commands": commands}
+        if scope is not None:
+            payload["scope"] = scope
+        await self._call("setMyCommands", payload)
 
     async def get_updates(self, offset: Optional[int], timeout: int = 25) -> List[Dict[str, Any]]:
         payload: Dict[str, Any] = {"timeout": timeout,

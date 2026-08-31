@@ -366,7 +366,7 @@ Not everything has a button: a few commands carry a value that has to be typed
 | `/pause`, `/resume` | go completely quiet / start receiving again | yes |
 | `/check` | read the schedule now instead of waiting for the next cycle, which is up to 30 min when nothing is due | **no** |
 | `/whoami` | your numeric `chat_id` — the value that goes into `TELEGRAM_CHAT_ID` | **no** |
-| `/verbose on`, `/verbose off` | turn debug logging on and off without restarting the container. It changes the service's log only, never what arrives in the chat. **Main chat only** — it is a setting of the whole service | **no** |
+| `/verbose on`, `/verbose off` | turn debug logging on and off without restarting the container. It changes the service's log only, never what arrives in the chat. **Main chat only** — it is a setting of the whole service, and it is not even offered to anyone else | **no** |
 
 `/mute` wants the codes from [Event codes](#event-codes) above: `/mute 9565
 E5,E9` keeps the team but drops its map-start and multikill messages. Muting by
@@ -415,9 +415,14 @@ Allowed accounts are listed in **one** variable, ids separated by commas:
 TELEGRAM_CHAT_ID=123456789,987654321,-1001234567890
 ```
 
-The **first id is the main chat**: the team from `TEAM_ID` is seeded there, and
-that is where messages go while nobody has subscribed yet. Group and channel
-ids are negative — that is normal.
+The **first id is the main chat**: the team from `TEAM_ID` is seeded there,
+that is where messages go while nobody has subscribed yet, and it is the only
+chat allowed to run commands that act on the service as a whole, which today
+means `/verbose`. Group and channel ids are negative — that is normal.
+
+The variable is **required even with the whitelist off**: without it there is
+no main chat, so the bot is not started at all and nothing is sent. The startup
+log says so rather than leaving you with a service that looks dead.
 
 With `TELEGRAM_WHITELIST_ONLY=true` (the default) the bot ignores everyone
 else completely — no command answers a stranger, not even `/whoami`, because a

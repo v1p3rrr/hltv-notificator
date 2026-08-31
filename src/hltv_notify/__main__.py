@@ -142,6 +142,17 @@ async def run() -> int:
         storage.add_team(main_chat, config.team_id, config.team_slug, config.team_name)
         log.info("first tracked team taken from the config: %s (id %s) for chat %s",
                  config.team_name, config.team_id, main_chat)
+    # TELEGRAM_CHAT_ID is required even with the whitelist off: the first id
+    # is the main chat — where the seed team goes, where messages go while
+    # nobody has subscribed, and the only chat allowed to change the log level.
+    # Without it there is nobody to talk to, so the bot is not started at all;
+    # say so, because silence from a bot looks exactly like a dead service.
+    if config.bot_token and not config.allowed_chat_ids():
+        log.warning("TELEGRAM_CHAT_ID is empty: the bot will not be started and "
+                    "nothing will be sent. Put at least your own chat id there "
+                    "— it is the main chat%s",
+                    ", the whitelist being off does not replace it"
+                    if not config.whitelist_only else "")
     http = HltvHttp(config)
     telegram: Optional[Telegram] = (
         Telegram(config.bot_token, config.proxies_for(TELEGRAM_API_BASE))

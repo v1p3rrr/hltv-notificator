@@ -116,6 +116,18 @@ hand-written `/help` never mentioned `/live`. `tests/test_commands.py` checks
 both directions — nothing advertised that the bot cannot answer, nothing
 dispatched that is not advertised.
 
+**Nothing answers a chat that is not on the whitelist, and the refusal is
+logged at most once per chat per ten minutes.** That log line is the only
+way to learn the id of a GROUP that is not allowed yet — @userinfobot reports
+a person's id, not a group's — so it must not be throttled away entirely; and
+it is also the only thing an outsider can make the bot do, so under the
+container's log rotation an unthrottled line would evict the history.
+
+**`TELEGRAM_CHAT_ID` is required even with the whitelist off.** The first id
+is the main chat, and without it `telegram_enabled()` is false and the command
+bot never starts. Startup warns about it: a silent bot looks like a dead
+service.
+
 **Upgrading an old database must preserve the journal.** Keys written before
 subscribers existed get a chat prefix once (`adopt_legacy_event_keys`). Without
 that, the very first run of a new version would treat everything it had already
@@ -318,7 +330,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 414 tests
+python -m pytest                                    # 418 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

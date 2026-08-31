@@ -153,6 +153,36 @@ def test_commands_from_other_chats_are_ignored(bot):
     assert telegram.sent == []
 
 
+def test_a_stranger_cannot_flood_the_log(bot, caplog):
+    """The refusal line is how the owner reads the id of a chat that is not on
+    the list yet — and the only thing an outsider can make the bot do. One line
+    per message would let them push the useful history out of a rotated log, so
+    a chat is written about once and then left alone for a while."""
+    import logging
+
+    from hltv_notify.bot import REFUSAL_LOG_INTERVAL
+
+    command_bot, telegram, _ = bot
+    with caplog.at_level(logging.WARNING, logger="hltv_notify.bot"):
+        for _ in range(50):
+            send(command_bot, "/status", chat="999")
+    refusals = [r for r in caplog.records if "refused" in r.getMessage()]
+    assert len(refusals) == 1
+    assert "999" in refusals[0].getMessage()
+
+    # A different chat is still seen at once.
+    with caplog.at_level(logging.WARNING, logger="hltv_notify.bot"):
+        send(command_bot, "/status", chat="888")
+    assert len([r for r in caplog.records if "refused" in r.getMessage()]) == 2
+
+    # And the same one is heard again once the interval has passed.
+    command_bot._refused["999"] -= REFUSAL_LOG_INTERVAL + 1
+    with caplog.at_level(logging.WARNING, logger="hltv_notify.bot"):
+        send(command_bot, "/status", chat="999")
+    assert len([r for r in caplog.records if "refused" in r.getMessage()]) == 3
+    assert telegram.sent == []
+
+
 def test_whoami_is_silent_to_strangers(bot):
     """There is no exception to the whitelist. /whoami used to be one, so that
     a newcomer could learn their own id — but it also handed anyone who found

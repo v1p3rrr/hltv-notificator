@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from hltv_notify import bot as bot_module
-from hltv_notify.bot import COMMANDS, HELP, CommandBot, command_menu
+from hltv_notify.bot import (COMMANDS, HELP, OWNER_ONLY, REFUSAL_LOG_INTERVAL,
+                            CommandBot, command_menu)
 from hltv_notify.config import Config
 from hltv_notify.state.db import Storage
 
@@ -34,12 +35,14 @@ class FakeTelegram:
     def __init__(self):
         self.sent = []
         self.commands = None
+        self.registered = []
 
     async def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append((chat_id, text))
         return len(self.sent)
 
-    async def set_my_commands(self, commands):
+    async def set_my_commands(self, commands, scope=None):
+        self.registered.append((scope, commands))
         self.commands = commands
 
     async def get_updates(self, offset, timeout=25):
@@ -104,7 +107,7 @@ def test_help_lists_every_command():
 
 
 def test_the_payload_fits_telegrams_limits():
-    payload = command_menu()
+    payload = command_menu(owner=True)
     assert len(payload) == len(COMMANDS)
     assert len(payload) <= 100
     for item in payload:
@@ -122,7 +125,22 @@ def test_the_list_is_registered_on_startup(bot):
     stop = asyncio.Event()
     stop.set()
     asyncio.run(command_bot.run(stop))
-    assert telegram.commands == command_menu()
+
+    scopes = dict((None if scope is None else scope["chat_id"], payload)
+                  for scope, payload in telegram.registered)
+    # The public list, and one scoped to the main chat that wins there.
+    assert set(scopes) == {None, CHAT}
+    public = {item["command"] for item in scopes[None]}
+    owner = {item["command"] for item in scopes[CHAT]}
+    assert OWNER_ONLY <= owner
+    assert public == owner - OWNER_ONLY
+
+
+def test_owner_only_commands_are_not_offered_to_everybody():
+    """Offering a command that will refuse you is worse than not offering it."""
+    assert OWNER_ONLY
+    public = {item["command"] for item in command_menu()}
+    assert public.isdisjoint(OWNER_ONLY)
 
 
 def test_startup_survives_telegram_refusing_the_list(bot):
@@ -131,7 +149,7 @@ def test_startup_survives_telegram_refusing_the_list(bot):
 
     command_bot, telegram = bot
 
-    async def refuse(commands):
+    async def refuse(commands, scope=None):
         raise TelegramError("Telegram 400: whatever")
 
     telegram.set_my_commands = refuse

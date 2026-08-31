@@ -647,7 +647,19 @@ the same number without involving this bot at all.
 level of the whole process, while every other command touches only the caller's
 own subscription. It answers the main chat alone — with several subscribers,
 and more so with the whitelist off, a service-wide setting must not be a lever
-anybody can pull.
+anybody can pull. It is not offered to anybody else either: Telegram takes a
+command list scoped to a single chat, so the main chat's hint list carries it
+and the default one does not. Offering a command that will refuse you is worse
+than not offering it.
+
+**The refusal itself is rate-limited.** Every message from a chat that is not
+allowed writes a line to the log, and that line is load-bearing: it is where
+the owner reads the id of a chat that has not been added yet, a group's
+especially, since nothing else reports that number. It is also the only thing
+an outsider can make this bot do, and the container rotates logs at 10 MB — so
+an unthrottled line means a stranger can push out the history you would want to
+read. A chat is therefore written about once and then left alone for ten
+minutes; a different chat knocking is still seen at once.
 
 ## The watchdog: "I have gone blind"
 

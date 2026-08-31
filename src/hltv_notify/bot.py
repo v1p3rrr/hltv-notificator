@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from typing import Optional
 
 from zoneinfo import ZoneInfo
@@ -29,6 +30,9 @@ log = logging.getLogger(__name__)
 
 TEAM_URL_RE = re.compile(r"/team/(\d+)(?:/([^/?#\s]+))?")
 
+
+# How often one refused chat may write to the log. See _log_refusal.
+REFUSAL_LOG_INTERVAL = 600.0
 
 DURATION_RE = re.compile(r"^(\d+)\s*([mh]?)", re.IGNORECASE)
 
@@ -105,10 +109,19 @@ def _help_text() -> str:
     return "\n".join(lines)
 
 
-def command_menu():
-    """The payload for setMyCommands."""
+# Commands that act on the whole service rather than on the caller's own
+# subscription. Answered for the main chat alone, and kept out of everybody
+# else's hint list — offering a command that will refuse you is worse than not
+# offering it. The same set gates the answer and the advertising, so the two
+# cannot disagree.
+OWNER_ONLY = frozenset({"verbose"})
+
+
+def command_menu(*, owner: bool = False):
+    """The payload for setMyCommands: the public list, or the owner's."""
     return [{"command": name, "description": description}
-            for name, _, description in COMMANDS]
+            for name, _, description in COMMANDS
+            if owner or name not in OWNER_ONLY]
 
 
 HELP = _help_text()
@@ -124,6 +137,8 @@ class CommandBot:
         self.matches = matches
         self.http = http
         self._offset: Optional[int] = None
+        # chat_id -> when it was last written about as refused
+        self._refused = {}
 
     async def run(self, stop: asyncio.Event) -> None:
         # Hand Telegram the command list so it can offer it on "/" and behind
@@ -133,6 +148,13 @@ class CommandBot:
         # and Telegram keeps whatever it was told last.
         try:
             await self.telegram.set_my_commands(command_menu())
+            # The owner sees one more: the commands that act on the service as
+            # a whole. A chat-scoped list wins over the default one, so this
+            # adds them for the main chat without showing them to anyone else.
+            if self.config.main_chat_id:
+                await self.telegram.set_my_commands(
+                    command_menu(owner=True),
+                    scope={"type": "chat", "chat_id": self.config.main_chat_id})
         except TelegramError as exc:
             # Not fatal — the bot answers commands either way.
             log.warning("could not register the command list: %s", exc)
@@ -183,8 +205,7 @@ class CommandBot:
             # tells them the same number without touching this bot, and the id
             # of whoever knocked goes to the log below anyway, which is where
             # the owner takes it from to widen the whitelist.
-            log.warning("command %s from chat %s refused: not on the whitelist",
-                        command, chat_id)
+            self._log_refusal(chat_id, command)
             return
 
         # An allowed chat becomes a subscriber on its very first message,
@@ -233,6 +254,31 @@ class CommandBot:
             reply = "The command crashed, details are in the logs."
 
         await self._reply(chat_id, reply, self._markup_for(chat_id, command))
+
+    def _log_refusal(self, chat_id: str, command: str) -> None:
+        """A refused chat is logged once, then not again for a while.
+
+        The line matters — it is where the owner reads the id of a chat that
+        is not on the list yet, a group's especially, since nothing else
+        reports that number. But one line per refused message is also the only
+        thing an outsider can make this bot do: flood it and the log fills
+        with their noise, and under the container's rotation (10 MB × 3) that
+        pushes out the history you would actually want to read.
+
+        The interval is per chat, so a second person knocking is still seen
+        immediately.
+        """
+        now = time.monotonic()
+        if now - self._refused.get(chat_id, 0.0) < REFUSAL_LOG_INTERVAL:
+            return
+        # Whoever has gone quiet is forgotten, so a flood from many different
+        # ids cannot grow this map without bound.
+        if len(self._refused) > 512:
+            self._refused = {chat: when for chat, when in self._refused.items()
+                             if now - when < REFUSAL_LOG_INTERVAL}
+        self._refused[chat_id] = now
+        log.warning("command %s from chat %s refused: not on the whitelist",
+                    command, chat_id)
 
     def _markup_for(self, chat_id: str, command: str):
         """Buttons on the replies where they help: menu, team list, intervals."""
