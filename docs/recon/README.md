@@ -13,6 +13,10 @@ why some part of the code looks more complicated than the problem. To simply
 run the service you need none of this — [../../README.md](../../README.md) and
 [../operations.md](../operations.md) are enough.
 
+> Notification types are referred to by code throughout — `E6` is the end of a
+> map, `E5` the start of one. The full list is in
+> [../../README.md#event-codes](../../README.md#event-codes).
+
 | Note | What it establishes |
 |---|---|
 | [R1](R1-live-data-availability.md) | whether a live feed exists at all at the tournament tiers we care about, and what it does *not* say (it never reports "the map is over") |

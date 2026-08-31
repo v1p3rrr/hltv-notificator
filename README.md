@@ -138,6 +138,30 @@ Vitality — Spirit
 
 Times are shown in your own timezone (`/tz`); everything is stored in UTC.
 
+### Event codes
+
+Every notification type has a short code. You do not need it to use the bot —
+the menu names them all in words — but it appears in the logs, in the
+documentation, and in the text `/mute` command, so here is the whole list:
+
+| Code | Notification |
+|---|---|
+| `E1` | a new match in the schedule |
+| `E2` | the match time changed |
+| `E3` | the match cancelled or removed |
+| `E4` | the match started |
+| `E5` | a map started |
+| `E6` | a map finished, with the score |
+| `E7` | the match finished |
+| `E8`, `E8R` | the service has gone blind / has recovered |
+| `E9` | a multikill: 4+ kills in one round |
+| `E10` | a reminder before the match |
+| `E11` | map point |
+| `E12` | half time, or a new overtime |
+
+(The table above is in the order things happen; this one is by number, because
+that is how you look a code up.)
+
 ---
 
 ## Requirements
@@ -338,14 +362,11 @@ The text commands are shorter when you know exactly what you want:
 | `/whoami` | your `chat_id` |
 | `/verbose on`, `/verbose off` | verbose logging |
 
-**Event codes.** The menu names every notification type in words, but the text
-`/mute` command wants a code: **E1** new match · **E2** time changed ·
-**E3** cancelled · **E4** match started · **E5** map started · **E6** map
-finished · **E7** match finished · **E9** multikill · **E10** reminder ·
-**E11** map point · **E12** half / overtime. So `/mute 9565 E5,E9` keeps a team
-but drops its map-start and multikill messages. The "service has gone blind"
-alarm is deliberately not mutable — silencing it means never learning that the
-service stopped seeing anything.
+`/mute` wants the codes from [Event codes](#event-codes) above: `/mute 9565
+E5,E9` keeps the team but drops its map-start and multikill messages. Muting by
+button needs no codes at all. `E8`, the "service has gone blind" alarm, is
+deliberately not mutable — silencing it means never learning that the service
+stopped seeing anything.
 
 `/pause` silences everything, including the live card and the service's own
 alarms. Nothing is queued while you are paused — the point is silence, not

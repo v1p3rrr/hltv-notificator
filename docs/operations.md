@@ -1,5 +1,9 @@
 # Operations
 
+> Notification types are referred to by code throughout — `E6` is the end of a
+> map, `E5` the start of one. The full list is in
+> [../README.md#event-codes](../README.md#event-codes).
+
 ## What the service can do today
 
 | Event | State |

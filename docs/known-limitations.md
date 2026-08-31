@@ -3,6 +3,10 @@
 A list of what is deliberately not handled, or handled only in part. Extended
 as the work goes on.
 
+> Notification types are referred to by code throughout — `E6` is the end of a
+> map, `E5` the start of one. The full list is in
+> [../README.md#event-codes](../README.md#event-codes).
+
 ## The match id changes
 
 An organiser sometimes recreates a match and it gets a new id on HLTV. To the

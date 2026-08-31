@@ -8,6 +8,10 @@ It is written for someone about to read or change the code. To just run the
 service, [../README.md](../README.md) and [operations.md](operations.md) are
 enough and this document is not needed.
 
+> Notification types are referred to by code throughout — `E6` is the end of a
+> map, `E5` the start of one. The full list is in
+> [../README.md#event-codes](../README.md#event-codes).
+
 ## The overall shape
 
 ```
