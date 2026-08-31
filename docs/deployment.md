@@ -52,16 +52,13 @@ no longer exists: if it is still in an old `.env`, move its ids here.
 image you publish yourself — CI prints the exact name it pushed in the run
 summary, under "Published", with all the tags and the digest.
 
+`TEAM_ID`, `TEAM_SLUG` and `TEAM_NAME` seed the first team. The file ships with
+the author's; change it, or leave it and `/track` your own from the chat later.
+
 Leave `DRY_RUN` as `true` for now.
 
-**4. If you are pulling from a private repository of your own** — log in
-once:
-
-```bash
-docker login
-```
-
-**5. Start it.**
+**4. Start it.** No `docker login` is needed — the image is public. You only
+have to log in if you pointed `IMAGE` at a private repository of your own.
 
 ```bash
 docker compose pull
@@ -83,17 +80,17 @@ team 12857 taken under observation: 17 matches recorded silently
 without notifications, otherwise a dozen and a half messages about already
 played matches would arrive at startup.
 
-**6. Check the connection.** Send the bot `/menu` — a menu with buttons should
+**5. Check the connection.** Send the bot `/menu` — a menu with buttons should
 arrive.
 
-**7. Live mode.** Once the logs look sensible, set `DRY_RUN=false` in `.env` and
+**6. Live mode.** Once the logs look sensible, set `DRY_RUN=false` in `.env` and
 restart:
 
 ```bash
 docker compose up -d
 ```
 
-**8. Configure it to taste** — from the chat now:
+**7. Configure it to taste** — from the chat now:
 
 ```
 /track https://www.hltv.org/team/12857/forze-reload
