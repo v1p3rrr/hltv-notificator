@@ -18,7 +18,7 @@ from typing import List, Optional
 
 from .config import Config
 from .models import Event
-from .state.db import Storage, parse_iso, utcnow
+from .state.db import Storage, iso, parse_iso, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -55,9 +55,9 @@ class ReminderScheduler:
                 start = parse_iso(row["start_utc"])
                 for minutes in offsets:
                     # The window opens exactly N minutes before and closes at
-                    # the start. It will not fire twice: the key contains the
-                    # match and the interval, and the journal of what was sent
-                    # will not let it be created a second time.
+                    # the start. It will not fire twice for the same start: the
+                    # key carries the match, the start and the interval, and
+                    # the journal will not let it be created a second time.
                     if not (now < start <= now + timedelta(minutes=minutes)):
                         continue
                     events.append(self._event(chat_id, row, minutes, start, now))
@@ -77,7 +77,14 @@ class ReminderScheduler:
         team_id = row["team_id"]
         return Event(
             type="E10",
-            idempotency_key=f"E10:{row['match_id']}:remind:{minutes}",
+            # The START is part of the key, exactly as it is for E2. Without it
+            # a reminder that has fired once can never fire again, and a match
+            # moved after it was announced leaves the person with a reminder
+            # for a time that no longer exists and none for the time that
+            # happens. The cost is the mirror image: several moves inside the
+            # window mean several reminders — which is the honest outcome,
+            # since each of them is about a different start.
+            idempotency_key=f"E10:{row['match_id']}:{iso(start)}:remind:{minutes}",
             match_id=row["match_id"],
             payload={
                 "only_chat": chat_id,

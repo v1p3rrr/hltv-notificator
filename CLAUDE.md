@@ -134,6 +134,17 @@ acknowledgements — and they share one budget. A limiter per sender leaves
 everybody inside their own rules and the total over. Per-CHAT spacing stays
 in the queue, because that is also where the ordering guarantee is.
 
+**A key must carry everything the message asserts.** E2 has the new time in
+it; E10 did not, so a reminder fired once for the old time and the journal
+then blocked it forever — a match moved after its reminder went out got no
+second one. If the payload says "at 18:00", the key says 18:00 too.
+
+**Stopping a worker is a flag first and a cancel later.** `release` used to
+do both in one breath, so the flag was never seen and the cancel could land
+inside the Telegram call creating a card — message posted, id unsaved, second
+card on the next start. `RELEASE_GRACE_SECONDS` is not there to let it exit
+gracefully (the long poll holds for 45 s); it is there to outlast a write.
+
 **The final edit of a card waits for any redraw in flight.** The background
 draw reads the row before `finalized` is written and finishes after it, and
 `save_live_message` does `finalized = excluded.finalized` — so the freeze was
@@ -352,7 +363,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 433 tests
+python -m pytest                                    # 436 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

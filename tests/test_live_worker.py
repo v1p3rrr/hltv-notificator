@@ -128,3 +128,69 @@ def test_the_queue_wakes_up_on_a_new_event(storage, config):
     notifier.enqueue(Event(type="E4", idempotency_key="E4:1:started", match_id=1,
                            payload={"team_name": "T", "opponent": "O", "url": "u"}))
     assert notifier._arrived.is_set() is True
+
+
+def test_release_does_not_cancel_a_write_in_flight(storage, config):
+    """The stop flag and the cancel used to be set in the same breath, so the
+    worker never saw the flag — and a cancel landing inside the Telegram call
+    that creates the map's card posts the message and never saves its id, so
+    the next start opens a second card for the same map.
+    """
+    import asyncio
+
+    from hltv_notify.live_worker import LiveSupervisor
+
+    supervisor = LiveSupervisor(storage, config, Notifier(storage, config, None))
+    finished = []
+
+    async def scenario():
+        async def slow_write(stop):
+            try:
+                await asyncio.sleep(0.05)     # a send in flight
+                finished.append("saved")
+            except asyncio.CancelledError:
+                finished.append("cancelled")
+                raise
+
+        stop = asyncio.Event()
+        supervisor._stops[1] = stop
+        supervisor._tasks[1] = asyncio.create_task(slow_write(stop))
+        supervisor.release(1)
+        assert stop.is_set()                  # the flag goes up first
+        await supervisor.shutdown()
+
+    asyncio.run(scenario())
+    assert finished == ["saved"]
+
+
+def test_release_still_cancels_what_will_not_stop(storage, config):
+    """The grace is short on purpose: the feed's long poll can hold for 45 s
+    and shutdown has to fit inside Docker's timer."""
+    import asyncio
+
+    from hltv_notify import live_worker as module
+    from hltv_notify.live_worker import LiveSupervisor
+
+    supervisor = LiveSupervisor(storage, config, Notifier(storage, config, None))
+    outcome = []
+
+    async def scenario():
+        async def never_stops(stop):
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                outcome.append("cancelled")
+                raise
+
+        supervisor._stops[1] = asyncio.Event()
+        supervisor._tasks[1] = asyncio.create_task(never_stops(None))
+        original = module.RELEASE_GRACE_SECONDS
+        module.RELEASE_GRACE_SECONDS = 0.05
+        try:
+            supervisor.release(1)
+            await supervisor.shutdown()
+        finally:
+            module.RELEASE_GRACE_SECONDS = original
+
+    asyncio.run(scenario())
+    assert outcome == ["cancelled"]

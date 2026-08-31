@@ -78,12 +78,18 @@ E6:<match>:map:<n>:result:<ours>-<theirs>
 E7:<match>:finished:<maps_ours>-<maps_theirs>
 E8:<subsystem>:<reason>:<utc_hour>
 E9:<match>:map:<n>:round:<r>:<steam_id>:<kills>
+E10:<match>:<start_utc>:remind:<minutes>
 E11:<match>:map:<n>:point:<us|them>:<target_score>
 E12:<match>:map:<n>:half | E12:<match>:map:<n>:overtime:<k>
 ```
 
-A key must depend **only on the content**. Let the time the response arrived
-into it and deduplication stops working. The hour in the E8 key is a
+A key must depend **only on the content** — and on all of it. Let the time the
+response arrived into it and deduplication stops working; leave out something
+the message asserts and it stops working the other way round. E10 carries the
+start for that reason: without it a reminder that had fired once could never
+fire again, so a match moved after its reminder went out got none for the time
+it actually started, while E2 — which has the new time in its key — was
+delivered correctly all along. The hour in the E8 key is a
 compromise: we do not send "I have gone blind" on every failed attempt, but
 neither do we mute the problem forever.
 

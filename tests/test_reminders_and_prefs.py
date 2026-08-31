@@ -358,3 +358,45 @@ def test_a_comeback_that_only_forced_overtime():
                                      overtime=True, **denied),
                       team_name="FORZE Reload", tz_name="Europe/Moscow")
     assert "FORZE Reload came back from 1:10 to force overtime" in text
+
+
+def test_a_reschedule_gets_its_own_reminder(store, config):
+    """The key carries the START, exactly as E2's does.
+
+    Without it the reminder fires once for the old time and never again, so a
+    match moved after it was announced leaves the person with a reminder for a
+    time that no longer exists and none for the time that happens.
+    """
+    def move_to(when):
+        store.upsert_match(
+            match_id=MATCH, team_id=TEAM, opponent_id=1, opponent_name="Color",
+            event_name="GLuck", start_utc=when,
+            url="https://www.hltv.org/matches/800/x", snapshot={}, snapshot_hash="h")
+
+    store.add_reminder(ILYA, 15)
+    base = utcnow()
+    eighteen_hundred = base + timedelta(minutes=10)
+    move_to(eighteen_hundred)
+    store.link_match_team(MATCH, TEAM)
+
+    scheduler = ReminderScheduler(store, config)
+    notifier = Notifier(store, config, telegram=None)
+
+    for event in scheduler.due(base):
+        notifier.enqueue(event)
+    assert store.pending_count() == 1
+
+    # Ticking again for the same start changes nothing.
+    for event in scheduler.due(base + timedelta(minutes=1)):
+        notifier.enqueue(event)
+    assert store.pending_count() == 1
+
+    # HLTV moves the match an hour on. Too early for the new window yet.
+    nineteen_hundred = base + timedelta(minutes=70)
+    move_to(nineteen_hundred)
+    assert scheduler.due(base + timedelta(minutes=2)) == []
+
+    # And inside the new window the reminder comes back.
+    for event in scheduler.due(nineteen_hundred - timedelta(minutes=10)):
+        notifier.enqueue(event)
+    assert store.pending_count() == 2

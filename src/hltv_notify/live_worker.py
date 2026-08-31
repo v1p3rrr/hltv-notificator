@@ -39,6 +39,10 @@ MAX_BACKOFF_SECONDS = 60.0
 # continues. If the queue is stuck for longer than that, the card goes anyway:
 # a live score is worth more than the order of two messages.
 START_MESSAGE_WAIT_SECONDS = 30.0
+# How long a released worker is given before it is cancelled. Short on purpose:
+# it only has to outlast a Telegram write that is already in flight, and the
+# whole shutdown has to fit inside Docker's stop_grace_period.
+RELEASE_GRACE_SECONDS = 2.0
 
 
 class LiveWorker:
@@ -209,6 +213,9 @@ class LiveSupervisor:
         self._workers: Dict[int, LiveWorker] = {}
         self._tasks: Dict[int, asyncio.Task] = {}
         self._stops: Dict[int, asyncio.Event] = {}
+        # Workers that have been asked to stop and are being given a moment
+        # before the cancel. See `release`.
+        self._retiring: set = set()
 
     @property
     def any_connected(self) -> bool:
@@ -230,14 +237,41 @@ class LiveSupervisor:
         log.info("live feed brought up for match %s", match_id)
 
     def release(self, match_id: int) -> None:
+        """Stop the worker for a match that is no longer running.
+
+        The stop flag and the cancel used to be set in the same breath, with
+        no await in between, so the worker never saw the flag and the whole
+        cooperative path was dead. Worse, the cancel could land inside an
+        awaited Telegram write — the creation of the map's card — which posts
+        the message and never saves its id, so the next start opens a second
+        card for the same map.
+
+        So the flag goes up first and the cancel is deferred by
+        RELEASE_GRACE_SECONDS. That is not long enough for a graceful exit
+        (the feed's long poll can hold for 45 s and shutdown has to fit inside
+        Docker's timer), and it is not meant to be: it is long enough for a
+        write already in flight to finish, which is the part that must not be
+        interrupted.
+        """
         stop = self._stops.pop(match_id, None)
         if stop is not None:
             stop.set()
         task = self._tasks.pop(match_id, None)
-        if task is not None:
-            task.cancel()
         self._workers.pop(match_id, None)
+        if task is not None and not task.done():
+            retiring = asyncio.create_task(self._retire(task, match_id))
+            self._retiring.add(retiring)
+            retiring.add_done_callback(self._retiring.discard)
         log.info("live feed for match %s stopped", match_id)
+
+    async def _retire(self, task: asyncio.Task, match_id: int) -> None:
+        done, pending = await asyncio.wait({task}, timeout=RELEASE_GRACE_SECONDS)
+        if not pending:
+            return
+        log.debug("live feed of match %s did not stop on its own, cancelling",
+                  match_id)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     def reconcile(self, live_match_ids: Dict[int, str]) -> None:
         """Bring the set of workers in line with the running matches."""
@@ -256,5 +290,10 @@ class LiveSupervisor:
         tasks = list(self._tasks.values())
         for match_id in list(self._tasks):
             self.release(match_id)
+        # The retirements first: each of them gives its worker a moment and
+        # then cancels it, and it is those that actually finish the tasks.
+        retiring = list(self._retiring)
+        if retiring:
+            await asyncio.gather(*retiring, return_exceptions=True)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
