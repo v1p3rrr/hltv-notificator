@@ -162,7 +162,9 @@ def test_half_time_is_found_in_a_real_recording(prepared):
 
     from hltv_notify.config import Config
 
-    events = replay(DUMP, prepared, _replace(Config(), phase_alerts=True), MATCH_ID)
+    events = replay(DUMP, prepared,
+                    _replace(Config(), phase_alerts=True, half_alerts=True,
+                             overtime_alerts=True), MATCH_ID)
     phases = [e for e in events if e.type == "E12"]
     assert [e.idempotency_key for e in phases] == ["E12:2397053:map:2:half"]
     # 12 rounds played, the map went on to 10:13 — so no overtime alert.

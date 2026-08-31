@@ -12,13 +12,14 @@
 | E4 match started | done, from the match page; waits for the first round while the feed reports a warmup |
 | E7 match finished | done, from the live feed by the map count; the page confirms |
 | E11 map point | done, from the live feed; a separate one for every overtime |
-| E12 half / new overtime | done, from the live feed, `/settings phase` (default `PHASE_ALERTS`), **off by default** |
+| E12 half time | done, from the live feed, `/settings half` (default `HALF_ALERTS`), **off by default** |
+| E13 a new overtime begins | done, from the live feed, `/settings overtime` (default `OVERTIME_ALERTS`), **off by default**; separate from E12 because a half comes on every map and an overtime usually does not come at all |
 | E6 map finished with the score | done, **at the winning round** from the live feed; the page confirms |
 | A comeback on the map | done, an extra line on E6, `/settings comeback` (default `COMEBACK_ROUNDS`) |
 | E5 map started | done, from the live feed, once the warmup is over |
 | E8 degradation (the source is silent, the match has stalled) | done |
 | "The match has stalled" | only when there is no live feed; between maps the threshold is three times longer |
-| The live score message during a map | done, one per map, `/settings card` (default `LIVE_MESSAGE`); it is also the map's card and carries the map start, so it is not opened during the warmup, and it is moved back to the bottom of the chat after E11 and E12 |
+| The live score message during a map | done, one per map, `/settings card` (default `LIVE_MESSAGE`); it is also the map's card and carries the map start, so it is not opened during the warmup, and it is moved back to the bottom of the chat after E11, E12 and E13 |
 | A multikill by a player of our team | done, at the Nth kill, `/settings multikill` (default `MULTIKILL_THRESHOLD`) |
 
 ## Starting up
@@ -118,7 +119,7 @@ score it had; the next ordinary redraw edits the new message as usual.
 | Moves the card | Does not |
 |---|---|
 | E11 (map point) | E9 (multikill) — several a map, the card would jump about |
-| E12 (half, each new overtime) | anything about a different match |
+| E12 (half) and E13 (each new overtime) | anything about a different match |
 | | E5 and E6 — one lives in the card, the other ends it |
 
 The move is triggered by the **queue**, not by the feed, right after it has
@@ -137,7 +138,8 @@ and with no card there is nothing to move.
 |---|---|---|
 | `multikill` | kills in a round worth an alert; `0` off | `MULTIKILL_THRESHOLD`, `MULTIKILL_ALERTS` |
 | `comeback` | swing in the score difference worth a line on E6; `0` off | `COMEBACK_ROUNDS` |
-| `phase` | a message at the half and at each new overtime | `PHASE_ALERTS` |
+| `half` | a message when the sides swap | `HALF_ALERTS` (default `PHASE_ALERTS`) |
+| `overtime` | a message at the start of every overtime | `OVERTIME_ALERTS` (default `PHASE_ALERTS`) |
 | `card` | the live score card during a map | `LIVE_MESSAGE` |
 
 A row is written only when somebody changes something, so raising a default in

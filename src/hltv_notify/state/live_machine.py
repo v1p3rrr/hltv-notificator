@@ -395,7 +395,7 @@ class LiveMachine:
 
     def _event_e12(self, match_id: int, frame: LiveFrame, map_number: int,
                    map_name: str, ours: int, theirs: int) -> Optional[Event]:
-        """The half, and the start of every overtime.
+        """The half (E12) and the start of every overtime (E13).
 
         Two moments where the map turns over: the sides swap after
         `regulation` rounds have been played (7-5, 6-6, 12-0 — the split does
@@ -404,12 +404,17 @@ class LiveMachine:
         an overtime is deliberately not reported — under MR3 that would be a
         message every three rounds.
 
-        Off by default, and per subscriber (`/settings phase on`): the live
-        card shows all of this already, so this is for someone who wants to be
-        pulled back to the screen. Born whenever at least one person wants it;
-        the queue then withholds it from the rest.
+        Two separate types, switched on separately (`/settings half`,
+        `/settings overtime`, and `/mute <team> E12,E13`). They are not the
+        same kind of thing: a half comes on every map and is routine, an
+        overtime usually does not come at all, and someone who wants to be
+        pulled back to the screen for the second rarely wants the first.
+
+        Both off by default: the live card shows all of this already. Born
+        whenever at least one person wants that type; the queue then withholds
+        it from the rest.
         """
-        if self._threshold("phase") <= 0 or self._warming_up(frame):
+        if self._warming_up(frame):
             return None
 
         regulation, overtime = frame.regulation, frame.overtime
@@ -417,13 +422,21 @@ class LiveMachine:
             return None
 
         if ours + theirs == regulation:
+            event_type, number = "E12", 0
             key = f"E12:{match_id}:map:{map_number}:half"
-            number = 0
         elif (ours == theirs and ours >= regulation
               and (ours - regulation) % overtime == 0):
             number = (ours - regulation) // overtime + 1
-            key = f"E12:{match_id}:map:{map_number}:overtime:{number}"
+            event_type = "E13"
+            # The key keeps the shape it had under E12, so the migration that
+            # renames it only has to change the prefix.
+            key = f"E13:{match_id}:map:{map_number}:overtime:{number}"
         else:
+            return None
+
+        # Checked per type rather than once at the top: the two are switched on
+        # separately, and the half being off must not silence the overtime.
+        if self._threshold("half" if event_type == "E12" else "overtime") <= 0:
             return None
 
         if key in self._announced:
@@ -433,7 +446,7 @@ class LiveMachine:
                  "half time" if not number else f"overtime {number} begins",
                  map_name, ours, theirs)
         return Event(
-            type="E12",
+            type=event_type,
             idempotency_key=key,
             match_id=match_id,
             payload={

@@ -104,7 +104,7 @@ COMMANDS = (
     ("unmute", "<id>", "Clear all mutes for a team"),
     ("remind", "[15m|1h]", "Pre-match reminders; /remind rm 15m removes one"),
     ("tz", "<Europe/Berlin>", "Your timezone"),
-    ("settings", "[name] [value]", "Your thresholds: multikill, comeback, phase, card"),
+    ("settings", "[name] [value]", "Your alerts: multikill, comeback, half, overtime, card"),
     ("pause", "", "Go quiet"),
     ("resume", "", "Start sending again"),
     ("check", "", "Read the schedule now, without waiting for the next cycle"),

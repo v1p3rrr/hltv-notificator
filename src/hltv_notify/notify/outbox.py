@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 # jumping around. Everything else is either about a different match, where
 # moving this card would be noise, or already lives in the card itself (E5) or
 # ends it (E6).
-BURYING = frozenset({"E11", "E12"})
+BURYING = frozenset({"E11", "E12", "E13"})
 
 # Telegram's two limits are different in kind and are answered in two
 # different places. Roughly one message per second into ONE chat is this
@@ -127,7 +127,9 @@ class Notifier:
             wanted = self._threshold(chat_id, "multikill")
             return wanted > 0 and int(event.payload.get("kills") or 0) >= wanted
         if event.type == "E12":
-            return self._threshold(chat_id, "phase") > 0
+            return self._threshold(chat_id, "half") > 0
+        if event.type == "E13":
+            return self._threshold(chat_id, "overtime") > 0
         return True
 
     def _recipients(self, event: Event):

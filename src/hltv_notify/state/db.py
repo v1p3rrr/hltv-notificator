@@ -192,6 +192,11 @@ log = logging.getLogger(__name__)
 
 # The reminder key before it carried the start: E10:<match>:remind:<minutes>,
 # optionally behind the recipient prefix added by adopt_legacy_event_keys.
+# The overtime alert before it became its own type: E12:<match>:map:<n>:overtime:<k>,
+# optionally behind the recipient prefix.
+LEGACY_OVERTIME_KEY_RE = re.compile(
+    r"^(?P<prefix>[^|]*\|)?E12:(?P<rest>\d+:map:\d+:overtime:\d+)$")
+
 LEGACY_REMINDER_KEY_RE = re.compile(
     r"^(?P<prefix>[^|]*\|)?E10:(?P<match>\d+):remind:(?P<minutes>\d+)$")
 
@@ -284,6 +289,74 @@ class Storage:
             self.conn.executescript(SCHEMA)
 
         self._migrate_reminder_keys()
+        self._migrate_overtime_keys()
+        self._migrate_phase_setting()
+
+    def _migrate_overtime_keys(self) -> int:
+        """The overtime alert moved from E12 to E13 when it became its own type.
+
+        Its key carries the type, so without rewriting what is already in the
+        journal the first run after the upgrade finds nothing matching `E13:`
+        and announces an overtime it has already announced. The same class of
+        mistake as `_migrate_reminder_keys` and `adopt_legacy_event_keys`
+        before it, and the same shape of fix: once, under a flag in `meta`.
+
+        Only the shape after the type changes, so a prefix swap is the whole
+        job. The half keeps `E12` and needs nothing.
+        """
+        if self.get_meta("overtime_keys_are_e13"):
+            return 0
+        rewritten = 0
+        for table in ("sent_events", "outbox"):
+            rows = list(self.conn.execute(
+                f"SELECT rowid AS row_id, idempotency_key FROM {table} "
+                "WHERE idempotency_key LIKE '%E12:%:overtime:%'"))
+            for row in rows:
+                found = LEGACY_OVERTIME_KEY_RE.match(row["idempotency_key"])
+                if not found:
+                    continue
+                new_key = (f"{found.group('prefix') or ''}E13:{found.group('rest')}")
+                # OR IGNORE because idempotency_key is unique: if the new form
+                # is somehow already there, the old row is simply redundant.
+                self.conn.execute(
+                    f"UPDATE OR IGNORE {table} SET idempotency_key = ? WHERE rowid = ?",
+                    (new_key, row["row_id"]))
+                rewritten += 1
+        if rewritten:
+            # The type is stored beside the key in the journal, and a row that
+            # still claims E12 would be counted as a half.
+            self.conn.execute(
+                "UPDATE sent_events SET event_type = 'E13' "
+                "WHERE idempotency_key LIKE '%E13:%:overtime:%'")
+        self.set_meta("overtime_keys_are_e13", iso(utcnow()))
+        if rewritten:
+            log.info("overtime alerts moved from E12 to E13: %d record(s)", rewritten)
+        return rewritten
+
+    def _migrate_phase_setting(self) -> int:
+        """`/settings phase` became `/settings half` and `/settings overtime`.
+
+        Someone who had turned the pair on meant both, so the stored value is
+        copied to both names rather than dropped — dropping it would silently
+        turn off something they had asked for.
+        """
+        if self.get_meta("phase_setting_split"):
+            return 0
+        rows = list(self.conn.execute(
+            "SELECT chat_id, value FROM subscriber_settings WHERE name = 'phase'"))
+        for row in rows:
+            for name in ("half", "overtime"):
+                # OR IGNORE: a value they have already set under the new name
+                # is their more recent choice and wins.
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO subscriber_settings (chat_id, name, value) "
+                    "VALUES (?, ?, ?)", (row["chat_id"], name, row["value"]))
+        self.conn.execute("DELETE FROM subscriber_settings WHERE name = 'phase'")
+        self.set_meta("phase_setting_split", iso(utcnow()))
+        if rows:
+            log.info("the phase setting split into half and overtime: %d chat(s)",
+                     len(rows))
+        return len(rows)
 
     def _migrate_reminder_keys(self) -> int:
         """Give the reminder keys already in the journal the start they now carry.

@@ -19,7 +19,8 @@ up what a message is about.
 |---|---|---|---|
 | E1 new match | E2 reschedule | E3 cancellation | E4 match started |
 | E5 map started | E6 map finished | E7 match finished | E8 / E8R degraded / recovered |
-| E9 multikill | E10 reminder | E11 map point | E12 half / new overtime |
+| E9 multikill | E10 reminder | E11 map point | E12 half time |
+| E13 new overtime | | | |
 
 A general description is in [README.md](README.md). How it works and why is in
 [docs/architecture.md](docs/architecture.md). **Read it before making any
@@ -197,7 +198,7 @@ cleared and the stale score became the card's last text. `_settle` waits
 next start opens a second card).
 
 **"Something was sent below the card" is a COUNTER, not a flag.** The card is
-deleted and re-sent after E11/E12 so it stays the last message, and that takes
+deleted and re-sent after E11/E12/E13 so it stays the last message, and that takes
 a moment. A boolean cleared at the end of the move erases a burial that arrived
 during it, and the card then sits above that message for the rest of the map.
 `bury_seq` is incremented; the move writes back into `posted_seq` the value it
@@ -463,7 +464,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 487 tests
+python -m pytest                                    # 492 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

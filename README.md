@@ -107,8 +107,8 @@ off with `/settings card off` if you would rather have a quiet chat
 **The card stays at the bottom of the chat.** It is the thing you are actually
 watching, and a message arriving above it would leave you scrolling back for
 the score. So when a milestone of the same map arrives — a map point, or half
-time and each new overtime — the card is deleted and sent again below it, and
-goes on updating there.
+time, and each new overtime — the card is deleted and sent again below it,
+and goes on updating there.
 
 Only those two move it. A multikill does not: there are several a map, and the
 card would spend the match jumping around. Neither does anything about a
@@ -168,7 +168,8 @@ documentation, and in the text `/mute` command, so here is the whole list:
 | `E9` | a multikill: 4+ kills in one round |
 | `E10` | a reminder before the match |
 | `E11` | map point |
-| `E12` | half time, or a new overtime |
+| `E12` | half time |
+| `E13` | a new overtime begins |
 
 (The table above is in the order things happen; this one is by number, because
 that is how you look a code up.)
@@ -374,7 +375,7 @@ Not everything has a button: a few commands carry a value that has to be typed
 | `/unmute <id>` | clear that team's mutes | yes |
 | `/remind 15m` | remind 15 min before a match; `/remind rm 15m` removes it | partly — 10, 15, 30 min, 1 h and 2 h are buttons, any other interval is typed |
 | `/tz Europe/Berlin` | your timezone | **no** |
-| `/settings` | your own thresholds — multikill, comeback, half/overtime, the live card. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
+| `/settings` | your own thresholds — multikill, comeback, half, overtime, the live card. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
 | `/pause`, `/resume` | go completely quiet / start receiving again | yes |
 | `/check` | read the schedule now instead of waiting for the next cycle, which is up to 30 min when nothing is due | **no** |
 | `/whoami` | your numeric `chat_id` — the value that goes into `TELEGRAM_CHAT_ID` | **no** |
@@ -395,7 +396,8 @@ in `.env`:
 /settings                     what you have now
 /settings multikill 3         alert from three kills instead of four
 /settings comeback 12         only really big swings get the line on a map
-/settings phase on            a message at the half and at each overtime
+/settings half on             a message when the sides swap
+/settings overtime on         a message at the start of every overtime
 /settings card off            no live score card, just the milestones
 /settings multikill default   back to whatever the service is configured with
 ```
@@ -505,7 +507,9 @@ are most likely to touch:
 | `REMINDERS` | `15` | default pre-match reminders for a new subscriber, in minutes |
 | `MULTIKILL_ALERTS` | `true` | alert on a big round by one of your players |
 | `MULTIKILL_THRESHOLD` | `4` | how many kills counts as one — the **default** for `/settings multikill` |
-| `PHASE_ALERTS` | `false` | alert on half time and on each new overtime — the **default** for `/settings phase` |
+| `PHASE_ALERTS` | `false` | the umbrella default for both of the next two |
+| `HALF_ALERTS` | = `PHASE_ALERTS` | alert at half time — the **default** for `/settings half` |
+| `OVERTIME_ALERTS` | = `PHASE_ALERTS` | alert at each new overtime — the **default** for `/settings overtime` |
 | `COMEBACK_ROUNDS` | `9` | swing that counts as a comeback; `0` removes the line — the **default** for `/settings comeback` |
 | `TELEGRAM_WHITELIST_ONLY` | `true` | answer only the listed chats |
 | `MAX_TEAMS_PER_SUBSCRIBER` | `10` | how many teams one person may follow; `0` removes the limit |

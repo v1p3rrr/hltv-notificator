@@ -74,9 +74,9 @@ def test_words_are_accepted_wherever_a_number_is(config):
     assert settings.parse_value(item, "3") == 3
     assert settings.parse_value(item, "9") is None      # above the maximum
     assert settings.parse_value(item, "banana") is None
-    phase = settings.get("phase")
-    assert settings.parse_value(phase, "on") == 1
-    assert settings.parse_value(phase, "off") == 0
+    half = settings.get("half")
+    assert settings.parse_value(half, "on") == 1
+    assert settings.parse_value(half, "off") == 0
 
 
 # ---------- storage ----------
@@ -152,8 +152,8 @@ def test_the_half_message_only_reaches_whoever_turned_it_on(storage, config):
         storage.add_subscriber(chat)
         storage.add_team(chat, TEAM_ID, "forze-reload", "FORZE Reload")
     make_match(storage)
-    storage.set_setting(CHAT, "phase", 1)
-    storage.set_setting(OTHER, "phase", 0)
+    storage.set_setting(CHAT, "half", 1)
+    storage.set_setting(OTHER, "half", 0)
 
     event = Event(type="E12", idempotency_key="E12:42:map:1:half", match_id=42,
                   payload={"map_name": "Dust2", "map_number": 1, "overtime": 0,

@@ -237,7 +237,10 @@ def render(event: Event, *, team_name: str, tz_name: str,
             _link(url, "Match page"),
         ])
 
-    if event.type == "E12":
+    if event.type in ("E12", "E13"):
+        # Which of the two it is comes from the payload, not from the type:
+        # the number is what the sentence needs anyway, and reading it twice
+        # would be two places to keep in step.
         overtime = payload.get("overtime") or 0
         headline = f"Overtime {overtime} begins" if overtime else "Half time"
         # The round count is taken from the score, not written down: the half

@@ -181,7 +181,8 @@ def test_the_live_phase_is_recorded_for_the_page_machine(storage, config):
 
 def phase_config(config):
     from dataclasses import replace
-    return replace(config, phase_alerts=True)
+    return replace(config, phase_alerts=True, half_alerts=True,
+                   overtime_alerts=True)
 
 
 def test_e12_is_off_by_default(storage, config):
@@ -219,9 +220,9 @@ def test_e12_for_every_new_overtime(storage, config):
             keys.append((event.idempotency_key, event.payload["overtime"]))
     assert keys == [
         ("E12:777:map:1:half", 0),
-        ("E12:777:map:1:overtime:1", 1),
-        ("E12:777:map:1:overtime:2", 2),
-        ("E12:777:map:1:overtime:3", 3),
+        ("E13:777:map:1:overtime:1", 1),
+        ("E13:777:map:1:overtime:2", 2),
+        ("E13:777:map:1:overtime:3", 3),
     ]
 
 
@@ -536,3 +537,26 @@ def test_a_bo2_ends_level_after_both_maps(storage, config):
     assert [e.type for e in events] == ["E6", "E7"]
     assert events[1].payload["won"] is None
     assert events[1].idempotency_key == "E7:777:finished:1-1"
+
+
+def test_the_half_and_the_overtime_are_switched_on_separately(storage, config):
+    """Two types, two switches. A half comes on every map and is routine; an
+    overtime usually does not come at all. Wanting the second without the
+    first is the normal case, so the first being off must not silence it."""
+    from dataclasses import replace as _replace
+
+    add_match(storage)
+
+    only_overtime = _replace(config, half_alerts=False, overtime_alerts=True)
+    m = LiveMachine(storage, only_overtime)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    assert m.apply(MATCH_ID, frame("de_mirage", ours=6, theirs=6, rnd=13)) == []
+    events = m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=12, rnd=25))
+    assert [e.type for e in events] == ["E13"]
+
+    only_half = _replace(config, half_alerts=True, overtime_alerts=False)
+    m = LiveMachine(storage, only_half)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    assert [e.type for e in
+            m.apply(MATCH_ID, frame("de_mirage", ours=6, theirs=6, rnd=13))] == ["E12"]
+    assert m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=12, rnd=25)) == []

@@ -266,3 +266,95 @@ def test_reminder_keys_gain_the_start_they_now_carry(tmp_path):
         notifier.enqueue(event)
     assert storage.pending_count() == 0
     storage.close()
+
+
+# ---------- the half and the overtime became two types ----------
+
+def test_the_overtime_alert_keeps_its_key_across_the_rename(tmp_path):
+    """E13's key carries the type, so the journal has to be rewritten.
+
+    Without it the first run after the upgrade finds nothing matching `E13:`
+    and announces an overtime it has already announced — the same mistake as
+    the reminder keys before it.
+    """
+    from hltv_notify.state.db import Storage
+
+    path = tmp_path / "old.db"
+    storage = Storage(path)
+    storage.conn.execute(
+        "INSERT INTO sent_events (idempotency_key, event_type, match_id, created_utc) "
+        "VALUES ('555|E12:900:map:1:overtime:1', 'E12', 900, '2026-08-01T00:00:00+00:00')")
+    storage.conn.execute(
+        "INSERT INTO sent_events (idempotency_key, event_type, match_id, created_utc) "
+        "VALUES ('555|E12:900:map:1:half', 'E12', 900, '2026-08-01T00:00:00+00:00')")
+    storage.conn.execute("DELETE FROM meta WHERE key = 'overtime_keys_are_e13'")
+    storage.close()
+
+    storage = Storage(path)
+    keys = {row["idempotency_key"]: row["event_type"] for row in
+            storage.conn.execute("SELECT idempotency_key, event_type FROM sent_events")}
+    assert keys == {"555|E13:900:map:1:overtime:1": "E13",
+                    # The half kept E12 and needed nothing.
+                    "555|E12:900:map:1:half": "E12"}
+    storage.close()
+
+
+def test_the_overtime_rename_runs_once(tmp_path):
+    from hltv_notify.state.db import Storage
+
+    path = tmp_path / "old.db"
+    storage = Storage(path)
+    storage.conn.execute(
+        "INSERT INTO sent_events (idempotency_key, event_type, match_id, created_utc) "
+        "VALUES ('E12:900:map:1:overtime:1', 'E12', 900, '2026-08-01T00:00:00+00:00')")
+    storage.conn.execute("DELETE FROM meta WHERE key = 'overtime_keys_are_e13'")
+    storage.close()
+
+    Storage(path).close()
+    storage = Storage(path)
+    assert storage._migrate_overtime_keys() == 0
+    assert [row["idempotency_key"] for row in
+            storage.conn.execute("SELECT idempotency_key FROM sent_events")] == \
+        ["E13:900:map:1:overtime:1"]
+    storage.close()
+
+
+def test_the_phase_setting_becomes_both_of_its_halves(tmp_path):
+    """Someone who had turned the pair on meant both of them.
+
+    Dropping the row would silently switch off something they asked for.
+    """
+    from hltv_notify.state.db import Storage
+
+    path = tmp_path / "old.db"
+    storage = Storage(path)
+    storage.conn.execute(
+        "INSERT INTO subscriber_settings (chat_id, name, value) VALUES ('555', 'phase', 1)")
+    storage.conn.execute("DELETE FROM meta WHERE key = 'phase_setting_split'")
+    storage.close()
+
+    storage = Storage(path)
+    assert storage.setting("555", "half", 0) == 1
+    assert storage.setting("555", "overtime", 0) == 1
+    assert storage.conn.execute(
+        "SELECT COUNT(*) FROM subscriber_settings WHERE name = 'phase'").fetchone()[0] == 0
+    storage.close()
+
+
+def test_a_choice_already_made_under_the_new_name_wins(tmp_path):
+    """The split must not overwrite a more recent decision."""
+    from hltv_notify.state.db import Storage
+
+    path = tmp_path / "old.db"
+    storage = Storage(path)
+    storage.conn.execute(
+        "INSERT INTO subscriber_settings (chat_id, name, value) VALUES ('555', 'phase', 1)")
+    storage.conn.execute(
+        "INSERT INTO subscriber_settings (chat_id, name, value) VALUES ('555', 'overtime', 0)")
+    storage.conn.execute("DELETE FROM meta WHERE key = 'phase_setting_split'")
+    storage.close()
+
+    storage = Storage(path)
+    assert storage.setting("555", "half", 9) == 1
+    assert storage.setting("555", "overtime", 9) == 0
+    storage.close()

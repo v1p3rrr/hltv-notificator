@@ -65,10 +65,10 @@ def snapshot(score=(6, 6), rnd=13, map_number=1):
 
 
 def live_config(**overrides) -> Config:
-    # phase_alerts on, or E12 never reaches anybody and there is nothing to
-    # move the card for: it is off by default and per person (/settings phase).
+    # half_alerts on, or E12 never reaches anybody and there is nothing to
+    # move the card for: it is off by default and per person (/settings half).
     base = dict(dry_run=False, bot_token="t", chat_id=CHAT, live_edit_seconds=0,
-                phase_alerts=True)
+                half_alerts=True, overtime_alerts=True)
     base.update(overrides)
     return Config(**base)
 

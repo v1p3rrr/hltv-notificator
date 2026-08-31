@@ -149,9 +149,20 @@ class Config:
     multikill_alerts: bool = field(default_factory=lambda: _bool("MULTIKILL_ALERTS", True))
     multikill_threshold: int = field(default_factory=lambda: _int("MULTIKILL_THRESHOLD", 4))
 
-    # alert on the half and on every new overtime. Off by default: it is one
-    # more message per map for something the live card already shows.
+    # Alert on the half, and on every new overtime. Two separate switches:
+    # a half is routine and happens on every map, an overtime does not happen
+    # at all most of the time and is the more interesting of the two, so
+    # wanting one without the other is the normal case rather than a corner.
+    #
+    # PHASE_ALERTS is what used to cover both and is kept as the umbrella
+    # default, so an existing .env keeps behaving exactly as it did. Off by
+    # default either way: it is one more message per map for something the
+    # live card already shows.
     phase_alerts: bool = field(default_factory=lambda: _bool("PHASE_ALERTS", False))
+    half_alerts: bool = field(
+        default_factory=lambda: _bool("HALF_ALERTS", _bool("PHASE_ALERTS", False)))
+    overtime_alerts: bool = field(
+        default_factory=lambda: _bool("OVERTIME_ALERTS", _bool("PHASE_ALERTS", False)))
 
     # How big a swing in the score difference counts as a comeback. Not a
     # streak: 3:11 -> 13:11 and 1:7 -> 13:9 are both swings of ten, and only

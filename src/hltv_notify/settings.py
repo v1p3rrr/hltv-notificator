@@ -86,11 +86,22 @@ SETTINGS: Tuple[Setting, ...] = (
         default=lambda c: c.comeback_rounds,
         minimum=0, maximum=16, presets=(0, 6, 9, 12), unit="round swing",
     ),
+    # Two knobs and not one: a half happens on every map and is routine, an
+    # overtime usually does not happen at all and is the reason someone wants
+    # to be pulled back to the screen. Wanting the second without the first is
+    # the normal case.
     Setting(
-        name="phase",
-        label="Half / overtime",
-        summary="A message at the half and at every new overtime",
-        default=lambda c: 1 if c.phase_alerts else 0,
+        name="half",
+        label="Half time",
+        summary="A message when the sides swap",
+        default=lambda c: 1 if c.half_alerts else 0,
+        minimum=0, maximum=1, presets=(0, 1), boolean=True,
+    ),
+    Setting(
+        name="overtime",
+        label="Overtime",
+        summary="A message at the start of every overtime",
+        default=lambda c: 1 if c.overtime_alerts else 0,
         minimum=0, maximum=1, presets=(0, 1), boolean=True,
     ),
     Setting(
@@ -124,7 +135,7 @@ def parse_value(item: Setting, raw: str) -> Optional[int]:
 
     Words are accepted for every setting, not only the boolean ones: "off" is
     how a person says zero, and refusing it for `multikill` while accepting it
-    for `phase` would be a distinction only the code can see.
+    for `half` would be a distinction only the code can see.
     """
     text = (raw or "").strip().lower()
     if not text:
