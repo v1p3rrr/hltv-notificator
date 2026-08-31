@@ -154,11 +154,13 @@ class Config:
     # at all most of the time and is the more interesting of the two, so
     # wanting one without the other is the normal case rather than a corner.
     #
-    # PHASE_ALERTS is what used to cover both and is kept as the umbrella
-    # default, so an existing .env keeps behaving exactly as it did. Off by
-    # default either way: it is one more message per map for something the
-    # live card already shows.
-    phase_alerts: bool = field(default_factory=lambda: _bool("PHASE_ALERTS", False))
+    # PHASE_ALERTS is what used to cover both, and is still read as the
+    # fallback for each, so an existing .env keeps behaving exactly as it did.
+    # It is deliberately NOT a field of its own: it is resolved here, from the
+    # environment, and a field nothing reads is a trap — `Config(phase_alerts=
+    # True)` would look like it turned both on and would do nothing at all.
+    # Off by default either way: it is one more message per map for something
+    # the live card already shows.
     half_alerts: bool = field(
         default_factory=lambda: _bool("HALF_ALERTS", _bool("PHASE_ALERTS", False)))
     overtime_alerts: bool = field(

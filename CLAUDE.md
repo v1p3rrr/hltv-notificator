@@ -171,6 +171,33 @@ acknowledgements — and they share one budget. A limiter per sender leaves
 everybody inside their own rules and the total over. Per-CHAT spacing stays
 in the queue, because that is also where the ordering guarantee is.
 
+**THREE stores hold an event type, and splitting one reaches all three.**
+The journal's keys (`sent_events`, `outbox`), the per-person setting
+(`subscriber_settings.name`) and the per-team mute list (`teams.muted_events`).
+Splitting E12 into E12 (half) and E13 (overtime) migrated the first two and
+missed the third, so a subscriber who had muted "half / overtime" started
+receiving overtimes again. Each migration gets its OWN flag in `meta`: sharing
+one means a database that already ran the earlier half never gets the rest.
+
+**A setting must not accept a value the code overrides.** `MultikillTracker`
+floors its threshold at 2, so `/settings multikill 1` stored a number the
+alerts never use and reported it back as if it were in force — the refusal
+message even suggested it. `Setting.smallest_on` is that floor, and `clamp`
+keeps zero as zero so "off" is still reachable.
+
+**Do not clear a stored value before knowing what replaces it.**
+`/settings <name> on` means "back to the service default"; it deleted the row
+first and only then discovered the default was itself off, so the command a
+person types to turn something ON deleted the value that was keeping it on.
+Work out the replacement first, and say what happened to theirs.
+
+**An umbrella environment variable must not also be a field.** `PHASE_ALERTS`
+is the fallback both `HALF_ALERTS` and `OVERTIME_ALERTS` read, and it is
+resolved inside their factories, from the environment. A `phase_alerts` field
+nothing reads is a trap: `Config(phase_alerts=True)` looks like it turns both
+on and does nothing at all — which is exactly how two tests were silently
+wrong.
+
 **Changing a key format needs a migration in the same commit.** The journal
 is keyed by the old format, so without one the first run after the upgrade sees
 nothing matching and sends again what it has already sent. There are two of
@@ -464,7 +491,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 492 tests
+python -m pytest                                    # 499 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

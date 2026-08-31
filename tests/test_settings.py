@@ -266,3 +266,46 @@ def test_the_buttons_offer_every_setting_in_the_registry(config):
         assert f"s:{item.name}" in payloads
         for preset in item.presets:
             assert f"s:{item.name}:{preset}" in payloads
+
+
+# ---------- what a setting may be given ----------
+
+def test_a_threshold_the_service_would_ignore_is_refused(config):
+    """MultikillTracker floors its threshold at 2.
+
+    Accepting 1 stored a number the alerts never use and reported it back as
+    if it were in force — and the refusal message even suggested it.
+    """
+    from hltv_notify.state.multikill import MultikillTracker
+
+    item = settings.get("multikill")
+    assert settings.parse_value(item, "1") is None
+    assert settings.parse_value(item, "2") == 2
+    assert settings.parse_value(item, "off") == 0        # zero still means off
+    assert item.smallest_on == MultikillTracker(1).threshold
+    assert settings.range_hint(item) == "off, or 2-5"
+
+
+def test_clamping_never_turns_off_into_a_threshold(config):
+    """`clamp` has to keep zero, or a button press meaning "off" would land on
+    the smallest working value instead."""
+    item = settings.get("multikill")
+    assert item.clamp(0) == 0
+    assert item.clamp(1) == 2
+    assert item.clamp(99) == 5
+
+
+def test_the_umbrella_variable_is_not_a_field(monkeypatch):
+    """PHASE_ALERTS is resolved from the environment and has no field.
+
+    A field nothing reads is a trap: `Config(phase_alerts=True)` would look
+    like it turned both alerts on and would do nothing at all.
+    """
+    from hltv_notify.config import Config
+
+    assert not hasattr(Config(), "phase_alerts")
+    monkeypatch.setenv("PHASE_ALERTS", "true")
+    both = Config()
+    assert both.half_alerts and both.overtime_alerts
+    monkeypatch.setenv("OVERTIME_ALERTS", "false")
+    assert Config().half_alerts and not Config().overtime_alerts

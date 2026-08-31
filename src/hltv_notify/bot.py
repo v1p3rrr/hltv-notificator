@@ -789,7 +789,7 @@ class CommandBot:
             current = self._setting_values(chat_id)[name]
             return (f"<b>{fmt.escape(item.label)}</b>: {item.describe(current)}\n"
                     f"{fmt.escape(item.summary)}\n"
-                    f"Change it: /settings {name} {item.minimum}-{item.maximum}, "
+                    f"Change it: /settings {name} <{prefs.range_hint(item)}>, "
                     f"or /settings {name} default")
 
         raw = parts[1].lower()
@@ -802,18 +802,25 @@ class CommandBot:
         value = prefs.parse_value(item, raw)
         if value is None:
             return (f"I could not read {_quoted(parts[1])}.\n"
-                    f"{fmt.escape(item.label)} takes {item.minimum}-{item.maximum}, "
-                    "or off.")
+                    f"{fmt.escape(item.label)} takes {prefs.range_hint(item)}.")
         if value < 0:
             # "on" for a numeric setting means "back to the service default".
-            self.storage.clear_setting(chat_id, name)
-            value = prefs.default_for(self.config, name)
-            if value <= 0:
+            restored = prefs.default_for(self.config, name)
+            if restored <= 0:
                 # The default is itself "off", so there is nothing to return
-                # to. Saying so beats silently doing nothing.
+                # to — and whatever they had set STAYS. Clearing it first and
+                # discovering that afterwards is how a command meant to turn
+                # something on ended up deleting the value that was keeping it
+                # on, and saying nothing about it.
+                current = self.storage.setting(chat_id, name, 0)
+                keeping = (f"\nYours stays at {item.describe(current)}."
+                           if current > 0 else "")
                 return (f"The service default for <b>{fmt.escape(item.label)}</b> "
-                        f"is off. Give a number: /settings {name} "
-                        f"{max(1, item.minimum)}")
+                        f"is off, so there is nothing to turn back on. "
+                        f"Give a number: /settings {name} {item.smallest_on}"
+                        f"{keeping}")
+            self.storage.clear_setting(chat_id, name)
+            value = restored
         else:
             value = item.clamp(value)
             self.storage.set_setting(chat_id, name, value)

@@ -44,12 +44,19 @@ class Setting:
     default: Callable     # taken from the Config
     minimum: int = 0
     maximum: int = 99
+    # The smallest value that is not "off" and that the service will really
+    # honour. It is not always `minimum + 1`: the multikill tracker floors its
+    # threshold at 2, so accepting 1 would store a number the alerts ignore and
+    # report it back as if it were in force. 0 keeps the meaning "off".
+    smallest_on: int = 1
     presets: Tuple[int, ...] = ()
     unit: str = ""
     boolean: bool = False
 
     def clamp(self, value: int) -> int:
-        return max(self.minimum, min(self.maximum, value))
+        if value <= 0:
+            return 0
+        return max(self.smallest_on, min(self.maximum, value))
 
     def describe(self, value: int) -> str:
         """The value as a person reads it."""
@@ -77,7 +84,9 @@ SETTINGS: Tuple[Setting, ...] = (
         # silently overrides a number is exactly the kind of pair that leaves
         # someone staring at a threshold of 4 wondering why nothing arrives.
         default=lambda c: c.multikill_threshold if c.multikill_alerts else 0,
-        minimum=0, maximum=5, presets=(0, 3, 4, 5), unit="kills",
+        # smallest_on is 2 and not 1 because MultikillTracker raises its own
+        # floor to 2: a "1" here would be a threshold the alerts never use.
+        minimum=0, maximum=5, smallest_on=2, presets=(0, 3, 4, 5), unit="kills",
     ),
     Setting(
         name="comeback",
@@ -150,8 +159,20 @@ def parse_value(item: Setting, raw: str) -> Optional[int]:
         return -1
     if text.isdigit():
         value = int(text)
-        return value if item.minimum <= value <= item.maximum else None
+        if value == 0:
+            return 0
+        if item.smallest_on <= value <= item.maximum:
+            return value
+        # Out of range, or between "off" and the smallest value that works.
+        return None
     return None
+
+
+def range_hint(item: Setting) -> str:
+    """What a person may type, in the words the refusal uses."""
+    if item.boolean:
+        return "on or off"
+    return f"off, or {item.smallest_on}-{item.maximum}"
 
 
 def summary_lines(values: Dict[str, int]) -> List[str]:

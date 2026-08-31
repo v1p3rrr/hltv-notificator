@@ -358,3 +358,50 @@ def test_a_choice_already_made_under_the_new_name_wins(tmp_path):
     assert storage.setting("555", "half", 9) == 1
     assert storage.setting("555", "overtime", 9) == 0
     storage.close()
+
+
+# ---------- the four findings from the review of the split ----------
+
+def test_an_old_e12_mute_still_covers_the_overtime(tmp_path):
+    """Three stores hold an event type, and the split has to reach all three.
+
+    The journal's keys and the `phase` setting were migrated; the per-team
+    mute list was not, so someone who had silenced "half / overtime" started
+    receiving overtimes again.
+    """
+    from hltv_notify.state.db import Storage
+
+    path = tmp_path / "mutes.db"
+    storage = Storage(path)
+    storage.add_subscriber("555")
+    storage.add_team("555", 9565, "vitality", "Vitality")
+    storage.set_team_mutes("555", 9565, ["E12"])
+    storage.conn.execute("DELETE FROM meta WHERE key = 'e12_mutes_cover_e13'")
+    storage.close()
+
+    storage = Storage(path)
+    assert set(storage.team_mutes("555", 9565)) == {"E12", "E13"}
+    storage.close()
+
+
+def test_the_mute_migration_leaves_other_teams_alone_and_runs_once(tmp_path):
+    from hltv_notify.state.db import Storage
+
+    path = tmp_path / "mutes.db"
+    storage = Storage(path)
+    storage.add_subscriber("555")
+    storage.add_team("555", 1, "a", "A")
+    storage.add_team("555", 2, "b", "B")
+    storage.set_team_mutes("555", 1, ["E9"])        # nothing to do here
+    storage.set_team_mutes("555", 2, ["E12"])
+    storage.conn.execute("DELETE FROM meta WHERE key = 'e12_mutes_cover_e13'")
+    storage.close()
+
+    storage = Storage(path)
+    assert storage.team_mutes("555", 1) == ["E9"]
+    assert set(storage.team_mutes("555", 2)) == {"E12", "E13"}
+    # Un-muting E13 afterwards must stick: the migration does not run again.
+    storage.set_team_mutes("555", 2, ["E12"])
+    assert storage._migrate_overtime_mutes() == 0
+    assert storage.team_mutes("555", 2) == ["E12"]
+    storage.close()

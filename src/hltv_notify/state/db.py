@@ -190,13 +190,13 @@ CREATE TABLE IF NOT EXISTS meta (
 
 log = logging.getLogger(__name__)
 
-# The reminder key before it carried the start: E10:<match>:remind:<minutes>,
-# optionally behind the recipient prefix added by adopt_legacy_event_keys.
 # The overtime alert before it became its own type: E12:<match>:map:<n>:overtime:<k>,
 # optionally behind the recipient prefix.
 LEGACY_OVERTIME_KEY_RE = re.compile(
     r"^(?P<prefix>[^|]*\|)?E12:(?P<rest>\d+:map:\d+:overtime:\d+)$")
 
+# The reminder key before it carried the start: E10:<match>:remind:<minutes>,
+# optionally behind the recipient prefix added by adopt_legacy_event_keys.
 LEGACY_REMINDER_KEY_RE = re.compile(
     r"^(?P<prefix>[^|]*\|)?E10:(?P<match>\d+):remind:(?P<minutes>\d+)$")
 
@@ -291,6 +291,7 @@ class Storage:
         self._migrate_reminder_keys()
         self._migrate_overtime_keys()
         self._migrate_phase_setting()
+        self._migrate_overtime_mutes()
 
     def _migrate_overtime_keys(self) -> int:
         """The overtime alert moved from E12 to E13 when it became its own type.
@@ -332,6 +333,38 @@ class Storage:
         if rewritten:
             log.info("overtime alerts moved from E12 to E13: %d record(s)", rewritten)
         return rewritten
+
+    def _migrate_overtime_mutes(self) -> int:
+        """A mute on E12 used to silence the overtime as well.
+
+        Three stores hold an event type, and the split has to reach all of
+        them: the journal's keys (`_migrate_overtime_keys`), the per-person
+        setting (`_migrate_phase_setting`) and this one, the per-team mute
+        list. Someone who ran `/mute <team> E12` back when that button read
+        "half / overtime" meant both, so E13 is added beside it — otherwise
+        overtimes they had explicitly silenced start arriving again.
+
+        Its own flag rather than sharing `phase_setting_split`: a database
+        that already ran the settings half of the split must still get this.
+        """
+        if self.get_meta("e12_mutes_cover_e13"):
+            return 0
+        changed = 0
+        for row in self.conn.execute(
+                "SELECT chat_id, team_id, muted_events FROM teams "
+                "WHERE muted_events LIKE '%E12%'"):
+            muted = [part for part in (row["muted_events"] or "").split(",") if part]
+            if "E12" not in muted or "E13" in muted:
+                # The LIKE is only a prefilter; the list is what decides.
+                continue
+            self.conn.execute(
+                "UPDATE teams SET muted_events = ? WHERE chat_id = ? AND team_id = ?",
+                (",".join(sorted(set(muted) | {"E13"})), row["chat_id"], row["team_id"]))
+            changed += 1
+        self.set_meta("e12_mutes_cover_e13", iso(utcnow()))
+        if changed:
+            log.info("E12 mutes extended to cover E13: %d team(s)", changed)
+        return changed
 
     def _migrate_phase_setting(self) -> int:
         """`/settings phase` became `/settings half` and `/settings overtime`.

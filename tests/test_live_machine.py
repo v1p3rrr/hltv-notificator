@@ -181,8 +181,7 @@ def test_the_live_phase_is_recorded_for_the_page_machine(storage, config):
 
 def phase_config(config):
     from dataclasses import replace
-    return replace(config, phase_alerts=True, half_alerts=True,
-                   overtime_alerts=True)
+    return replace(config, half_alerts=True, overtime_alerts=True)
 
 
 def test_e12_is_off_by_default(storage, config):

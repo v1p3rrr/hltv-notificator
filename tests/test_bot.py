@@ -533,3 +533,56 @@ def test_reading_settings_does_not_create_a_subscriber(bot):
     assert storage.get_subscriber(CHAT) is None
     send(command_bot, "/settings")
     assert storage.get_subscriber(CHAT) is not None
+
+
+def test_settings_on_does_not_eat_the_value_that_was_keeping_it_on(tmp_path,
+                                                                   monkeypatch):
+    """"on" means "back to the service default" for a numeric setting.
+
+    It used to clear the stored row first and discover only afterwards that
+    the default was itself off — so the command a person types to turn
+    something ON deleted the value keeping it on, and said nothing about it.
+    """
+    from hltv_notify.config import Config
+    from hltv_notify.state.db import Storage
+
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", CHAT)
+    cfg = Config(chat_id=CHAT, bot_token="t", multikill_alerts=False,
+                 multikill_threshold=4)
+    storage = Storage(tmp_path / "on.db")
+    telegram = FakeTelegram()
+    command_bot = CommandBot(storage, cfg, telegram, FakeSchedulePoller(),
+                             FakePoller(storage, FakeSupervisor({})))
+
+    send(command_bot, "/settings multikill 3")
+    send(command_bot, "/settings multikill on")
+
+    assert storage.setting(CHAT, "multikill", 0) == 3
+    reply = telegram.sent[-1][1]
+    assert "nothing to turn back on" in reply
+    assert "Yours stays at 3 kills" in reply
+    # And the number it suggests is one the service will actually honour.
+    assert "/settings multikill 2" in reply
+    storage.close()
+
+
+def test_settings_on_restores_a_default_that_is_usable(tmp_path, monkeypatch):
+    from hltv_notify.config import Config
+    from hltv_notify.state.db import Storage
+
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", CHAT)
+    cfg = Config(chat_id=CHAT, bot_token="t", multikill_alerts=True,
+                 multikill_threshold=4)
+    storage = Storage(tmp_path / "on2.db")
+    telegram = FakeTelegram()
+    command_bot = CommandBot(storage, cfg, telegram, FakeSchedulePoller(),
+                             FakePoller(storage, FakeSupervisor({})))
+
+    send(command_bot, "/settings multikill 3")
+    send(command_bot, "/settings multikill on")
+    # The row is gone, so a later change to the default reaches them.
+    assert storage.conn.execute(
+        "SELECT COUNT(*) FROM subscriber_settings WHERE chat_id = ? AND name = 'multikill'",
+        (CHAT,)).fetchone()[0] == 0
+    assert "4 kills" in telegram.sent[-1][1]
+    storage.close()
