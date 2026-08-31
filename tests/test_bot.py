@@ -6,6 +6,7 @@ but that the reply contains something you can judge the state by.
 """
 
 import asyncio
+import re
 from datetime import timedelta
 
 import pytest
@@ -586,3 +587,67 @@ def test_settings_on_restores_a_default_that_is_usable(tmp_path, monkeypatch):
         (CHAT,)).fetchone()[0] == 0
     assert "4 kills" in telegram.sent[-1][1]
     storage.close()
+
+
+# ---------- every reply has to survive parse_mode=HTML ----------
+
+# What Telegram's HTML parser accepts. Anything else is a 400 and a message
+# that never arrives — and the failure is invisible from inside the service,
+# because the bot only logs "could not reply".
+TELEGRAM_TAGS = ("b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+                 "a", "code", "pre", "tg-spoiler", "blockquote", "span")
+
+
+def unsupported_tags(text):
+    """Whatever Telegram would read as a tag and refuse."""
+    found = []
+    for tag in re.findall(r"<[^>\n]*>", text or ""):
+        name = re.sub(r"^</?", "", tag).rstrip(">").split()[0].lower() if tag.strip("<>/") else ""
+        if name not in TELEGRAM_TAGS:
+            found.append(tag)
+    return found
+
+
+def test_a_placeholder_in_a_reply_is_not_a_tag(bot):
+    """`/settings multikill` used to answer with `<off, or 2-5>`.
+
+    Telegram reads that as an unsupported start tag, answers 400, and the
+    person gets nothing at all. The codebase already knew the trap — /help
+    escapes its angle-bracketed arguments for exactly this reason.
+    """
+    command_bot, telegram, _ = bot
+    send(command_bot, "/settings multikill")
+    assert unsupported_tags(telegram.sent[-1][1]) == []
+
+
+def test_no_command_answers_with_something_telegram_cannot_parse(bot):
+    """A net under the whole class, not just the one that was broken."""
+    command_bot, telegram, storage = bot
+    storage.add_subscriber(CHAT)
+    storage.add_team(CHAT, 12857, "forze-reload", "FORZE Reload")
+
+    for text in ["/help", "/menu", "/status", "/live", "/next", "/teams",
+                 "/settings", "/settings multikill", "/settings comeback",
+                 "/settings half", "/settings card", "/settings nonsense",
+                 "/settings multikill banana", "/settings multikill 1",
+                 "/settings multikill on", "/settings multikill 3",
+                 "/settings multikill default", "/remind", "/tz",
+                 "/mute", "/mute 12857", "/unmute", "/untrack",
+                 "/track", "/pause", "/resume", "/whoami", "/nonsense"]:
+        send(command_bot, text)
+        bad = unsupported_tags(telegram.sent[-1][1])
+        assert bad == [], f"{text} answered with {bad}"
+
+
+def test_the_settings_hint_names_a_value_that_would_be_accepted(bot):
+    """The suggestion has to be one the parser will take.
+
+    It once suggested `/settings multikill 1`, which parse_value refuses.
+    """
+    command_bot, telegram, _ = bot
+    for item in prefs.SETTINGS:
+        send(command_bot, f"/settings {item.name}")
+        reply = telegram.sent[-1][1]
+        suggested = re.search(rf"/settings {item.name} (\S+?),", reply)
+        assert suggested, reply
+        assert prefs.parse_value(item, suggested.group(1)) is not None

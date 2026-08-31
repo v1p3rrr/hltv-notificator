@@ -42,12 +42,13 @@ class Setting:
     label: str            # on a button
     summary: str          # in /settings and /help
     default: Callable     # taken from the Config
-    minimum: int = 0
     maximum: int = 99
     # The smallest value that is not "off" and that the service will really
-    # honour. It is not always `minimum + 1`: the multikill tracker floors its
-    # threshold at 2, so accepting 1 would store a number the alerts ignore and
-    # report it back as if it were in force. 0 keeps the meaning "off".
+    # honour. Usually 1, but the multikill tracker floors its threshold at 2,
+    # so accepting 1 there would store a number the alerts ignore and report it
+    # back as if it were in force. Zero is always "off" and always allowed,
+    # which is why there is no separate `minimum`: a field nothing reads is a
+    # trap, and this registry had one for exactly one commit.
     smallest_on: int = 1
     presets: Tuple[int, ...] = ()
     unit: str = ""
@@ -86,14 +87,14 @@ SETTINGS: Tuple[Setting, ...] = (
         default=lambda c: c.multikill_threshold if c.multikill_alerts else 0,
         # smallest_on is 2 and not 1 because MultikillTracker raises its own
         # floor to 2: a "1" here would be a threshold the alerts never use.
-        minimum=0, maximum=5, smallest_on=2, presets=(0, 3, 4, 5), unit="kills",
+        maximum=5, smallest_on=2, presets=(0, 3, 4, 5), unit="kills",
     ),
     Setting(
         name="comeback",
         label="Comeback",
         summary="Swing in the score difference worth a line on a finished map; 0 off",
         default=lambda c: c.comeback_rounds,
-        minimum=0, maximum=16, presets=(0, 6, 9, 12), unit="round swing",
+        maximum=16, presets=(0, 6, 9, 12), unit="round swing",
     ),
     # Two knobs and not one: a half happens on every map and is routine, an
     # overtime usually does not happen at all and is the reason someone wants
@@ -104,21 +105,21 @@ SETTINGS: Tuple[Setting, ...] = (
         label="Half time",
         summary="A message when the sides swap",
         default=lambda c: 1 if c.half_alerts else 0,
-        minimum=0, maximum=1, presets=(0, 1), boolean=True,
+        maximum=1, presets=(0, 1), boolean=True,
     ),
     Setting(
         name="overtime",
         label="Overtime",
         summary="A message at the start of every overtime",
         default=lambda c: 1 if c.overtime_alerts else 0,
-        minimum=0, maximum=1, presets=(0, 1), boolean=True,
+        maximum=1, presets=(0, 1), boolean=True,
     ),
     Setting(
         name="card",
         label="Live score card",
         summary="The message kept up to date round by round during a map",
         default=lambda c: 1 if c.live_message else 0,
-        minimum=0, maximum=1, presets=(0, 1), boolean=True,
+        maximum=1, presets=(0, 1), boolean=True,
     ),
 )
 
@@ -169,10 +170,20 @@ def parse_value(item: Setting, raw: str) -> Optional[int]:
 
 
 def range_hint(item: Setting) -> str:
-    """What a person may type, in the words the refusal uses."""
+    """What a person may type, in the words the refusal uses.
+
+    Plain prose, never angle brackets: replies go out with parse_mode=HTML,
+    and Telegram answers 400 to a tag it does not know — so `<off, or 2-5>`
+    is a message that never arrives.
+    """
     if item.boolean:
         return "on or off"
     return f"off, or {item.smallest_on}-{item.maximum}"
+
+
+def example(item: Setting) -> str:
+    """A value worth showing in "change it like this"."""
+    return "on" if item.boolean else str(item.smallest_on)
 
 
 def summary_lines(values: Dict[str, int]) -> List[str]:

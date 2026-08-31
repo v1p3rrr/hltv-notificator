@@ -179,6 +179,14 @@ missed the third, so a subscriber who had muted "half / overtime" started
 receiving overtimes again. Each migration gets its OWN flag in `meta`: sharing
 one means a database that already ran the earlier half never gets the rest.
 
+**Angle brackets in a reply are HTML, and Telegram answers 400.** Replies go
+out with `parse_mode=HTML`, so a placeholder like `<off, or 2-5>` is an
+unsupported start tag and the message never arrives — and the failure is
+invisible from inside, because the bot only logs "could not reply". `_help_text`
+already escapes its arguments for this reason; anything else that wants angle
+brackets must escape them too, or say it in prose. `tests/test_bot.py` now runs
+every command and checks the reply against Telegram's tag list.
+
 **A setting must not accept a value the code overrides.** `MultikillTracker`
 floors its threshold at 2, so `/settings multikill 1` stored a number the
 alerts never use and reported it back as if it were in force — the refusal
@@ -190,6 +198,12 @@ keeps zero as zero so "off" is still reachable.
 first and only then discovered the default was itself off, so the command a
 person types to turn something ON deleted the value that was keeping it on.
 Work out the replacement first, and say what happened to theirs.
+
+**A field nothing reads is a trap, and this has now happened twice.**
+`Setting.minimum` survived one commit after `clamp` and `parse_value` stopped
+consulting it, so a future `minimum=3` would have been silently ignored; and
+before it, `Config.phase_alerts`. If a field stops being read, delete it in the
+same change.
 
 **An umbrella environment variable must not also be a field.** `PHASE_ALERTS`
 is the fallback both `HALF_ALERTS` and `OVERTIME_ALERTS` read, and it is
@@ -491,7 +505,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 499 tests
+python -m pytest                                    # 502 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

@@ -350,9 +350,12 @@ class Storage:
         if self.get_meta("e12_mutes_cover_e13"):
             return 0
         changed = 0
-        for row in self.conn.execute(
-                "SELECT chat_id, team_id, muted_events FROM teams "
-                "WHERE muted_events LIKE '%E12%'"):
+        # Materialised before the loop, like the sibling migrations: updating
+        # the table a cursor is still walking is not something to rely on.
+        rows = list(self.conn.execute(
+            "SELECT chat_id, team_id, muted_events FROM teams "
+            "WHERE muted_events LIKE '%E12%'"))
+        for row in rows:
             muted = [part for part in (row["muted_events"] or "").split(",") if part]
             if "E12" not in muted or "E13" in muted:
                 # The LIKE is only a prefilter; the list is what decides.

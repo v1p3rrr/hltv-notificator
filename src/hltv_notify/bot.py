@@ -789,7 +789,8 @@ class CommandBot:
             current = self._setting_values(chat_id)[name]
             return (f"<b>{fmt.escape(item.label)}</b>: {item.describe(current)}\n"
                     f"{fmt.escape(item.summary)}\n"
-                    f"Change it: /settings {name} <{prefs.range_hint(item)}>, "
+                    f"Takes {prefs.range_hint(item)}.\n"
+                    f"Change it: /settings {name} {prefs.example(item)}, "
                     f"or /settings {name} default")
 
         raw = parts[1].lower()
