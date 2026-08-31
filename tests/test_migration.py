@@ -198,3 +198,50 @@ def test_key_adoption_runs_only_once(legacy_db):
             storage.conn.execute("SELECT idempotency_key FROM sent_events")]
     assert keys == ["111|E6:1:map:1:result:13-10"]
     storage.close()
+
+
+def test_reminder_keys_gain_the_start_they_now_carry(tmp_path):
+    """E10's key gained the start so a moved match gets a new reminder. What
+    is already in the journal has to be rewritten with it, or the first run
+    after the upgrade sends a second reminder for a start already announced.
+    """
+    from datetime import timedelta
+
+    from hltv_notify.config import Config
+    from hltv_notify.notify.outbox import Notifier
+    from hltv_notify.reminders import ReminderScheduler
+    from hltv_notify.state.db import iso, utcnow
+
+    path = tmp_path / "old.db"
+    chat = "111"
+    start = utcnow() + timedelta(minutes=10)
+
+    # A database written by the previous version: the reminder has gone out.
+    first = Storage(path)
+    first.add_subscriber(chat)
+    first.add_team(chat, 12857, "forze-reload", "FORZE Reload")
+    first.add_reminder(chat, 15)
+    first.upsert_match(
+        match_id=900, team_id=12857, opponent_id=1, opponent_name="Color",
+        event_name="GLuck", start_utc=start, url="https://www.hltv.org/matches/900/x",
+        snapshot={}, snapshot_hash="h")
+    first.link_match_team(900, 12857)
+    first.conn.execute(
+        "INSERT INTO sent_events (idempotency_key, event_type, match_id, created_utc) "
+        "VALUES (?, 'E10', 900, ?)", (f"{chat}|E10:900:remind:15", iso(utcnow())))
+    first.set_meta("e10_keys_have_start", "")     # the flag the old version lacked
+    first.close()
+
+    # The new code opens it and rewrites the key on the way in.
+    storage = Storage(path)
+    keys = [row["idempotency_key"] for row in
+            storage.conn.execute("SELECT idempotency_key FROM sent_events")]
+    assert keys == [f"{chat}|E10:900:{iso(start)}:remind:15"]
+
+    # And therefore says nothing about a start it has already announced.
+    config = Config(chat_id=chat, bot_token="t")
+    notifier = Notifier(storage, config, telegram=None)
+    for event in ReminderScheduler(storage, config).due():
+        notifier.enqueue(event)
+    assert storage.pending_count() == 0
+    storage.close()

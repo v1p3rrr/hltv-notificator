@@ -134,6 +134,14 @@ acknowledgements — and they share one budget. A limiter per sender leaves
 everybody inside their own rules and the total over. Per-CHAT spacing stays
 in the queue, because that is also where the ordering guarantee is.
 
+**Changing a key format needs a migration in the same commit.** The journal
+is keyed by the old format, so without one the first run after the upgrade sees
+nothing matching and sends again what it has already sent. There are two of
+them now: `adopt_legacy_event_keys` (the chat prefix) and
+`_migrate_reminder_keys` (E10 gaining the start). Both are one-off under a flag
+in `meta`, and `tests/test_migration.py` opens an old database with the current
+code.
+
 **A key must carry everything the message asserts.** E2 has the new time in
 it; E10 did not, so a reminder fired once for the old time and the journal
 then blocked it forever — a match moved after its reminder went out got no
@@ -363,7 +371,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 436 tests
+python -m pytest                                    # 437 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

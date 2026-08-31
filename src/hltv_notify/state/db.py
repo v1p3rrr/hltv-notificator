@@ -10,6 +10,8 @@ would lose the notification.
 from __future__ import annotations
 
 import json
+import logging
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -163,6 +165,14 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 
+log = logging.getLogger(__name__)
+
+# The reminder key before it carried the start: E10:<match>:remind:<minutes>,
+# optionally behind the recipient prefix added by adopt_legacy_event_keys.
+LEGACY_REMINDER_KEY_RE = re.compile(
+    r"^(?P<prefix>[^|]*\|)?E10:(?P<match>\d+):remind:(?P<minutes>\d+)$")
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -240,6 +250,63 @@ class Storage:
         if team_columns and "chat_id" not in team_columns:
             self.conn.execute("ALTER TABLE teams RENAME TO teams_without_owner")
             self.conn.executescript(SCHEMA)
+
+        self._migrate_reminder_keys()
+
+    def _migrate_reminder_keys(self) -> int:
+        """Give the reminder keys already in the journal the start they now carry.
+
+        E10's key used to be `E10:<match>:remind:<minutes>` and now carries the
+        start as well, so that a match moved after its reminder went out gets a
+        new one. Without rewriting what is already there, the first run after
+        the upgrade sees no match for the new key and sends a second reminder
+        for a start it has already announced — the same class of mistake as the
+        chat prefix before it (`adopt_legacy_event_keys`).
+
+        The start is taken the way the reminder itself takes it: the pending
+        time where a reschedule is being debounced, the confirmed one
+        otherwise. So the rewritten key matches only while the match still
+        starts when it did — and if it has since been moved, a reminder for the
+        new time is exactly what should happen.
+        """
+        if self.get_meta("e10_keys_have_start"):
+            return 0
+        rewritten = 0
+        for table in ("sent_events", "outbox"):
+            rows = list(self.conn.execute(
+                f"SELECT rowid AS row_id, idempotency_key FROM {table} "
+                "WHERE idempotency_key LIKE '%E10:%:remind:%'"))
+            for row in rows:
+                found = LEGACY_REMINDER_KEY_RE.match(row["idempotency_key"])
+                if not found:
+                    continue
+                start = self._effective_start(int(found.group("match")))
+                if start is None:
+                    # The match itself is gone: there is nothing to rebuild the
+                    # key from, and nothing left to remind anybody about.
+                    continue
+                new_key = (f"{found.group('prefix') or ''}E10:{found.group('match')}:"
+                           f"{start}:remind:{found.group('minutes')}")
+                # OR IGNORE because idempotency_key is unique: if the new form
+                # is somehow already there, the old row is simply redundant.
+                self.conn.execute(
+                    f"UPDATE OR IGNORE {table} SET idempotency_key = ? WHERE rowid = ?",
+                    (new_key, row["row_id"]))
+                rewritten += 1
+        self.set_meta("e10_keys_have_start", iso(utcnow()))
+        if rewritten:
+            log.info("reminder keys given their start time: %d record(s)", rewritten)
+        return rewritten
+
+    def _effective_start(self, match_id: int) -> Optional[str]:
+        """The start a reminder for this match would be about right now."""
+        row = self.conn.execute(
+            "SELECT COALESCE(s.pending_start_utc, m.start_utc) AS start_utc "
+            "FROM matches m LEFT JOIN match_state s ON s.match_id = m.match_id "
+            "WHERE m.match_id = ?", (match_id,)).fetchone()
+        if row is None or not row["start_utc"]:
+            return None
+        return iso(parse_iso(row["start_utc"]))
 
     def close(self) -> None:
         self.conn.close()

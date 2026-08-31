@@ -89,7 +89,16 @@ the message asserts and it stops working the other way round. E10 carries the
 start for that reason: without it a reminder that had fired once could never
 fire again, so a match moved after its reminder went out got none for the time
 it actually started, while E2 — which has the new time in its key — was
-delivered correctly all along. The hour in the E8 key is a
+delivered correctly all along.
+
+Changing the shape of a key is therefore a migration, not an edit: the journal
+is keyed by the old form and would match nothing, so the first run after the
+upgrade would send again everything it had already sent. There are two such
+migrations, both one-off under a flag in `meta` — `adopt_legacy_event_keys`
+for the recipient prefix and `_migrate_reminder_keys` for the start in E10.
+The second one rebuilds the start the way the reminder itself takes it (the
+pending time during a debounce, the confirmed one otherwise), so a match that
+has since been moved deliberately fails to match and gets its new reminder. The hour in the E8 key is a
 compromise: we do not send "I have gone blind" on every failed attempt, but
 neither do we mute the problem forever.
 
