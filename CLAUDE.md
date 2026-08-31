@@ -240,7 +240,10 @@ forever. Use the page's own memo, `page_seen_utc`.
 **A message that continues another must not overtake it.** The card goes
 straight to Telegram, events wait in the queue: after releasing a held E4 the
 worker holds the card until that message has left the queue. Same class of bug
-as E5 racing its own score.
+as E5 racing its own score. **The guarantee is per chat**, which is what makes
+the queue's concurrency safe: `_drain_chat` serves one chat strictly in queue
+order, and only different chats are served at the same time. Two messages for
+one person must never end up in two tasks.
 
 **The live message is not opened during the warmup.** It IS the map's card —
 it carries E5, it says the map has started — so creating it at 0:0 in a warmup
@@ -330,7 +333,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 421 tests
+python -m pytest                                    # 423 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

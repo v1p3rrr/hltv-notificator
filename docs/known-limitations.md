@@ -239,12 +239,18 @@ of subscribers. Raising the rate is not the answer (see the ceiling in
 budget at all.
 
 **Wall two: outgoing Telegram, against the number of recipients.** An event is
-rendered and queued per recipient, and the live score card is worse: its key is
-`(chat_id, match_id, map_number)`, so every subscriber has their own message and
-every one of them is edited every `LIVE_EDIT_SECONDS`. A hundred people watching
-one map is ten edits a second; a few hundred consumes Telegram's whole budget on
-the score of a single map. This is structural rather than a setting: the message
-is per chat because the score is turned around to face each recipient's team.
+rendered and queued per recipient. The queue delivers those in parallel across
+chats, so the fan-out itself is no longer the problem — but everything shares
+Telegram's ceiling of roughly thirty messages a second, and the live score card
+spends it fastest. Its key is `(chat_id, match_id, map_number)`: every
+subscriber has their own message, and every one of them is edited every
+`LIVE_EDIT_SECONDS`. A hundred people watching one map is ten edits a second;
+three hundred is the whole budget gone on the score of a single map, with
+nothing left for the events. Note what the binding limit is not: one edit per
+ten seconds is far inside the per-chat allowance of about one a second. It is
+the sum across chats that runs out, which is why no setting fixes it — the
+message is per chat because the score is turned around to face each recipient's
+team.
 
 What a public version would need is therefore a different delivery shape, not a
 bigger machine: one post per team into a channel instead of N private messages,
@@ -256,18 +262,16 @@ Two smaller things become real at that size as well: every chat that writes to
 the bot becomes a subscriber row, which with the whitelist off is unbounded, and
 command handling has no per-chat rate limit.
 
-## The queue's send spacing is stricter than Telegram requires
+## The queue's throughput is bounded by Telegram, not by the queue
 
-`SEND_INTERVAL_SECONDS = 1.2` in `notify/outbox.py` is applied between every two
-messages, whoever they are addressed to. It is derived from the right number —
-Telegram tolerates about one message per second **into one chat** — but that
-limit is per chat, while across *different* chats the guidance is roughly thirty
-a second. For a single subscriber the two are the same thing, which is the case
-the service was written for; for a fan-out it is some twenty-five times more
-cautious than it has to be.
+The two limits Telegram works to are different in kind, and the queue now
+answers each with its own thing: `SEND_INTERVAL_SECONDS` (1.2 s) spaces messages
+**within one chat**, and `GLOBAL_SENDS_PER_SECOND` (25) is all that different
+chats share. Chats are drained in parallel, each strictly in queue order, so a
+fan-out to twenty people takes about a second instead of the twenty-four it used
+to — while two messages for the same person still cannot overtake each other,
+which is what the live card depends on.
 
-Deliberately left alone rather than tuned blind: sending concurrently means
-holding the ordering guarantee that a message continuing another must not
-overtake it (see "the live message carries E5"). That guarantee is per chat, so
-the shape that would work is per-chat spacing with concurrency across chats and
-a global cap — worth doing when there is a fan-out to justify it, not before.
+What remains is Telegram's own ceiling of roughly thirty a second in total. The
+queue cannot go faster than that, and neither can anything else: it is the same
+budget the live card's edits are drawn from.

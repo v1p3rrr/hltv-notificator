@@ -345,8 +345,9 @@ back by a whole interval.
 **The live message is also the map's card: it carries E5.** The two used to be
 separate messages, and the order between them was always wrong. The reason is
 the two delivery paths: the live message goes straight to Telegram, while an
-event is only *queued* and the outbox worker wakes every five seconds and
-spaces sends 1.2 s apart. Measured on a real match: E5 queued at 09:13:24.905,
+event is only *queued*, and at the time the worker slept out five seconds
+between passes and spaced every send 1.2 s from every other. Measured on a real
+match: E5 queued at 09:13:24.905,
 the live message created at 09:13:25.035, E5 actually delivered at 09:13:28.189
 — the score for a map arrived three seconds before "the map has started".
 
@@ -422,6 +423,33 @@ connection, one per match, not frequent polling.
 
 `403` is handled separately from network failures: it is not an outage but a
 "back off". The pause is measured in minutes while page polling keeps working.
+
+## The queue's two rates
+
+Telegram's limits are of two kinds and the queue answers each with its own
+mechanism, because conflating them cost real delivery time.
+
+* **Within one chat** — `SEND_INTERVAL_SECONDS`, 1.2 s between messages. This is
+  also where the ordering guarantee lives: a chat's messages are sent one after
+  another in queue order, so the live card cannot overtake the "match started"
+  it continues.
+* **Across different chats** — `GLOBAL_SENDS_PER_SECOND`, 25, held by a single
+  pacer that every chat's worker passes through. This is the only thing two
+  recipients share.
+
+Chats are therefore drained in parallel (`MAX_CONCURRENT_CHATS` at a time, a
+bound on tasks rather than a rate) while each chat stays strictly sequential.
+
+The pause used to be applied between every two messages whoever they were for.
+For one subscriber — the case the service was written for — the two limits are
+the same thing, so nothing looked wrong; on a fan-out to twenty people one map
+result took twenty-four seconds to finish delivering, for a score that is only
+interesting while the match is running. The same batch now takes about a
+second. What cannot be got around is Telegram's own ceiling: the queue and the
+live card's edits draw on the same thirty a second.
+
+Neither rate applies in `DRY_RUN`: nothing leaves for Telegram, and pacing the
+log helps nobody.
 
 ## Who a notification goes to
 

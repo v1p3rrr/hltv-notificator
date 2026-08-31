@@ -167,3 +167,62 @@ def test_final_pass_respects_its_deadline(storage, config):
 
     assert telegram.sent == []
     assert storage.pending_count() == 3          # nothing was lost
+
+
+def test_a_fan_out_does_not_queue_people_behind_each_other(storage, config):
+    """The per-chat pause is per chat.
+
+    Telegram tolerates about one message a second into ONE chat and some
+    thirty across different ones. Spacing every message from every other by
+    1.2 s made twenty recipients of one map result wait twenty-four seconds
+    for a score that is only interesting while the match is on.
+    """
+    import time
+    from dataclasses import replace
+
+    chats = [str(700 + n) for n in range(20)]
+    for chat in chats:
+        storage.add_subscriber(chat)
+    telegram = SlowTelegram()
+    live = Notifier(storage, replace(config, dry_run=False, chat_id=",".join(chats)),
+                    telegram)
+    live.enqueue(pending_event(1))
+    assert storage.pending_count() == len(chats)
+
+    started = time.monotonic()
+    asyncio.run(live._drain())
+    elapsed = time.monotonic() - started
+
+    assert sorted(telegram.sent) == sorted(chats)
+    assert storage.pending_count() == 0
+    # One per chat, so nobody waits on anybody: only the global pacer applies,
+    # which is 25 a second. Sequentially this was 1.2 s x 19 = 22.8 s.
+    assert elapsed < 2.0
+
+
+def test_two_messages_for_one_person_keep_their_order_and_spacing(storage, config):
+    """Within a chat nothing changes: the live card continues the "match
+    started" it follows, so the two must not overtake each other."""
+    import time
+    from dataclasses import replace
+
+    from hltv_notify.notify import outbox as outbox_module
+
+    storage.add_subscriber(CHAT)
+    telegram = SlowTelegram()
+    live = Notifier(storage, replace(config, dry_run=False, chat_id=CHAT), telegram)
+    for number in (1, 2, 3):
+        live.enqueue(pending_event(number))
+
+    original = outbox_module.SEND_INTERVAL_SECONDS
+    outbox_module.SEND_INTERVAL_SECONDS = 0.05
+    try:
+        started = time.monotonic()
+        asyncio.run(live._drain())
+        elapsed = time.monotonic() - started
+    finally:
+        outbox_module.SEND_INTERVAL_SECONDS = original
+
+    assert telegram.sent == [CHAT, CHAT, CHAT]
+    # Two gaps between three messages, and they were really waited out.
+    assert elapsed >= 0.1

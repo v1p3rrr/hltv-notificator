@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Optional
+from typing import Dict, Optional
 
 from ..config import Config
 from ..models import Event
@@ -20,13 +20,26 @@ from .telegram import Telegram, TelegramError
 
 log = logging.getLogger(__name__)
 
-# Telegram tolerates roughly one message per second into ONE chat, and about
-# thirty a second across different ones. This pause is applied between every
-# two messages regardless of recipient, which for one subscriber — the case
-# this was written for — is the same thing, and for a fan-out is far stricter
-# than required. See docs/known-limitations.md before loosening it: sending
-# concurrently has to keep the per-chat ordering guarantee.
+# Telegram's two limits are different in kind, and so are the two things here
+# that answer them. Roughly one message per second into ONE chat: that is
+# SEND_INTERVAL_SECONDS, and it is also where the ordering guarantee lives, so
+# a chat's messages are always sent one after another in queue order. Roughly
+# thirty a second ACROSS different chats: that is GLOBAL_SENDS_PER_SECOND, and
+# it is the only thing different chats share.
+#
+# The pause used to be applied between every two messages whoever they were
+# for, which for one subscriber is the same thing and for a fan-out to fifty
+# people meant a minute to deliver one map result.
 SEND_INTERVAL_SECONDS = 1.2
+GLOBAL_SENDS_PER_SECOND = 25.0
+# How many chats are served at once. Not a rate limit — the pacer above is —
+# but a bound on the tasks in flight, so a thousand recipients do not become a
+# thousand coroutines all waiting on the same gate.
+MAX_CONCURRENT_CHATS = 16
+# Rows taken from the queue in one go, and the ceiling on one pass so that a
+# huge backlog cannot hold the worker forever and starve the retry timers.
+BATCH_SIZE = 50
+MAX_ROWS_PER_PASS = 1000
 MAX_ATTEMPTS = 8
 # How long the final pass gets on shutdown. Beyond that it is the caller's
 # call: it has its own timer, and behind that is SIGKILL from Docker.
@@ -45,6 +58,9 @@ class Notifier:
         # to arrive in order — the live card waits for the "match started" it
         # continues — and it costs nothing anywhere else.
         self._arrived = asyncio.Event()
+        # The global pacer, shared by every chat being served at once.
+        self._gate = asyncio.Lock()
+        self._last_send = 0.0
 
     def enqueue(self, event: Event) -> bool:
         """Queue the event for EVERYONE it concerns.
@@ -157,16 +173,76 @@ class Notifier:
         service has little time left, and sending as much as fits beats being
         killed mid-send.
         """
-        rows = self.storage.due_outbox()
-        for index, row in enumerate(rows):
+        handled = 0
+        while handled < MAX_ROWS_PER_PASS:
             if deadline is not None and time.monotonic() >= deadline:
-                log.warning("queue: out of time, %d left", len(rows) - index)
+                left = self.storage.pending_count()
+                if left:
+                    log.warning("queue: out of time, %d left", left)
                 return
-            await self._deliver(row)
-            if index + 1 < len(rows):
-                # The pause goes between messages, not after the last one: on
-                # shutdown a spare second is a second that may be missing.
-                await asyncio.sleep(SEND_INTERVAL_SECONDS)
+            rows = self.storage.due_outbox(limit=BATCH_SIZE)
+            if not rows:
+                return
+            await self._send_batch(rows, deadline)
+            handled += len(rows)
+            if len(rows) < BATCH_SIZE:
+                return
+
+    async def _send_batch(self, rows, deadline: Optional[float]) -> None:
+        """One batch: chats in parallel, each chat strictly in order.
+
+        Two messages for the same person may depend on each other — the live
+        card continues the "match started" it follows — so within a chat
+        nothing overtakes anything. Two different people share nothing but
+        Telegram's global rate, which `_pace` holds.
+        """
+        by_chat: Dict[str, list] = {}
+        for row in rows:
+            by_chat.setdefault(row["chat_id"] or self.config.main_chat_id, []).append(row)
+        if len(by_chat) == 1:
+            await self._drain_chat(next(iter(by_chat.values())), None, deadline)
+            return
+        limit = asyncio.Semaphore(MAX_CONCURRENT_CHATS)
+        await asyncio.gather(*(self._drain_chat(chat_rows, limit, deadline)
+                               for chat_rows in by_chat.values()))
+
+    async def _drain_chat(self, rows, limit: Optional[asyncio.Semaphore],
+                          deadline: Optional[float]) -> None:
+        if limit is not None:
+            await limit.acquire()
+        try:
+            for index, row in enumerate(rows):
+                if deadline is not None and time.monotonic() >= deadline:
+                    return
+                await self._pace()
+                await self._deliver(row)
+                if index + 1 < len(rows) and self._sending():
+                    # The pause goes between messages, not after the last one:
+                    # on shutdown a spare second is a second that may be
+                    # missing.
+                    await asyncio.sleep(SEND_INTERVAL_SECONDS)
+        finally:
+            if limit is not None:
+                limit.release()
+
+    async def _pace(self) -> None:
+        """Hold the rate Telegram allows across all chats together.
+
+        Skipped when nothing actually goes to Telegram: in DRY_RUN the
+        messages go to the log, and pacing the log helps nobody.
+        """
+        if not self._sending():
+            return
+        async with self._gate:
+            wait = self._last_send + 1.0 / GLOBAL_SENDS_PER_SECOND - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_send = time.monotonic()
+
+    def _sending(self) -> bool:
+        """Whether messages really leave for Telegram. In DRY_RUN they go to
+        the log instead, and neither of the two rates applies to a log."""
+        return not (self.config.dry_run or self.telegram is None)
 
     async def _deliver(self, row) -> None:
         if self.config.dry_run or self.telegram is None:
