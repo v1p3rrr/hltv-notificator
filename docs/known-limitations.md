@@ -221,6 +221,13 @@ distinct team (`tracked_teams()` groups by `team_id`), match pages per match,
 and the live feed keeps one connection per match. Ten people following the same
 team produce exactly the requests one person does.
 
+A first guard against wall one is in place: `MAX_TEAMS_PER_SUBSCRIBER` (ten by
+default) caps how many teams one person may follow, and the scheduler writes a
+line to the log once the total outgrows what the ceiling can sweep in time. It
+is a guard, not a solution — the limit is per subscriber while the cost is per
+DISTINCT team across everybody, so enough people with disjoint interests still
+blow through it.
+
 **Wall one: the request ceiling against the number of distinct teams.** One
 request every 30 seconds, hardcoded, strictly sequential. A full sweep of the
 schedule therefore costs *teams × 30 s*: five minutes for ten teams, ten for

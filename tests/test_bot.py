@@ -309,3 +309,49 @@ def test_next_uses_the_personal_timezone(bot):
     storage.set_subscriber_timezone(CHAT, "UTC")
     send(command_bot, "/next")
     assert telegram.sent[-1][1] != moscow
+
+
+def test_the_team_limit_refuses_a_new_one(bot, monkeypatch):
+    """Not tidiness: a sweep costs one request per distinct team against a
+    ceiling of one request per 30 s, so teams bought one by one are paid for
+    by every other team being looked at less often."""
+    from hltv_notify.config import Config
+
+    command_bot, telegram, storage = bot
+    command_bot.config = Config(chat_id=CHAT, bot_token="t",
+                                max_teams_per_subscriber=2)
+    storage.add_team(CHAT, 1, "a", "A")
+    storage.add_team(CHAT, 2, "b", "B")
+
+    send(command_bot, "/track https://www.hltv.org/team/3/c")
+    reply = telegram.sent[-1][1]
+    assert "limit" in reply and "/untrack" in reply
+    # Refused before the page was fetched: the request budget is what the
+    # limit is protecting.
+    assert storage.get_team(CHAT, 3) is None
+
+
+def test_the_limit_does_not_block_a_team_already_followed(bot):
+    """Re-adding one you already follow changes nothing to poll."""
+    from hltv_notify.config import Config
+
+    command_bot, telegram, storage = bot
+    command_bot.config = Config(chat_id=CHAT, bot_token="t",
+                                max_teams_per_subscriber=1)
+    storage.add_team(CHAT, 1, "a", "A")
+    assert command_bot._team_limit_reached(CHAT, 1) is None
+    # But one that was switched off does count: it goes back to being polled.
+    storage.set_team_enabled(CHAT, 1, False)
+    storage.add_team(CHAT, 2, "b", "B")
+    assert command_bot._team_limit_reached(CHAT, 1) is not None
+
+
+def test_the_limit_can_be_switched_off(bot):
+    from hltv_notify.config import Config
+
+    command_bot, telegram, storage = bot
+    command_bot.config = Config(chat_id=CHAT, bot_token="t",
+                                max_teams_per_subscriber=0)
+    for team_id in range(1, 6):
+        storage.add_team(CHAT, team_id, "x", "X")
+    assert command_bot._team_limit_reached(CHAT, 99) is None

@@ -330,7 +330,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 418 tests
+python -m pytest                                    # 421 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

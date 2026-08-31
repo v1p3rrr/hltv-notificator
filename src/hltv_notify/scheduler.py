@@ -11,7 +11,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from .config import HLTV_BASE, Config
+from .config import HARD_MIN_REQUEST_INTERVAL_SECONDS, HLTV_BASE, Config
 from .http import HltvHttp, SourceRejected, SourceUnavailable, jittered
 from .models import Event
 from .notify.outbox import Notifier
@@ -37,6 +37,9 @@ class SchedulePoller:
         self.watchdog = Watchdog(storage, config)
         self.mode = "idle"
         self._force = asyncio.Event()
+        # So the "too many teams" warning is written when the number
+        # changes rather than on every cycle.
+        self._warned_team_count = 0
 
     # ------------------------------------------------------------------
 
@@ -99,6 +102,29 @@ class SchedulePoller:
 
     # ------------------------------------------------------------------
 
+    def _warn_if_too_many(self, teams: int) -> None:
+        """Say so when the team count has outgrown the request ceiling.
+
+        A sweep reads one page per DISTINCT team and no page may be asked for
+        more often than once every 30 seconds, so the sweep itself takes
+        `teams x 30 s`. Once that exceeds the pre-match interval, the mode
+        still says "every three minutes" while the pages are in fact seen far
+        less often — and nothing else in the service would ever mention it.
+        Logged only when the number changes, not on every cycle.
+        """
+        if teams == self._warned_team_count:
+            return
+        self._warned_team_count = teams
+        sweep = teams * HARD_MIN_REQUEST_INTERVAL_SECONDS
+        wanted = self.config.interval_for("prematch")
+        if sweep > wanted:
+            log.warning(
+                "%d teams tracked: one sweep of the schedule takes at least "
+                "%.0f s, more than the %d s of pre-match mode. The pages are "
+                "being read less often than the mode claims — drop teams or "
+                "accept the lag; the rate ceiling does not move.",
+                teams, sweep, wanted)
+
     async def poll_once(self) -> List[Event]:
         """Poll the schedule of EVERY tracked team.
 
@@ -110,6 +136,7 @@ class SchedulePoller:
         if not teams:
             log.warning("no tracked teams configured")
             return []
+        self._warn_if_too_many(len(teams))
 
         produced: List[Event] = []
         failures: List[str] = []

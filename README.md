@@ -357,7 +357,7 @@ Not everything has a button: a few commands carry a value that has to be typed
 | `/live` | what is happening in a running match, and which source the data came from | yes |
 | `/next` | upcoming matches as the service sees them | yes |
 | `/teams` | which teams you follow, and what is muted for each | yes |
-| `/track <team link>` | start following a team — paste the link to its HLTV page, or just its numeric id | **no** — it needs the link |
+| `/track <team link>` | start following a team — paste the link to its HLTV page, or just its numeric id. Up to `MAX_TEAMS_PER_SUBSCRIBER` of them | **no** — it needs the link |
 | `/untrack <id>` | stop following it (history is kept) | yes |
 | `/mute <id> <E5,E9>` | mute notification types for one team | yes |
 | `/unmute <id>` | clear that team's mutes | yes |
@@ -396,6 +396,14 @@ rather than a name — the id is in the link.
 
 Adding a team records its current schedule silently, so you do not get a burst
 of "new match" notifications about fixtures that already exist.
+
+**There is a limit**, ten teams by default (`MAX_TEAMS_PER_SUBSCRIBER`). It is
+not tidiness: a sweep of the schedule reads one page per team and the service
+is deliberately slow with the source — one request every 30 seconds, hardcoded.
+Ten teams therefore mean a five-minute sweep where pre-match mode would like
+three, and teams added one at a time are paid for by every other team being
+looked at less often. `/untrack <id>`, or the button in `/teams`, frees a slot.
+The service also says so in the log once the count outgrows the ceiling.
 
 If two teams you follow play **each other**, it stays one match: one
 notification per subscriber, with the score turned around to face whichever
@@ -469,6 +477,7 @@ are most likely to touch:
 | `PHASE_ALERTS` | `false` | alert on half time and on each new overtime |
 | `COMEBACK_ROUNDS` | `9` | swing that counts as a comeback; `0` removes the line |
 | `TELEGRAM_WHITELIST_ONLY` | `true` | answer only the listed chats |
+| `MAX_TEAMS_PER_SUBSCRIBER` | `10` | how many teams one person may follow; `0` removes the limit |
 
 **Polling** — the ceiling of **one request every 30 seconds** is hardcoded, and
 these values cannot raise it.

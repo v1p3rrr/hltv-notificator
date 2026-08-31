@@ -106,6 +106,14 @@ class Config:
     late_start_grace_minutes: int = field(
         default_factory=lambda: _int("LATE_START_GRACE_MINUTES", 60))
 
+    # How many teams one subscriber may follow at once. The cost of a schedule
+    # sweep is `distinct teams x 30 s` because of the request ceiling, so this
+    # is the one setting that decides whether the service keeps up: at ten
+    # teams a sweep already takes five minutes against the three that pre-match
+    # mode would like. 0 removes the limit, and the protection with it.
+    max_teams_per_subscriber: int = field(
+        default_factory=lambda: _int("MAX_TEAMS_PER_SUBSCRIBER", 10))
+
     # the live score message kept up to date during a map
     live_message: bool = field(default_factory=lambda: _bool("LIVE_MESSAGE", True))
     live_edit_seconds: int = field(default_factory=lambda: _int("LIVE_EDIT_SECONDS", 10))

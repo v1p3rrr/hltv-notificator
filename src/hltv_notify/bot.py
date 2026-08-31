@@ -495,6 +495,11 @@ class CommandBot:
         if team_id is None:
             return ("I did not understand that. Send a link like\n"
                     "https://www.hltv.org/team/12857/forze-reload")
+        # Checked before the page is fetched: a refusal must not spend a
+        # request out of the very budget this limit exists to protect.
+        full = self._team_limit_reached(chat_id, team_id)
+        if full is not None:
+            return full
         if self.http is None:
             return "Adding is unavailable: the service is running without an HTTP layer."
 
@@ -516,6 +521,35 @@ class CommandBot:
                     "start from the next change.")
         return (f"<b>{fmt.escape(name)}</b> (id {team_id}) was already followed, "
                 "turned it back on.")
+
+    def _team_limit_reached(self, chat_id: str, team_id: int) -> Optional[str]:
+        """The refusal text when this chat is already at its limit, else None.
+
+        The limit is not about tidiness. A schedule sweep costs one request per
+        DISTINCT team and the ceiling is one request every 30 seconds, so ten
+        teams already mean a five-minute sweep against the three minutes
+        pre-match mode wants. Somebody adding teams one by one has no way of
+        seeing that they are the reason notifications started arriving late.
+
+        Re-enabling a team that is already on the list does not count as a new
+        one; a team currently switched off does, because it goes back to being
+        polled.
+        """
+        limit = self.config.max_teams_per_subscriber
+        if limit <= 0:
+            return None
+        row = self.storage.get_team(chat_id, team_id)
+        if row is not None and row["enabled"]:
+            return None
+        current = len(self.storage.teams(chat_id))
+        if current < limit:
+            return None
+        return (f"You already follow {current} teams, which is the limit "
+                f"({limit}). Every team is a separate page to read, and the "
+                "service is deliberately slow with the source — more teams "
+                "means every one of them is looked at less often.\n\n"
+                "Drop one with /untrack &lt;id&gt; (or the button in /teams) "
+                "and add this one again.")
 
     def _untrack(self, chat_id: str, argument: str) -> str:
         team_id, _ = _parse_team_ref(argument)
