@@ -27,6 +27,11 @@ log = logging.getLogger(__name__)
 # Telegram dislikes frequent edits. Even if the config asks for more, we refuse.
 HARD_MIN_EDIT_SECONDS = 5.0
 
+# How long a redraw in flight is given to finish on shutdown before it is
+# dropped. Short: Docker's stop_grace_period is behind us, and the queue
+# needs the rest of it.
+CLOSE_GRACE_SECONDS = 2.0
+
 
 class LiveMessenger:
     def __init__(self, storage: Storage, config: Config, telegram: Optional[Telegram]):
@@ -76,6 +81,10 @@ class LiveMessenger:
         """
         if not self.config.live_message or not snapshot:
             return []
+        if finalize or map_started:
+            # The two moments that must not run beside a background redraw.
+            # `_draw` never passes either flag, so this cannot wait on itself.
+            await self._settle(match_id)
         recipients = self._recipients(match_id)
         interval = self._interval(len(recipients))
         missed: List[str] = []
@@ -113,6 +122,32 @@ class LiveMessenger:
         if task is None or task.done():
             self._drawing[match_id] = asyncio.create_task(self._draw(match_id))
 
+    async def _settle(self, match_id: int) -> None:
+        """Wait for a background redraw of this match to finish, if any.
+
+        Without this, the final edit races the redraw it overtook. The draw
+        reads the row before `finalized` is written, renders the score as it
+        was, and finishes afterwards — and `save_live_message` writes
+        `finalized = excluded.finalized`, so the freeze is cleared and the
+        stale score becomes the card's last text. The map then goes on being
+        redrawn after it has ended.
+
+        Waited for rather than cancelled: a cancel in the middle of creating
+        the card would leave the message posted and its id unsaved, and the
+        next start would open a second card for the same map. The pending
+        snapshot is dropped first, so the draw stops after the round it is
+        already in.
+        """
+        self._pending.pop(match_id, None)
+        task = self._drawing.pop(match_id, None)
+        if task is not None and not task.done():
+            try:
+                await task
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - already logged inside _draw
+                pass
+
     async def _draw(self, match_id: int) -> None:
         while True:
             snapshot = self._pending.pop(match_id, None)
@@ -125,16 +160,30 @@ class LiveMessenger:
                               match_id)
 
     async def close(self) -> None:
-        """Drop whatever was still being drawn. Nothing is lost that matters:
-        a card is a score that is about to be redrawn anyway, and the final
-        edit goes through `finalize`, which is awaited."""
+        """Let what is being drawn finish, briefly, and then drop it.
+
+        Not an immediate cancel: a cancel landing on the await inside
+        `send_message` leaves the card posted in the chat while its message id
+        is never saved, and the next start finds no row and opens a SECOND
+        card for the same map. The same reasoning as the queue's, which is not
+        cancelled on shutdown either.
+
+        The pending snapshot is dropped first so the draw stops after the
+        round it is in, and the wait is bounded because Docker has its own
+        timer behind us. A stale score frame that does not make it is no loss.
+        """
         self._pending.clear()
         tasks = [task for task in self._drawing.values() if not task.done()]
         self._drawing.clear()
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if not tasks:
+            return
+        done, pending = await asyncio.wait(tasks, timeout=CLOSE_GRACE_SECONDS)
+        if pending:
+            log.warning("%d live message update(s) did not finish in %.0fs",
+                        len(pending), CLOSE_GRACE_SECONDS)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def _muted(self, chat_id: str, for_team_id, event_type: str) -> bool:
         if for_team_id is None:

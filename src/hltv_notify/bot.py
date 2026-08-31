@@ -34,6 +34,9 @@ TEAM_URL_RE = re.compile(r"/team/(\d+)(?:/([^/?#\s]+))?")
 # How often one refused chat may write to the log. See _log_refusal.
 REFUSAL_LOG_INTERVAL = 600.0
 
+# How many chats the command rate limiter remembers at once.
+MAX_RATE_TRACKED_CHATS = 512
+
 DURATION_RE = re.compile(r"^(\d+)\s*([mh]?)", re.IGNORECASE)
 
 
@@ -293,9 +296,8 @@ class CommandBot:
         now = time.monotonic()
         window = [when for when in self._commands.get(chat_id, ())
                   if now - when < 60.0]
-        if len(self._commands) > 512:
-            self._commands = {chat: times for chat, times in self._commands.items()
-                              if times and now - times[-1] < 60.0}
+        if len(self._commands) > MAX_RATE_TRACKED_CHATS:
+            self._prune_rate_state(now)
         if len(window) >= limit:
             self._commands[chat_id] = window
             if self._warned_rate.get(chat_id):
@@ -307,6 +309,34 @@ class CommandBot:
         self._commands[chat_id] = window
         self._warned_rate.pop(chat_id, None)
         return None
+
+    def _prune_rate_state(self, now: float) -> None:
+        """Keep the rate-limiting maps bounded.
+
+        Dropping only what has aged out is not enough: a burst from a
+        thousand different ids inside one minute leaves a thousand fresh
+        entries, and that is exactly the shape an outsider would produce. So
+        after the stale ones go, the map is cut back to the most recently
+        seen chats.
+
+        Evicting somebody hands them a fresh allowance, which is a real if
+        small cost — and the alternative is unbounded memory driven from
+        outside. With the whitelist on, which is the default, nothing reaches
+        this code that the owner did not let in.
+        """
+        fresh = {chat: times for chat, times in self._commands.items()
+                 if times and now - times[-1] < 60.0}
+        if len(fresh) > MAX_RATE_TRACKED_CHATS:
+            keep = sorted(fresh, key=lambda chat: fresh[chat][-1],
+                          reverse=True)[:MAX_RATE_TRACKED_CHATS]
+            fresh = {chat: fresh[chat] for chat in keep}
+        self._commands = fresh
+        # The "already told off" map follows the same fate: an entry is only
+        # cleared on the path where a chat comes back under its limit, so
+        # somebody who floods once and never returns would otherwise sit here
+        # for the life of the process.
+        self._warned_rate = {chat: True for chat in self._warned_rate
+                             if chat in fresh}
 
     def _log_refusal(self, chat_id: str, command: str) -> None:
         """A refused chat is logged once, then not again for a while.
@@ -364,8 +394,11 @@ class CommandBot:
         message_id = message.get("message_id")
 
         if not self.config.chat_allowed(chat_id):
-            log.warning("button press from chat %s refused: not on the whitelist",
-                        chat_id)
+            # Through the same throttle as commands, and for the same reason.
+            # This path is reachable by an outsider: someone taken off the
+            # whitelist still has the bot's old messages, inline keyboards and
+            # all, and Telegram keeps delivering their presses.
+            self._log_refusal(chat_id, "button")
             await self._answer(callback_id, "No access")
             return
         if self._rate_limited(chat_id):

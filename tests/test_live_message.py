@@ -327,3 +327,56 @@ def test_close_drops_what_was_still_being_drawn(messenger):
         assert m._pending == {}
 
     asyncio.run(scenario())
+
+
+def test_the_final_edit_waits_for_a_redraw_in_flight(messenger):
+    """The freeze must not be undone by a redraw it overtook.
+
+    A background draw reads the row before `finalized` is written, renders the
+    score as it was, and finishes afterwards — and save_live_message writes
+    `finalized = excluded.finalized`, so the flag would go back to 0 and the
+    stale score would become the card's last text.
+    """
+    m, telegram, storage = messenger
+
+    async def scenario():
+        # The card exists, so what follows are edits.
+        await m.update(MATCH_ID, snapshot(score=(11, 10)))
+        m.submit(MATCH_ID, snapshot(score=(12, 10)))
+        assert MATCH_ID in m._drawing
+        await m.finalize(MATCH_ID, snapshot(score=(13, 10)))
+        # Nothing of that match is left in flight.
+        assert MATCH_ID not in m._drawing
+        assert MATCH_ID not in m._pending
+
+    asyncio.run(scenario())
+
+    row = storage.live_message(CHAT, MATCH_ID, 1)
+    assert row["finalized"] == 1
+    assert "13:10" in row["last_text"]
+    assert "13:10" in telegram.edited[-1][1]
+
+
+def test_close_gives_a_redraw_a_moment_before_dropping_it(messenger):
+    """A cancel landing inside send_message leaves the card posted with its id
+    unsaved, and the next start opens a second card for the same map."""
+    m, telegram, storage = messenger
+
+    async def scenario():
+        original = telegram.send_message
+
+        async def slow(chat_id, text, reply_markup=None):
+            await asyncio.sleep(0.05)
+            return await original(chat_id, text, reply_markup)
+
+        telegram.send_message = slow
+        m.submit(MATCH_ID, snapshot(score=(1, 0)))
+        await asyncio.sleep(0.01)     # the draw is now inside send_message
+        await m.close()
+
+    asyncio.run(scenario())
+
+    # The card was created and its id recorded, not lost to the cancel.
+    assert len(telegram.sent) == 1
+    row = storage.live_message(CHAT, MATCH_ID, 1)
+    assert row is not None and row["telegram_message_id"] is not None

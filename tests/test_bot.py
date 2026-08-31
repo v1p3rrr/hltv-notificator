@@ -392,3 +392,39 @@ def test_the_limit_can_be_switched_off(bot):
     for team_id in range(1, 6):
         storage.add_team(CHAT, team_id, "x", "X")
     assert command_bot._team_limit_reached(CHAT, 99) is None
+
+
+def test_the_rate_limiter_does_not_leak_warned_chats(bot):
+    """The window map is pruned; the "already told off" map has to be pruned
+    with it, or a chat that floods once and never returns stays for the life
+    of the process."""
+    from hltv_notify.config import Config
+
+    command_bot, _, _ = bot
+    command_bot.config = Config(chat_id=CHAT, bot_token="t", command_rate_limit=1)
+    for number in range(600):
+        chat = str(10_000 + number)
+        command_bot._rate_limited(chat)      # first one is allowed
+        command_bot._rate_limited(chat)      # second one warns
+
+    assert len(command_bot._commands) <= 512
+    assert len(command_bot._warned_rate) <= len(command_bot._commands)
+
+
+def test_button_presses_from_strangers_cannot_flood_the_log(bot, caplog):
+    """Reachable: a chat taken off the whitelist still has the bot's old
+    messages with live inline keyboards, and Telegram keeps delivering the
+    presses."""
+    import logging
+
+    command_bot, telegram, _ = bot
+    query = {"id": "cb", "data": "m:status",
+             "message": {"message_id": 7, "chat": {"id": "999"}}}
+    with caplog.at_level(logging.WARNING, logger="hltv_notify.bot"):
+        for _ in range(30):
+            asyncio.run(command_bot._handle_callback(query))
+
+    refusals = [r for r in caplog.records if "refused" in r.getMessage()]
+    assert len(refusals) == 1
+    # Every press is still answered, or Telegram spins the button forever.
+    assert len(telegram.answered) == 30

@@ -226,3 +226,32 @@ def test_two_messages_for_one_person_keep_their_order_and_spacing(storage, confi
     assert telegram.sent == [CHAT, CHAT, CHAT]
     # Two gaps between three messages, and they were really waited out.
     assert elapsed >= 0.1
+
+
+def test_one_failing_chat_does_not_leave_the_others_running(storage, config):
+    """Without return_exceptions the first failure is raised while the other
+    chats keep going detached, and the caller then reads the queue again and
+    sends what those tasks had not yet marked — the same message twice."""
+    from dataclasses import replace
+
+    chats = ["801", "802", "803"]
+    for chat in chats:
+        storage.add_subscriber(chat)
+
+    class OneBadChat(SlowTelegram):
+        async def send_message(self, chat_id, text, reply_markup=None):
+            if chat_id == "802":
+                raise RuntimeError("not a TelegramError")
+            return await super().send_message(chat_id, text, reply_markup)
+
+    telegram = OneBadChat()
+    live = Notifier(storage, replace(config, dry_run=False, chat_id=",".join(chats)),
+                    telegram)
+    live.enqueue(pending_event(1))
+
+    asyncio.run(live._drain())          # must not raise
+
+    # The two healthy chats got exactly one message each, and the failure did
+    # not take the pass down with it.
+    assert sorted(telegram.sent) == ["801", "803"]
+    assert storage.pending_count() == 1     # only the failed one is left

@@ -479,7 +479,15 @@ keeps the card out of the outbox in the first place.
 
 Two moments stay awaited, because their result is needed: creating the card,
 which carries the map start and must report for whom it failed, and the final
-edit.
+edit. Both also **wait for a background redraw of that match to finish first**
+(`_settle`). Without that the final edit races the redraw it overtook: the draw
+read the row before `finalized` was written, and `save_live_message` writes
+`finalized = excluded.finalized`, so the freeze was cleared and the stale score
+became the card's last text — after which the finished map went on being
+redrawn. The wait is a wait and not a cancel, for the same reason the queue is
+never cancelled: a cancel inside `send_message` leaves the card posted with its
+id unsaved, and the next start opens a second one for the same map. Shutdown
+gives a draw in flight `CLOSE_GRACE_SECONDS` for exactly that reason.
 
 **And the interval stretches with the audience.** The card's total cost is
 `recipients / interval` while Telegram's budget is fixed, so holding the

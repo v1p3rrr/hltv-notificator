@@ -190,7 +190,7 @@ class Notifier:
         Two messages for the same person may depend on each other — the live
         card continues the "match started" it follows — so within a chat
         nothing overtakes anything. Two different people share nothing but
-        Telegram's global rate, which `_pace` holds.
+        Telegram's global rate, which the client itself holds.
         """
         by_chat: Dict[str, list] = {}
         for row in rows:
@@ -199,8 +199,20 @@ class Notifier:
             await self._drain_chat(next(iter(by_chat.values())), None, deadline)
             return
         limit = asyncio.Semaphore(MAX_CONCURRENT_CHATS)
-        await asyncio.gather(*(self._drain_chat(chat_rows, limit, deadline)
-                               for chat_rows in by_chat.values()))
+        # return_exceptions, and not for tidiness: without it the first
+        # failure is raised while the other chats' coroutines keep running
+        # detached. The caller would then log, wait, and read the queue
+        # again — and those rows are still pending, because the task that
+        # owns them has not reached mark_sent yet. That is one message sent
+        # to the person twice, which is the one thing this queue exists to
+        # prevent.
+        results = await asyncio.gather(
+            *(self._drain_chat(chat_rows, limit, deadline)
+              for chat_rows in by_chat.values()),
+            return_exceptions=True)
+        for outcome in results:
+            if isinstance(outcome, BaseException):
+                log.error("a chat could not be drained: %r", outcome)
 
     async def _drain_chat(self, rows, limit: Optional[asyncio.Semaphore],
                           deadline: Optional[float]) -> None:

@@ -134,6 +134,13 @@ acknowledgements — and they share one budget. A limiter per sender leaves
 everybody inside their own rules and the total over. Per-CHAT spacing stays
 in the queue, because that is also where the ordering guarantee is.
 
+**The final edit of a card waits for any redraw in flight.** The background
+draw reads the row before `finalized` is written and finishes after it, and
+`save_live_message` does `finalized = excluded.finalized` — so the freeze was
+cleared and the stale score became the card's last text. `_settle` waits
+(never cancels: a cancel inside `send_message` loses the message id and the
+next start opens a second card).
+
 **The live card must not be awaited by the frame loop.** It is one message
 per subscriber; a hundred of them is ten seconds of sequential calls with no
 frames read. `submit()` hands over the newest snapshot and drops whatever it
@@ -345,7 +352,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 428 tests
+python -m pytest                                    # 433 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures
