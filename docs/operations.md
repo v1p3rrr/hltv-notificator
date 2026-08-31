@@ -72,7 +72,7 @@ notifications again about everything it considers new.
 | `/live` | the running match: map, score, series score, map results and **which source** the data came from |
 | `/next` | upcoming matches as the service sees them |
 | `/check` | an out-of-turn schedule check |
-| `/verbose on\|off` | verbose logs |
+| `/verbose on\|off` | debug logging in the service log, without a restart |
 
 When a notification did not arrive, start with `/live`: it shows whether the
 score reached the service at all and whether the live feed is working.

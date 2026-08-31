@@ -342,26 +342,30 @@ is all you need**: status, the running match, what is coming up, your teams,
 reminders and the quiet switch. Inside a team's menu every notification type
 toggles with a tap — no codes, no ids to remember.
 
+If you do not remember any of this: **`/help`** prints the whole list, and so
+does any command the bot does not recognise. `/start` does too, and Telegram
+shows a Start button the first time you open the bot.
+
 Not everything has a button: a few commands carry a value that has to be typed
 — a team link, a timezone. The last column says which is which.
 
 | Command | What it does | Button? |
 |---|---|---|
-| `/menu`, `/start`, `/help` | opens the menu | — |
+| `/menu`, `/start`, `/help` | the menu; `/help` and `/start` also print this whole list | — |
 | `/status` | health of the service, the sources and the live feed | yes |
 | `/live` | what is happening in a running match, and which source the data came from | yes |
 | `/next` | upcoming matches as the service sees them | yes |
 | `/teams` | which teams you follow, and what is muted for each | yes |
-| `/track <team link>` | start following a team | **no** — it needs the link |
+| `/track <team link>` | start following a team — paste the link to its HLTV page, or just its numeric id | **no** — it needs the link |
 | `/untrack <id>` | stop following it (history is kept) | yes |
 | `/mute <id> <E5,E9>` | mute notification types for one team | yes |
 | `/unmute <id>` | clear that team's mutes | yes |
 | `/remind 15m` | remind 15 min before a match; `/remind rm 15m` removes it | partly — 10, 15, 30 min, 1 h and 2 h are buttons, any other interval is typed |
 | `/tz Europe/Berlin` | your timezone | **no** |
 | `/pause`, `/resume` | go completely quiet / start receiving again | yes |
-| `/check` | poll the schedule right now | **no** |
-| `/whoami` | your `chat_id` | **no** |
-| `/verbose on`, `/verbose off` | verbose logging | **no** |
+| `/check` | read the schedule now instead of waiting for the next cycle, which is up to 30 min when nothing is due | **no** |
+| `/whoami` | your numeric `chat_id` — the value that goes into `TELEGRAM_CHAT_ID`. Answered even to people who are not on the whitelist, so they have something to send the owner | **no** |
+| `/verbose on`, `/verbose off` | turn debug logging on and off without restarting the container. It changes the service's log only, never what arrives in the chat | **no** |
 
 `/mute` wants the codes from [Event codes](#event-codes) above: `/mute 9565
 E5,E9` keeps the team but drops its map-start and multikill messages. Muting by

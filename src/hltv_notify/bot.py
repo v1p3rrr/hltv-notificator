@@ -80,8 +80,8 @@ HELP = (
     "/whoami — your chat_id\n"
     "/status — service and source health\n"
     "/next — upcoming matches as the service sees them\n"
-    "/check — poll the schedule right now\n"
-    "/verbose on|off — verbose logging"
+    "/check — read the schedule now, without waiting for the next cycle\n"
+    "/verbose on|off — debug logging in the service log"
 )
 
 
