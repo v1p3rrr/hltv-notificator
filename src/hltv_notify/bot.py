@@ -66,23 +66,52 @@ def _parse_team_ref(argument: str):
 # the command cannot.
 MUTABLE_EVENTS = tuple(code for code, _ in menu.MUTABLE)
 
-HELP = (
-    "Commands:\n"
-    "/teams — which teams you follow\n"
-    "/track &lt;team link&gt; — start following a team\n"
-    "/untrack &lt;id&gt; — stop following\n"
-    "/mute &lt;id&gt; &lt;E5,E9&gt; — mute event types for a team\n"
-    "/unmute &lt;id&gt; — clear all mutes for a team\n"
-    "/remind [15m|1h] — pre-match reminders, /remind rm 15m — remove one\n"
-    "/tz &lt;Europe/Berlin&gt; — your timezone\n"
-    "/pause — go quiet, /resume — start sending again\n"
-    "/menu — buttons for most of the above\n"
-    "/whoami — your chat_id\n"
-    "/status — service and source health\n"
-    "/next — upcoming matches as the service sees them\n"
-    "/check — read the schedule now, without waiting for the next cycle\n"
-    "/verbose on|off — debug logging in the service log"
+# One list of commands, in the order a person meets them. The /help text and
+# the hint list Telegram shows when you type "/" are both generated from it —
+# two copies would drift, and the drift is invisible from inside: /live had
+# existed for a long time and /help had never mentioned it.
+#
+# Telegram's limits on setMyCommands: the name is 1-32 characters of
+# [a-z0-9_], the description 1-256 characters and plain text. The description
+# below is written to fit that hint list, where there is room for one line.
+COMMANDS = (
+    ("menu", "", "Buttons for most of the below"),
+    ("status", "", "Service and source health"),
+    ("live", "", "The running match, and where the data comes from"),
+    ("next", "", "Upcoming matches as the service sees them"),
+    ("teams", "", "Which teams you follow"),
+    ("track", "<team link>", "Start following a team"),
+    ("untrack", "<id>", "Stop following a team"),
+    ("mute", "<id> <E5,E9>", "Mute event types for a team"),
+    ("unmute", "<id>", "Clear all mutes for a team"),
+    ("remind", "[15m|1h]", "Pre-match reminders; /remind rm 15m removes one"),
+    ("tz", "<Europe/Berlin>", "Your timezone"),
+    ("pause", "", "Go quiet"),
+    ("resume", "", "Start sending again"),
+    ("check", "", "Read the schedule now, without waiting for the next cycle"),
+    ("whoami", "", "Your chat_id"),
+    ("verbose", "on|off", "Debug logging in the service log"),
+    ("help", "", "This list of commands"),
 )
+
+
+def _help_text() -> str:
+    """The /help message. Sent with parse_mode=HTML, so the arguments — which
+    are written in angle brackets — have to be escaped."""
+    lines = ["Commands:"]
+    for name, args, description in COMMANDS:
+        head = f"/{name} {fmt.escape(args)}" if args else f"/{name}"
+        lines.append(f"{head} — {description}")
+    return "\n".join(lines)
+
+
+def command_menu():
+    """The payload for setMyCommands."""
+    return [{"command": name, "description": description}
+            for name, _, description in COMMANDS]
+
+
+HELP = _help_text()
 
 
 class CommandBot:
@@ -97,6 +126,17 @@ class CommandBot:
         self._offset: Optional[int] = None
 
     async def run(self, stop: asyncio.Event) -> None:
+        # Hand Telegram the command list so it can offer it on "/" and behind
+        # the Menu button. Without this the hint list stays empty and the only
+        # way to find a command is to already know that /help exists. It is
+        # sent on every start rather than once: the list changes with the code
+        # and Telegram keeps whatever it was told last.
+        try:
+            await self.telegram.set_my_commands(command_menu())
+        except TelegramError as exc:
+            # Not fatal — the bot answers commands either way.
+            log.warning("could not register the command list: %s", exc)
+
         # Skip whatever piled up while we were down: answering week-old
         # commands makes no sense.
         try:

@@ -56,6 +56,11 @@ notifications again about everything it considers new.
 
 ## Bot commands
 
+The list is registered with Telegram at every start (`setMyCommands`), so
+typing "/" in the chat pops it up with descriptions and the Menu button next
+to the input field shows the same. `/help` prints it as text, and so does any
+command the bot does not recognise.
+
 | Command | What it shows |
 |---|---|
 | `/teams` | your teams and their mutes |

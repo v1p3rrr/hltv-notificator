@@ -106,6 +106,15 @@ class Telegram:
         await self._call("answerCallbackQuery",
                          {"callback_query_id": callback_id, "text": text[:200]})
 
+    async def set_my_commands(self, commands: List[Dict[str, str]]) -> None:
+        """Register the list Telegram offers when you type "/" in the chat.
+
+        It is what fills the Menu button next to the input field. The list
+        replaces whatever was registered before, so it is enough to send the
+        current one on every start.
+        """
+        await self._call("setMyCommands", {"commands": commands})
+
     async def get_updates(self, offset: Optional[int], timeout: int = 25) -> List[Dict[str, Any]]:
         payload: Dict[str, Any] = {"timeout": timeout,
                                    "allowed_updates": ["message", "callback_query"]}

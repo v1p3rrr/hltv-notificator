@@ -109,6 +109,13 @@ bot has hung. We answer even when there is nothing to do.
 and a button would start muting what the command cannot. E8 is deliberately not
 on the list: mute the alarm and you may never learn the service has gone blind.
 
+**There is one list of commands** — `bot.COMMANDS`, which generates both
+the `/help` text and the `setMyCommands` payload (the list Telegram offers on
+"/"). The same reasoning as `menu.MUTABLE`, and it had already gone wrong: the
+hand-written `/help` never mentioned `/live`. `tests/test_commands.py` checks
+both directions — nothing advertised that the bot cannot answer, nothing
+dispatched that is not advertised.
+
 **Upgrading an old database must preserve the journal.** Keys written before
 subscribers existed get a chat prefix once (`adopt_legacy_event_keys`). Without
 that, the very first run of a new version would treat everything it had already
@@ -311,7 +318,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 407 tests
+python -m pytest                                    # 414 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

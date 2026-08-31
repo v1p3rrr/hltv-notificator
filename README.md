@@ -342,9 +342,10 @@ is all you need**: status, the running match, what is coming up, your teams,
 reminders and the quiet switch. Inside a team's menu every notification type
 toggles with a tap — no codes, no ids to remember.
 
-If you do not remember any of this: **`/help`** prints the whole list, and so
-does any command the bot does not recognise. `/start` does too, and Telegram
-shows a Start button the first time you open the bot.
+You do not have to memorise any of it. Type **`/`** in the chat and Telegram
+pops up the whole list with descriptions — the same list sits behind the
+Menu button next to the input field. `/help` prints it as text, and so does any
+command the bot does not recognise.
 
 Not everything has a button: a few commands carry a value that has to be typed
 — a team link, a timezone. The last column says which is which.
