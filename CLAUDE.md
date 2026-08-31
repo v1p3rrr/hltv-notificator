@@ -196,6 +196,35 @@ cleared and the stale score became the card's last text. `_settle` waits
 (never cancels: a cancel inside `send_message` loses the message id and the
 next start opens a second card).
 
+**"Something was sent below the card" is a COUNTER, not a flag.** The card is
+deleted and re-sent after E11/E12 so it stays the last message, and that takes
+a moment. A boolean cleared at the end of the move erases a burial that arrived
+during it, and the card then sits above that message for the rest of the map.
+`bury_seq` is incremented; the move writes back into `posted_seq` the value it
+READ. Same shape as the `finalized` race `_settle` exists for.
+
+**The card is moved by the QUEUE, not by the feed.** The obvious trigger — the
+next redraw — fails at exactly the moment it is needed: half time is when the
+feed falls silent, so the card would stay above the half-time message for a
+minute. `_drain_chat` calls `repost_buried` after delivering a chat's messages,
+which also gives the ordering for free, since that loop serves one chat in
+order. `_update_one` keeps a copy of the logic as a safety net for a restart,
+but it must NOT call `_settle` — it runs inside `_draw` and would wait on
+itself.
+
+**Two things can move the card, so the move needs a lock.** `_drawing`
+serialises the feed's redraws, but the queue moves cards from its OWN task —
+without `_moving` both find the card buried, both delete it and both send a new
+one, and the map ends with two cards. Both movers re-read the row under the
+lock, the id included: the one read before waiting points at a message the
+other may already have deleted.
+
+**A deleted card must have its id forgotten before the re-send.**
+`save_live_message` COALESCEs `telegram_message_id`, so writing NULL through it
+keeps the old one. If the send after a successful delete fails, the row would
+point at a message that no longer exists and every later redraw would edit a
+ghost. `forget_live_message_id` is a separate write for that reason.
+
 **The live card must not be awaited by the frame loop.** It is one message
 per subscriber; a hundred of them is ten seconds of sequential calls with no
 frames read. `submit()` hands over the newest snapshot and drops whatever it
@@ -416,7 +445,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 464 tests
+python -m pytest                                    # 482 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

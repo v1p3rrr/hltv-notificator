@@ -18,7 +18,7 @@
 | E5 map started | done, from the live feed, once the warmup is over |
 | E8 degradation (the source is silent, the match has stalled) | done |
 | "The match has stalled" | only when there is no live feed; between maps the threshold is three times longer |
-| The live score message during a map | done, one per map, `/settings card` (default `LIVE_MESSAGE`); it is also the map's card and carries the map start, so it is not opened during the warmup |
+| The live score message during a map | done, one per map, `/settings card` (default `LIVE_MESSAGE`); it is also the map's card and carries the map start, so it is not opened during the warmup, and it is moved back to the bottom of the chat after E11 and E12 |
 | A multikill by a player of our team | done, at the Nth kill, `/settings multikill` (default `MULTIKILL_THRESHOLD`) |
 
 ## Starting up
@@ -107,6 +107,27 @@ by config. Requests are sequential, with ±20% jitter.
 **The live feed's long poll does not fall under that ceiling.** It is a held
 connection (the equivalent of a websocket), one per active match, not frequent
 polling.
+
+## The card stays at the bottom
+
+The live score card is a fixed message in a moving chat, so anything sent after
+it leaves the reader scrolling back for the score. After a milestone of the
+same map the card is therefore **deleted and sent again** below it, keeping the
+score it had; the next ordinary redraw edits the new message as usual.
+
+| Moves the card | Does not |
+|---|---|
+| E11 (map point) | E9 (multikill) — several a map, the card would jump about |
+| E12 (half, each new overtime) | anything about a different match |
+| | E5 and E6 — one lives in the card, the other ends it |
+
+The move is triggered by the **queue**, not by the feed, right after it has
+delivered that chat's messages. Half time is precisely when the feed falls
+silent, so a card waiting for the next frame could sit above the message for a
+minute. A burst — a map point and then half time — costs one move, not two.
+
+Nothing to configure: `/settings card off` already turns the whole card off,
+and with no card there is nothing to move.
 
 ## Settings that are per person
 

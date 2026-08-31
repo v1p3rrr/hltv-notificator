@@ -301,3 +301,29 @@ That is deliberate and the cost is negligible: it is a comparison on frames
 already being read for the score. It is worth knowing only because "I raised my
 threshold, so the service does less" is a reasonable thing to assume, and it is
 not true.
+
+## Moving the card down loses the intermediate copies
+
+The card is deleted and sent again after a map point or half time, so the chat
+history keeps only the last one. The score at each milestone is not lost — E11
+and E12 quote it, and E6 records the map's final score — but there is no trail
+of the card itself.
+
+That is what "always in the last message" costs, and it is the trade the owner
+asked for. `/settings card off` turns the card off entirely if the history
+matters more.
+
+## Two matches live in one chat cannot both be last
+
+The card is moved for milestones of its own map only, so with two tracked teams
+playing at the same time the two cards do not fight each other — but only one
+of them can be the bottom message, and the other stays wherever it was. Nothing
+is lost; it is simply not what "always last" suggests.
+
+## A delete Telegram refuses leaves the card where it is
+
+Telegram can decline `deleteMessage` — the message is too old, or the bot lost
+the right in a group. The card then stays in place and is edited as before, and
+the burial is written off rather than retried, so a chat that refuses deletes
+does not get one attempt per frame for the rest of the map. It is logged at
+WARNING.

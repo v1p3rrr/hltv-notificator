@@ -560,6 +560,55 @@ the tracker is constructed when the map starts. And one person asking for 3k
 makes the service track 3k rounds for everybody — that is arithmetic on frames
 already being read, not messages, and nobody else receives them.
 
+## The card follows the conversation down
+
+The card is the message a person watches during a map, and it is a fixed
+message in a chat that keeps moving: a map point or a half-time message pushes
+it out of view and the reader has to scroll back for the score. So after one of
+those the card is deleted and sent again, below.
+
+Three decisions in that, none of them obvious.
+
+**The trigger is the queue, not the feed.** The natural place would be the next
+redraw — the feed brings frames several times a second, and the card is drawn
+from them. But half time is exactly when the feed falls silent (`FeedIdle`,
+and the whole break between maps passes the same way), so the card could sit
+above the half-time message for a minute. Instead `_drain_chat` calls
+`repost_buried` once it has delivered that chat's messages. That also settles
+the ordering for free: `_drain_chat` is the loop that serves one chat strictly
+in order, so the card is guaranteed to land BELOW what buried it. Awaiting it
+there is safe — the rule the card must not hold up is the FEED loop, and this
+is the queue's task.
+
+**Two counters, not a flag.** `bury_seq` is incremented when something is sent
+below the card; the move writes back into `posted_seq` the value it READ, and
+the card is buried while `bury_seq > posted_seq`. A boolean cleared at the end
+of the move would erase a burial that arrived during it — the delete and the
+send take a moment — and the card would sit above that message for the rest of
+the map. Same class of bug as the `finalized` race that `_settle` exists for.
+
+**The text comes from the database.** `repost_buried` re-sends `last_text`
+rather than rendering a fresh snapshot, which is what lets it run with no feed
+at all. The feed-driven half (`_update_one`, the safety net for a restart or a
+failed queue-side attempt) does have a fresh score in hand, so there it deletes
+and re-creates with it — going through the stored text would cost a third call
+to edit it straight afterwards.
+
+Which types move it is a short list, `outbox.BURYING`: E11 and E12. E9 is
+deliberately absent — there are several multikills a map, and a card that
+deletes and re-posts itself after each would spend the budget jumping around.
+Events about other matches are absent for the same reason in reverse: moving
+this card for them would be noise, and with two matches live in one chat only
+one card can be last anyway.
+
+Failure is handled by giving up rather than retrying. Telegram refuses deletes
+it considers impossible; `posted_seq` is advanced anyway so the card goes back
+to being edited in place, instead of every frame attempting the same delete.
+And a delete that succeeds is written to the database (`forget_live_message_id`)
+before the send is attempted, because `save_live_message` COALESCEs the message
+id — without that, a failed send would leave the row pointing at a message that
+no longer exists and every later redraw would edit a ghost.
+
 ## Who a notification goes to
 
 The recipients are computed by `notify/audience.py` — and that is the ONLY

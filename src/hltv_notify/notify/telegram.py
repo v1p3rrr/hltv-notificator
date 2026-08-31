@@ -123,6 +123,17 @@ class Telegram:
             payload["reply_markup"] = reply_markup
         await self._call("editMessageText", payload)
 
+    async def delete_message(self, chat_id: str, message_id: int) -> None:
+        """Used to move the live card down: the old copy is removed and a new
+        one sent below whatever arrived.
+
+        Goes through `_call` like everything else, so it draws on the same
+        global rate budget — a delete is a Telegram call and pretending
+        otherwise is how the budget gets overspent.
+        """
+        await self._call("deleteMessage",
+                         {"chat_id": chat_id, "message_id": message_id})
+
     async def answer_callback_query(self, callback_id: str, text: str = "") -> None:
         """The mandatory answer to a button press.
 

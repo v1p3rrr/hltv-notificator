@@ -104,6 +104,16 @@ why E5 does not arrive as a separate message when the card is enabled. Turn it
 off with `/settings card off` if you would rather have a quiet chat
 (`LIVE_MESSAGE=false` sets that as the default for everybody).
 
+**The card stays at the bottom of the chat.** It is the thing you are actually
+watching, and a message arriving above it would leave you scrolling back for
+the score. So when a milestone of the same map arrives — a map point, or half
+time and each new overtime — the card is deleted and sent again below it, and
+goes on updating there.
+
+Only those two move it. A multikill does not: there are several a map, and the
+card would spend the match jumping around. Neither does anything about a
+different match.
+
 ### A few more examples
 
 ```

@@ -135,7 +135,28 @@ def test_new_columns_appear(legacy_db):
     assert {"live_map_name", "page_seen_utc", "regulation_rounds",
             "overtime_rounds"} <= state
     outbox = {row["name"] for row in storage.conn.execute("PRAGMA table_info(outbox)")}
-    assert "chat_id" in outbox
+    # event_type and match_id let the queue tell, at SEND time, whether the
+    # live card has to move below the message it is about to deliver.
+    assert {"chat_id", "event_type", "match_id"} <= outbox
+    cards = {row["name"] for row in
+             storage.conn.execute("PRAGMA table_info(live_messages)")}
+    assert {"bury_seq", "posted_seq"} <= cards
+    storage.close()
+
+
+def test_a_row_queued_before_the_upgrade_moves_no_card(legacy_db):
+    """Old outbox rows have no event_type, and must not be guessed at.
+
+    A card that stays where it is beats one that moves for the wrong reason —
+    and there is no match_id on those rows to move the right card anyway.
+    """
+    storage = Storage(legacy_db)
+    storage.conn.execute(
+        "INSERT INTO outbox (chat_id, idempotency_key, body, next_attempt_utc, "
+        "created_utc) VALUES ('1', 'E12:1:map:1:half', 'x', '2020-01-01', '2020-01-01')")
+    row = storage.conn.execute(
+        "SELECT * FROM outbox ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["event_type"] is None and row["match_id"] is None
     storage.close()
 
 

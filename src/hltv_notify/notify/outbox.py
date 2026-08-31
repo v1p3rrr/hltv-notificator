@@ -21,6 +21,17 @@ from .telegram import Telegram, TelegramError
 
 log = logging.getLogger(__name__)
 
+# Event types after which the live card is moved back to the bottom of the
+# chat. Only milestones of the map the card is about: they are rare, and the
+# card is what the reader is watching when they arrive.
+#
+# E9 (multikill) is deliberately absent — there are several a map, and a card
+# that deletes and re-posts itself after each would spend the rate budget
+# jumping around. Everything else is either about a different match, where
+# moving this card would be noise, or already lives in the card itself (E5) or
+# ends it (E6).
+BURYING = frozenset({"E11", "E12"})
+
 # Telegram's two limits are different in kind and are answered in two
 # different places. Roughly one message per second into ONE chat is this
 # constant, and it is also where the ordering guarantee lives: a chat's
@@ -49,10 +60,15 @@ FINAL_DRAIN_SECONDS = 6.0
 class Notifier:
     """Accepting events and delivering them. The only writer to Telegram."""
 
-    def __init__(self, storage: Storage, config: Config, telegram: Optional[Telegram]):
+    def __init__(self, storage: Storage, config: Config, telegram: Optional[Telegram],
+                 live_messenger=None):
         self.storage = storage
         self.config = config
         self.telegram = telegram
+        # The live card, so the queue can move it back to the bottom after a
+        # milestone of the same map. Optional: the replay tool and most tests
+        # have no card at all.
+        self.live_messenger = live_messenger
         # Set by enqueue so the worker does not sleep out its five seconds
         # with a message already waiting. It matters where two messages have
         # to arrive in order — the live card waits for the "match started" it
@@ -244,18 +260,30 @@ class Notifier:
 
     async def _drain_chat(self, rows, limit: Optional[asyncio.Semaphore],
                           deadline: Optional[float]) -> None:
+        chat_id = (rows[0]["chat_id"] if rows else "") or self.config.main_chat_id
+        moved = False
         if limit is not None:
             await limit.acquire()
         try:
             for index, row in enumerate(rows):
                 if deadline is not None and time.monotonic() >= deadline:
                     return
-                await self._deliver(row)
+                moved |= await self._deliver(row)
                 if index + 1 < len(rows) and self._sending():
                     # The pause goes between messages, not after the last one:
                     # on shutdown a spare second is a second that may be
                     # missing.
                     await asyncio.sleep(SEND_INTERVAL_SECONDS)
+            if moved and self.live_messenger is not None:
+                # Once for the whole batch, not once per message: a map point
+                # followed by half time should cost one move, not two.
+                #
+                # Here rather than anywhere else because this loop is what
+                # serves one chat strictly in order — so the card is guaranteed
+                # to land BELOW the messages that buried it. Awaiting it is
+                # safe: this is the queue's task, and the thing the card must
+                # not hold up is the FEED loop.
+                await self.live_messenger.repost_buried(chat_id)
         finally:
             if limit is not None:
                 limit.release()
@@ -265,12 +293,19 @@ class Notifier:
         the log instead, and neither of the two rates applies to a log."""
         return not (self.config.dry_run or self.telegram is None)
 
-    async def _deliver(self, row) -> None:
+    async def _deliver(self, row) -> bool:
+        """True means this message pushed the live card up and it has to move.
+
+        Answered by the DELIVERY rather than by the enqueue, because that is
+        when the message actually reaches the chat: the queue retries, and a
+        card moved for a message still sitting in the queue would end up above
+        it anyway.
+        """
         if self.config.dry_run or self.telegram is None:
             reason = "DRY_RUN" if self.config.dry_run else "Telegram not configured"
             log.info("[%s] message not sent, contents:\n%s", reason, row["body"])
             self.storage.mark_sent(row["id"], None)
-            return
+            return False
 
         attempts = row["attempts"] + 1
         chat_id = row["chat_id"] or self.config.main_chat_id
@@ -280,16 +315,22 @@ class Notifier:
             if exc.fatal:
                 log.error("message %s dropped, retrying will not help: %s", row["id"], exc)
                 self.storage.mark_sent(row["id"], None)
-                return
+                return False
             if attempts >= MAX_ATTEMPTS:
                 log.error("message %s not delivered in %d attempts: %s",
                           row["id"], attempts, exc)
                 self.storage.mark_retry(row["id"], attempts, 3600)
-                return
+                return False
             delay = exc.retry_after if exc.retry_after else min(2 ** attempts, 300)
             log.warning("Telegram refused it (%s), retrying in %.0fs", exc, delay)
             self.storage.mark_retry(row["id"], attempts, delay)
-            return
+            return False
 
         self.storage.mark_sent(row["id"], message_id)
         log.info("sent message %s (telegram id %s)", row["id"], message_id)
+
+        # Rows queued before this column existed carry NULL and move nothing.
+        if row["event_type"] in BURYING and row["match_id"] is not None:
+            self.storage.bury_live_card(chat_id, row["match_id"])
+            return True
+        return False

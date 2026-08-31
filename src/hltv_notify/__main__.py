@@ -160,6 +160,11 @@ async def run() -> int:
     notifier = Notifier(storage, config, telegram)
     poller = SchedulePoller(storage, config, http, notifier)
     messenger = LiveMessenger(storage, config, telegram)
+    # Handed over after the fact: the queue moves the live card back to the
+    # bottom once it has delivered a milestone of the same map, and the card
+    # needs the queue's notifier for the map start it may have to fall back on.
+    # One of the two references has to be set second.
+    notifier.live_messenger = messenger
     supervisor = LiveSupervisor(storage, config, notifier, messenger)
     matches = MatchPoller(storage, config, http, notifier, supervisor)
 
