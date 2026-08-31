@@ -76,7 +76,7 @@ HELP = (
     "/remind [15m|1h] — pre-match reminders, /remind rm 15m — remove one\n"
     "/tz &lt;Europe/Berlin&gt; — your timezone\n"
     "/pause — go quiet, /resume — start sending again\n"
-    "/menu — the same thing with buttons\n"
+    "/menu — buttons for most of the above\n"
     "/whoami — your chat_id\n"
     "/status — service and source health\n"
     "/next — upcoming matches as the service sees them\n"

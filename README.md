@@ -337,30 +337,31 @@ unit file in the repository because Docker is the supported route.
 
 ## Using the bot
 
-Everything is available **both as buttons and as text commands**. `/menu` (also
-`/start` and `/help`) opens an inline menu: status, the running match, what is
-coming up, your teams, reminders and the quiet switch. Inside a team's menu
-every notification type toggles with a tap — no codes, no ids to remember.
+`/menu` (also `/start` and `/help`) opens an inline menu, and **day to day it
+is all you need**: status, the running match, what is coming up, your teams,
+reminders and the quiet switch. Inside a team's menu every notification type
+toggles with a tap — no codes, no ids to remember.
 
-The text commands are shorter when you know exactly what you want:
+Not everything has a button: a few commands carry a value that has to be typed
+— a team link, a timezone. The last column says which is which.
 
-| Command | What it does |
-|---|---|
-| `/menu`, `/start`, `/help` | the menu / the command list |
-| `/teams` | which teams you follow, and what is muted for each |
-| `/track <team link>` | start following a team |
-| `/untrack <id>` | stop following it (history is kept) |
-| `/mute <id> <E5,E9>` | mute notification types for one team |
-| `/unmute <id>` | clear that team's mutes |
-| `/remind 15m` | remind 15 minutes before a match; `/remind rm 15m` removes it |
-| `/tz Europe/Berlin` | your timezone |
-| `/pause`, `/resume` | go completely quiet / start receiving again |
-| `/next` | upcoming matches as the service sees them |
-| `/live` | what is happening in a running match, and which source that came from |
-| `/status` | health of the service, the sources and the live feed |
-| `/check` | poll the schedule right now |
-| `/whoami` | your `chat_id` |
-| `/verbose on`, `/verbose off` | verbose logging |
+| Command | What it does | Button? |
+|---|---|---|
+| `/menu`, `/start`, `/help` | opens the menu | — |
+| `/status` | health of the service, the sources and the live feed | yes |
+| `/live` | what is happening in a running match, and which source the data came from | yes |
+| `/next` | upcoming matches as the service sees them | yes |
+| `/teams` | which teams you follow, and what is muted for each | yes |
+| `/track <team link>` | start following a team | **no** — it needs the link |
+| `/untrack <id>` | stop following it (history is kept) | yes |
+| `/mute <id> <E5,E9>` | mute notification types for one team | yes |
+| `/unmute <id>` | clear that team's mutes | yes |
+| `/remind 15m` | remind 15 min before a match; `/remind rm 15m` removes it | partly — 10, 15, 30 min, 1 h and 2 h are buttons, any other interval is typed |
+| `/tz Europe/Berlin` | your timezone | **no** |
+| `/pause`, `/resume` | go completely quiet / start receiving again | yes |
+| `/check` | poll the schedule right now | **no** |
+| `/whoami` | your `chat_id` | **no** |
+| `/verbose on`, `/verbose off` | verbose logging | **no** |
 
 `/mute` wants the codes from [Event codes](#event-codes) above: `/mute 9565
 E5,E9` keeps the team but drops its map-start and multikill messages. Muting by

@@ -66,7 +66,7 @@ notifications again about everything it considers new.
 | `/remind` | the list of reminders; `/remind 1h` adds, `/remind rm 15m` removes |
 | `/tz` | your own timezone |
 | `/pause` / `/resume` | the global quiet switch, on top of per-type muting |
-| `/menu` | the same thing with buttons |
+| `/menu` | the inline menu: status, live, upcoming, teams and their mutes, reminders, quiet. `/track`, `/tz`, `/check`, `/whoami` and `/verbose` have no buttons — they carry a value that has to be typed |
 | `/whoami` | your own chat_id, answered for everyone |
 | `/status` | polling modes, live feed health, match counts, the queue, the last error |
 | `/live` | the running match: map, score, series score, map results and **which source** the data came from |
