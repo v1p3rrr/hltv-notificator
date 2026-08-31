@@ -20,18 +20,17 @@ from .telegram import Telegram, TelegramError
 
 log = logging.getLogger(__name__)
 
-# Telegram's two limits are different in kind, and so are the two things here
-# that answer them. Roughly one message per second into ONE chat: that is
-# SEND_INTERVAL_SECONDS, and it is also where the ordering guarantee lives, so
-# a chat's messages are always sent one after another in queue order. Roughly
-# thirty a second ACROSS different chats: that is GLOBAL_SENDS_PER_SECOND, and
-# it is the only thing different chats share.
+# Telegram's two limits are different in kind and are answered in two
+# different places. Roughly one message per second into ONE chat is this
+# constant, and it is also where the ordering guarantee lives: a chat's
+# messages are sent one after another in queue order. The other limit — some
+# thirty calls a second across everything — is not here at all, but in the
+# Telegram client, which is the single door every sender goes through.
 #
 # The pause used to be applied between every two messages whoever they were
 # for, which for one subscriber is the same thing and for a fan-out to fifty
 # people meant a minute to deliver one map result.
 SEND_INTERVAL_SECONDS = 1.2
-GLOBAL_SENDS_PER_SECOND = 25.0
 # How many chats are served at once. Not a rate limit — the pacer above is —
 # but a bound on the tasks in flight, so a thousand recipients do not become a
 # thousand coroutines all waiting on the same gate.
@@ -58,9 +57,6 @@ class Notifier:
         # to arrive in order — the live card waits for the "match started" it
         # continues — and it costs nothing anywhere else.
         self._arrived = asyncio.Event()
-        # The global pacer, shared by every chat being served at once.
-        self._gate = asyncio.Lock()
-        self._last_send = 0.0
 
     def enqueue(self, event: Event) -> bool:
         """Queue the event for EVERYONE it concerns.
@@ -214,7 +210,6 @@ class Notifier:
             for index, row in enumerate(rows):
                 if deadline is not None and time.monotonic() >= deadline:
                     return
-                await self._pace()
                 await self._deliver(row)
                 if index + 1 < len(rows) and self._sending():
                     # The pause goes between messages, not after the last one:
@@ -224,20 +219,6 @@ class Notifier:
         finally:
             if limit is not None:
                 limit.release()
-
-    async def _pace(self) -> None:
-        """Hold the rate Telegram allows across all chats together.
-
-        Skipped when nothing actually goes to Telegram: in DRY_RUN the
-        messages go to the log, and pacing the log helps nobody.
-        """
-        if not self._sending():
-            return
-        async with self._gate:
-            wait = self._last_send + 1.0 / GLOBAL_SENDS_PER_SECOND - time.monotonic()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last_send = time.monotonic()
 
     def _sending(self) -> bool:
         """Whether messages really leave for Telegram. In DRY_RUN they go to

@@ -128,6 +128,18 @@ is the main chat, and without it `telegram_enabled()` is false and the command
 bot never starts. Startup warns about it: a silent bot looks like a dead
 service.
 
+**The Telegram rate limit lives in the CLIENT, not in the senders.** Four
+things write out — the queue, the live card, command replies, button
+acknowledgements — and they share one budget. A limiter per sender leaves
+everybody inside their own rules and the total over. Per-CHAT spacing stays
+in the queue, because that is also where the ordering guarantee is.
+
+**The live card must not be awaited by the frame loop.** It is one message
+per subscriber; a hundred of them is ten seconds of sequential calls with no
+frames read. `submit()` hands over the newest snapshot and drops whatever it
+overtook. Creating the card and the final edit stay awaited — their result
+is needed.
+
 **Upgrading an old database must preserve the journal.** Keys written before
 subscribers existed get a chat prefix once (`adopt_legacy_event_keys`). Without
 that, the very first run of a new version would treat everything it had already
@@ -333,7 +345,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 423 tests
+python -m pytest                                    # 428 tests
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
 PYTHONPATH=src python -m hltv_notify.replay <dump.gz> --team-id N --match-id M --twice
 python scripts/fetch_fixtures.py                    # rebuild the HTML fixtures

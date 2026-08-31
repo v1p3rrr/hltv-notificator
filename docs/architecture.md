@@ -424,6 +424,18 @@ connection, one per match, not frequent polling.
 `403` is handled separately from network failures: it is not an outage but a
 "back off". The pause is measured in minutes while page polling keeps working.
 
+## One door out to Telegram
+
+Four things write to Telegram: the event queue, the live score card, command
+replies and button acknowledgements. They share ONE budget of roughly thirty
+calls a second, so the limit lives in the client itself (`telegram.py`,
+`CALLS_PER_SECOND`) rather than in each of them. While every writer held its
+own limiter, each was within its own rules and together they could still go
+over — and a 429 does not arrive at the writer that caused it.
+
+The lock covers only the bookkeeping, never the request: `getUpdates` hangs for
+twenty-five seconds and holding the gate across it would stop everything.
+
 ## The queue's two rates
 
 Telegram's limits are of two kinds and the queue answers each with its own
@@ -433,9 +445,9 @@ mechanism, because conflating them cost real delivery time.
   also where the ordering guarantee lives: a chat's messages are sent one after
   another in queue order, so the live card cannot overtake the "match started"
   it continues.
-* **Across different chats** — `GLOBAL_SENDS_PER_SECOND`, 25, held by a single
-  pacer that every chat's worker passes through. This is the only thing two
-  recipients share.
+* **Across different chats** — nothing of the queue's own. That is the shared
+  budget above, held at the door, and it is the only thing two recipients
+  share.
 
 Chats are therefore drained in parallel (`MAX_CONCURRENT_CHATS` at a time, a
 bound on tasks rather than a rate) while each chat stays strictly sequential.
@@ -450,6 +462,32 @@ live card's edits draw on the same thirty a second.
 
 Neither rate applies in `DRY_RUN`: nothing leaves for Telegram, and pacing the
 log helps nobody.
+
+## The card must not hold up the feed
+
+The live card is one message per subscriber, and a round of edits used to be
+`await`ed inside the frame loop: one Telegram call per person, in sequence.
+With a hundred subscribers that is some ten seconds in which no frame is read
+at all — so the score being drawn is already stale by the time it is drawn, and
+the multikill counter, which reads the same frames, goes blind alongside.
+
+The ordinary redraw is therefore handed over and not waited for
+(`LiveMessenger.submit`), and **only the newest snapshot per match is kept**. A
+frame overtaken while the previous round was in flight is a score nobody will
+ever need again, so it is dropped rather than queued — the same reasoning that
+keeps the card out of the outbox in the first place.
+
+Two moments stay awaited, because their result is needed: creating the card,
+which carries the map start and must report for whom it failed, and the final
+edit.
+
+**And the interval stretches with the audience.** The card's total cost is
+`recipients / interval` while Telegram's budget is fixed, so holding the
+per-person interval constant means the total climbs until it hits the ceiling
+— and past the ceiling cards do not slow down, they start failing. What is held
+fixed is the total instead (`LIVE_EDIT_BUDGET`, ten a second): a hundred people
+still get the configured ten seconds, three hundred get thirty. A card that
+updates more slowly is honest; one stuck on a five-minute-old score is not.
 
 ## Who a notification goes to
 

@@ -471,6 +471,7 @@ are most likely to touch:
 | `TZ_DISPLAY` | `Europe/Moscow` | timezone used in messages |
 | `LIVE_MESSAGE` | `true` | the live score card during a map |
 | `LIVE_EDIT_SECONDS` | `10` | how often that card is edited (do not go below 5) |
+| `LIVE_EDIT_BUDGET` | `10` | card edits a second in total; the interval above stretches when there are more subscribers than that allows |
 | `REMINDERS` | `15` | default pre-match reminders for a new subscriber, in minutes |
 | `MULTIKILL_ALERTS` | `true` | alert on a big round by one of your players |
 | `MULTIKILL_THRESHOLD` | `4` | how many kills counts as one |
@@ -478,6 +479,7 @@ are most likely to touch:
 | `COMEBACK_ROUNDS` | `9` | swing that counts as a comeback; `0` removes the line |
 | `TELEGRAM_WHITELIST_ONLY` | `true` | answer only the listed chats |
 | `MAX_TEAMS_PER_SUBSCRIBER` | `10` | how many teams one person may follow; `0` removes the limit |
+| `COMMAND_RATE_LIMIT` | `0` | commands one chat may send per minute; `0` is off |
 
 **Polling** — the ceiling of **one request every 30 seconds** is hardcoded, and
 these values cannot raise it.

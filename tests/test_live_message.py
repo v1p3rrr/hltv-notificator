@@ -105,7 +105,7 @@ def test_hard_minimum_interval_cannot_be_configured_away(messenger):
     """The config may ask for an update every second — Telegram dislikes that,
     so the lower bound is hardcoded."""
     m, telegram, _ = messenger
-    assert m._interval == HARD_MIN_EDIT_SECONDS
+    assert m._interval(1) == HARD_MIN_EDIT_SECONDS
     asyncio.run(m.update(MATCH_ID, snapshot(score=(1, 0))))
     for kills in range(2, 12):
         asyncio.run(m.update(MATCH_ID, snapshot(score=(kills, 0))))
@@ -277,3 +277,53 @@ def test_the_first_card_is_not_delayed_by_the_throttle(messenger):
     m.config = live_config(live_edit_seconds=600)
     asyncio.run(m.update(MATCH_ID, snapshot(score=(0, 0), rnd=1), map_started=True))
     assert len(telegram.sent) == 1
+
+
+def test_the_interval_stretches_with_the_audience(messenger):
+    """The card is per subscriber, so its total cost grows with the audience
+    while Telegram's budget does not. What is held fixed is the total number
+    of edits a second, not the interval one person sees."""
+    from dataclasses import replace
+
+    m, _, _ = messenger
+    m.config = replace(m.config, live_edit_seconds=10, live_edit_budget=10)
+
+    assert m._interval(1) == 10.0        # nothing changes for a small audience
+    assert m._interval(100) == 10.0      # exactly at the budget
+    assert m._interval(300) == 30.0      # and now it stretches
+    assert m._interval(1000) == 100.0
+
+    # Zero puts the old behaviour back: one interval whatever the audience.
+    m.config = replace(m.config, live_edit_budget=0)
+    assert m._interval(1000) == 10.0
+
+
+def test_a_submitted_redraw_keeps_only_the_newest_frame(messenger):
+    """The feed does not wait for a round of edits, and a frame overtaken
+    while the previous round was in flight is a score nobody needs any more."""
+    m, telegram, _ = messenger
+
+    async def scenario():
+        m.submit(MATCH_ID, snapshot(score=(1, 0)))
+        m.submit(MATCH_ID, snapshot(score=(2, 0)))
+        m.submit(MATCH_ID, snapshot(score=(3, 0)))
+        # submit returns at once — that is the whole point.
+        assert m._pending[MATCH_ID]["score_team"] == 3
+        await asyncio.gather(*m._drawing.values())
+
+    asyncio.run(scenario())
+    # The card was created once; the frames in between were dropped rather
+    # than drawn one after another.
+    assert len(telegram.sent) == 1
+    assert "3:0" in telegram.sent[0]
+
+
+def test_close_drops_what_was_still_being_drawn(messenger):
+    m, telegram, _ = messenger
+
+    async def scenario():
+        m.submit(MATCH_ID, snapshot(score=(1, 0)))
+        await m.close()
+        assert m._pending == {}
+
+    asyncio.run(scenario())

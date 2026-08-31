@@ -11,6 +11,7 @@ would start a second live message for the same map.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Dict, List, Optional, Tuple
@@ -35,10 +36,30 @@ class LiveMessenger:
         # The time of the last edit is kept in memory: the point is to limit
         # how often we call Telegram, not to survive a restart.
         self._last_edit: Dict[Tuple[int, int], float] = {}
+        # The newest snapshot waiting to be drawn, per match, and the task
+        # drawing it. See `submit`.
+        self._pending: Dict[int, dict] = {}
+        self._drawing: Dict[int, asyncio.Task] = {}
 
-    @property
-    def _interval(self) -> float:
-        return max(float(self.config.live_edit_seconds), HARD_MIN_EDIT_SECONDS)
+    def _interval(self, recipients: int) -> float:
+        """How often ONE person's card may be redrawn.
+
+        The card is per subscriber, so the total number of edits is
+        `recipients / interval` while Telegram's budget stays the same. Holding
+        the per-person interval fixed therefore means the total climbs with the
+        audience until it hits the ceiling, and past that point the cards do
+        not slow down gracefully — they start failing and going stale, which
+        looks the same as a broken service.
+
+        So what is held fixed is the total: with the default budget of ten
+        edits a second, a hundred people still get the configured ten seconds,
+        three hundred get thirty. Slower is honest; stuck is not.
+        """
+        wanted = max(float(self.config.live_edit_seconds), HARD_MIN_EDIT_SECONDS)
+        budget = self.config.live_edit_budget
+        if budget <= 0 or recipients <= 0:
+            return wanted
+        return max(wanted, recipients / float(budget))
 
     async def update(self, match_id: int, snapshot: dict, *, force: bool = False,
                      finalize: bool = False,
@@ -55,17 +76,65 @@ class LiveMessenger:
         """
         if not self.config.live_message or not snapshot:
             return []
+        recipients = self._recipients(match_id)
+        interval = self._interval(len(recipients))
         missed: List[str] = []
-        for chat_id, for_team_id in self._recipients(match_id):
+        for chat_id, for_team_id in recipients:
             # A subscriber who muted E5 gets the plain score message: muting
             # asked for exactly that, and the queue will not send them E5 either.
             carries_start = not self._muted(chat_id, for_team_id, "E5")
             ok = await self._update_one(chat_id, for_team_id, match_id, snapshot,
                                         force=force, finalize=finalize,
-                                        announces_start=carries_start)
+                                        announces_start=carries_start,
+                                        interval=interval)
             if map_started and carries_start and not ok:
                 missed.append(chat_id)
         return missed
+
+    def submit(self, match_id: int, snapshot: dict) -> None:
+        """Redraw the card without the caller waiting for it.
+
+        The feed loop used to `await` the whole round of edits: one Telegram
+        call per subscriber, in sequence. With a hundred of them that is some
+        ten seconds during which no frame is read at all, so the score the
+        cards are being drawn with is already stale by the time they are drawn.
+
+        Only the NEWEST snapshot per match is kept. A frame that was overtaken
+        while the previous round was in flight is worthless — it is a score
+        nobody will ever need again — so it is dropped rather than queued. That
+        is the same reasoning that keeps the card out of the outbox entirely.
+
+        The two moments that cannot be fire-and-forget stay `await`ed by the
+        caller: creating the card (it carries the map start, and the caller
+        needs to know for whom that failed) and the final edit.
+        """
+        self._pending[match_id] = snapshot
+        task = self._drawing.get(match_id)
+        if task is None or task.done():
+            self._drawing[match_id] = asyncio.create_task(self._draw(match_id))
+
+    async def _draw(self, match_id: int) -> None:
+        while True:
+            snapshot = self._pending.pop(match_id, None)
+            if snapshot is None:
+                return
+            try:
+                await self.update(match_id, snapshot)
+            except Exception:  # noqa: BLE001 - the card must not kill the feed
+                log.exception("live message for match %s could not be redrawn",
+                              match_id)
+
+    async def close(self) -> None:
+        """Drop whatever was still being drawn. Nothing is lost that matters:
+        a card is a score that is about to be redrawn anyway, and the final
+        edit goes through `finalize`, which is awaited."""
+        self._pending.clear()
+        tasks = [task for task in self._drawing.values() if not task.done()]
+        self._drawing.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _muted(self, chat_id: str, for_team_id, event_type: str) -> bool:
         if for_team_id is None:
@@ -84,7 +153,8 @@ class LiveMessenger:
 
     async def _update_one(self, chat_id: str, for_team_id, match_id: int, snapshot: dict,
                           *, force: bool = False, finalize: bool = False,
-                          announces_start: bool = False) -> bool:
+                          announces_start: bool = False,
+                          interval: Optional[float] = None) -> bool:
         """True means the message is in the chat and up to date."""
         map_number = int(snapshot.get("map_number") or 0)
         if map_number <= 0:
@@ -112,7 +182,7 @@ class LiveMessenger:
             # holding the first one back would delay the map's card by the
             # whole interval.
             elapsed = time.monotonic() - self._last_edit.get(key, 0.0)
-            if elapsed < self._interval:
+            if elapsed < (self._interval(0) if interval is None else interval):
                 return True
 
         text = fmt.render_live(fmt.orient(snapshot, for_team_id),

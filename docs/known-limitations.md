@@ -246,7 +246,9 @@ spends it fastest. Its key is `(chat_id, match_id, map_number)`: every
 subscriber has their own message, and every one of them is edited every
 `LIVE_EDIT_SECONDS`. A hundred people watching one map is ten edits a second;
 three hundred is the whole budget gone on the score of a single map, with
-nothing left for the events. Note what the binding limit is not: one edit per
+nothing left for the events. `LIVE_EDIT_BUDGET` keeps that from turning into
+failures — the interval stretches instead, so the cards slow down rather than
+break — but slowing down is all it can do. Note what the binding limit is not: one edit per
 ten seconds is far inside the per-chat allowance of about one a second. It is
 the sum across chats that runs out, which is why no setting fixes it — the
 message is per chat because the score is turned around to face each recipient's

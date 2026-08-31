@@ -217,6 +217,7 @@ async def run() -> int:
         task.cancel()
     await asyncio.gather(*others, return_exceptions=True)
     await supervisor.shutdown()
+    await messenger.close()
 
     # The queue, on the other hand, finishes what it started and exits of its
     # own accord: stop is already set. Tearing it down with a cancel is not

@@ -212,13 +212,50 @@ def test_only_the_main_chat_changes_the_log_level(bot, monkeypatch):
     assert "Verbose mode on" in telegram.sent[-1][1]
 
 
-def test_allowed_chat_becomes_a_subscriber(bot):
-    """An allowed chat becomes a subscriber on its first message: otherwise it
-    would have to be written into the database by hand."""
+def test_a_subscriber_is_created_by_storing_something(bot):
+    """Looking at things leaves no trace; setting yourself up does.
+
+    Creating a row for anybody who says anything is a database write an
+    outsider can make the service do, and with the whitelist off there is no
+    bound on it. A person who reads /status and leaves was never a subscriber
+    in any useful sense either.
+    """
     command_bot, telegram, storage = bot
     assert storage.get_subscriber(CHAT) is None
     send(command_bot, "/status")
+    send(command_bot, "/next")
+    send(command_bot, "/help")
+    assert storage.get_subscriber(CHAT) is None
+
+    send(command_bot, "/tz Europe/Berlin")
     assert storage.get_subscriber(CHAT) is not None
+
+
+def test_the_command_rate_limit_answers_once_then_goes_quiet(bot):
+    """Answering every message over the limit means the bot amplifying a
+    flood with its own replies."""
+    from hltv_notify.config import Config
+
+    command_bot, telegram, _ = bot
+    command_bot.config = Config(chat_id=CHAT, bot_token="t", command_rate_limit=3)
+    for _ in range(3):
+        send(command_bot, "/status")
+    assert len(telegram.sent) == 3
+
+    send(command_bot, "/status")
+    assert "Too many commands" in telegram.sent[-1][1]
+    before = len(telegram.sent)
+    for _ in range(20):
+        send(command_bot, "/status")
+    assert len(telegram.sent) == before      # silence after the one warning
+
+
+def test_the_rate_limit_is_off_by_default(bot):
+    command_bot, telegram, _ = bot
+    assert command_bot.config.command_rate_limit == 0
+    for _ in range(30):
+        send(command_bot, "/status")
+    assert len(telegram.sent) == 30
 
 
 def test_verbose_toggles_and_reports(bot):

@@ -70,6 +70,11 @@ def _parse_team_ref(argument: str):
 # the command cannot.
 MUTABLE_EVENTS = tuple(code for code, _ in menu.MUTABLE)
 
+# Commands that STORE something for the person sending them. Only these
+# create a subscriber: looking at /status or /next leaves no trace.
+WRITING_COMMANDS = frozenset({"/track", "/untrack", "/mute", "/unmute",
+                             "/remind", "/tz", "/pause", "/resume"})
+
 # One list of commands, in the order a person meets them. The /help text and
 # the hint list Telegram shows when you type "/" are both generated from it —
 # two copies would drift, and the drift is invisible from inside: /live had
@@ -139,6 +144,10 @@ class CommandBot:
         self._offset: Optional[int] = None
         # chat_id -> when it was last written about as refused
         self._refused = {}
+        # chat_id -> the times of its recent commands, and whether it has
+        # already been told it is going too fast in this window.
+        self._commands = {}
+        self._warned_rate = {}
 
     async def run(self, stop: asyncio.Event) -> None:
         # Hand Telegram the command list so it can offer it on "/" and behind
@@ -208,9 +217,21 @@ class CommandBot:
             self._log_refusal(chat_id, command)
             return
 
-        # An allowed chat becomes a subscriber on its very first message,
-        # otherwise it would have to be created by hand in the database.
-        if self.storage.get_subscriber(chat_id) is None:
+        limited = self._rate_limited(chat_id)
+        if limited == "first":
+            await self._reply(chat_id, "Too many commands at once — try again "
+                                       "in a minute.")
+            return
+        if limited:
+            return
+
+        # A subscriber row is created by a command that STORES something, not
+        # by one that shows something. Reading /status or /next leaves no
+        # trace; /track, a reminder, a timezone or the quiet switch are a
+        # person setting themselves up, and that is what a subscriber is.
+        # Creating a row for anybody who says anything is a write an outsider
+        # can make the service do, and with the whitelist off it is unbounded.
+        if command in WRITING_COMMANDS and self.storage.get_subscriber(chat_id) is None:
             self.storage.add_subscriber(chat_id)
             log.info("new subscriber: %s", chat_id)
 
@@ -254,6 +275,38 @@ class CommandBot:
             reply = "The command crashed, details are in the logs."
 
         await self._reply(chat_id, reply, self._markup_for(chat_id, command))
+
+    def _rate_limited(self, chat_id: str) -> Optional[str]:
+        """Whether this chat has run over its command allowance.
+
+        A sliding minute per chat. The refusal is stated ONCE per window and
+        then the chat is simply ignored: answering every message over the
+        limit would mean the bot amplifying a flood with its own replies.
+
+        Off unless `COMMAND_RATE_LIMIT` is set. With the whitelist on the
+        people who can reach the bot are people the owner chose; this is for
+        the open mode, and for the client that gets stuck in a loop.
+        """
+        limit = self.config.command_rate_limit
+        if limit <= 0:
+            return None
+        now = time.monotonic()
+        window = [when for when in self._commands.get(chat_id, ())
+                  if now - when < 60.0]
+        if len(self._commands) > 512:
+            self._commands = {chat: times for chat, times in self._commands.items()
+                              if times and now - times[-1] < 60.0}
+        if len(window) >= limit:
+            self._commands[chat_id] = window
+            if self._warned_rate.get(chat_id):
+                return "again"
+            self._warned_rate[chat_id] = True
+            log.warning("chat %s is over its command limit (%d/min)", chat_id, limit)
+            return "first"
+        window.append(now)
+        self._commands[chat_id] = window
+        self._warned_rate.pop(chat_id, None)
+        return None
 
     def _log_refusal(self, chat_id: str, command: str) -> None:
         """A refused chat is logged once, then not again for a while.
@@ -315,11 +368,21 @@ class CommandBot:
                         chat_id)
             await self._answer(callback_id, "No access")
             return
-        if self.storage.get_subscriber(chat_id) is None:
+        if self._rate_limited(chat_id):
+            # A press must ALWAYS be answered, or Telegram spins the button's
+            # indicator until it times out. So the refusal is a toast rather
+            # than silence — and no work is done behind it.
+            await self._answer(callback_id, "Too many requests, wait a moment")
+            return
+
+        data = query.get("data", "")
+        # Same rule as for commands: the sections (m:...) only show things,
+        # everything else stores something.
+        if not data.startswith("m:") and self.storage.get_subscriber(chat_id) is None:
             self.storage.add_subscriber(chat_id)
 
         try:
-            text, markup, toast = self._dispatch_callback(chat_id, query.get("data", ""))
+            text, markup, toast = self._dispatch_callback(chat_id, data)
         except Exception:  # noqa: BLE001 - a button must not hang the bot
             log.exception("failed to handle button %s", query.get("data"))
             text, markup, toast = "The button crashed, details are in the logs.", None, ""

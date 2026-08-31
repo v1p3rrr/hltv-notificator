@@ -6,7 +6,9 @@ needed for HLTV, and Telegram should be approached as an ordinary client.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Mapping, Optional
 
 from curl_cffi.requests import AsyncSession
@@ -15,6 +17,11 @@ log = logging.getLogger(__name__)
 
 API_BASE = "https://api.telegram.org"
 API = API_BASE + "/bot{token}/{method}"
+
+# What Telegram tolerates across DIFFERENT chats, near enough: about thirty
+# a second. Held a little under it — the cost of being wrong is a 429 and a
+# delayed notification, and nothing here is worth the last few percent.
+CALLS_PER_SECOND = 25.0
 
 
 class TelegramError(RuntimeError):
@@ -32,6 +39,14 @@ class Telegram:
         # NO_PROXY while HLTV is not, or the other way round.
         self._proxies = dict(proxies or {})
         self._session: Optional[AsyncSession] = None
+        # The rate limit lives HERE, at the single door out to Telegram,
+        # rather than in each of the things that write through it. There are
+        # four of them — the event queue, the live score card, command replies
+        # and button acknowledgements — and they share one budget of about
+        # thirty calls a second. While each held its own limiter, every one of
+        # them was within its own rules and together they could still go over.
+        self._gate = asyncio.Lock()
+        self._last_call = 0.0
 
     async def _ensure(self) -> AsyncSession:
         if self._session is None:
@@ -43,8 +58,19 @@ class Telegram:
             await self._session.close()
             self._session = None
 
+    async def _pace(self) -> None:
+        """Hold the shared rate. The lock covers the bookkeeping only, never
+        the request itself — `getUpdates` hangs for twenty-five seconds, and
+        holding the gate across that would stop everything else dead."""
+        async with self._gate:
+            wait = self._last_call + 1.0 / CALLS_PER_SECOND - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_call = time.monotonic()
+
     async def _call(self, method: str, payload: Dict[str, Any], *, timeout: int = 30) -> Any:
         session = await self._ensure()
+        await self._pace()
         url = API.format(token=self._token, method=method)
         try:
             response = await session.post(url, json=payload, timeout=timeout)

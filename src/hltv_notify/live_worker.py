@@ -164,10 +164,17 @@ class LiveWorker:
             await self.messenger.finalize(self.match_id, snapshot)
             return
 
-        missed = await self.messenger.update(self.match_id, snapshot,
-                                             map_started=started is not None)
         if started is None:
+            # The ordinary redraw: handed over and not waited for. A round of
+            # edits is one Telegram call per subscriber, and the feed must not
+            # stand still for it.
+            self.messenger.submit(self.match_id, snapshot)
             return
+
+        # The card that carries the map start is different: the caller has to
+        # know for whom it failed, so that a milestone is not lost.
+        missed = await self.messenger.update(self.match_id, snapshot,
+                                             map_started=True)
         for chat_id in missed:
             # The map's card did not reach this chat. A milestone must not be
             # lost on the best-effort path, so it goes through the queue —

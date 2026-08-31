@@ -114,9 +114,25 @@ class Config:
     max_teams_per_subscriber: int = field(
         default_factory=lambda: _int("MAX_TEAMS_PER_SUBSCRIBER", 10))
 
+    # Commands one chat may send per minute. Off by default: with the
+    # whitelist on, the people who can reach the bot are people you chose, and
+    # a limit that never fires is a limit nobody has tested. Turn it on before
+    # opening the bot up.
+    command_rate_limit: int = field(
+        default_factory=lambda: _int("COMMAND_RATE_LIMIT", 0))
+
     # the live score message kept up to date during a map
     live_message: bool = field(default_factory=lambda: _bool("LIVE_MESSAGE", True))
     live_edit_seconds: int = field(default_factory=lambda: _int("LIVE_EDIT_SECONDS", 10))
+    # How many card edits a second the service allows itself IN TOTAL. The
+    # card is per subscriber, so its cost grows with the audience while
+    # Telegram's budget does not: holding the interval per person fixed means
+    # the total rate rises until it runs into the ceiling. This holds the
+    # total instead and lets the interval stretch — a card that updates every
+    # thirty seconds is honest, one stuck at a five-minute-old score is not.
+    # 0 removes the adjustment.
+    live_edit_budget: int = field(
+        default_factory=lambda: _int("LIVE_EDIT_BUDGET", 10))
 
     # how long before we report that the service has gone blind. In urgent
     # situations (under a minute to the start, three rounds left on a map,

@@ -95,6 +95,8 @@ The values live in `.env`; the defaults are a balanced profile:
 | `PREMATCH_WINDOW_MINUTES` | 30 | how long before the start pre-match mode turns on |
 | `LATE_START_GRACE_MINUTES` | 60 | how long a match that should have started keeps pre-match mode |
 | `MAX_TEAMS_PER_SUBSCRIBER` | 10 | teams one person may follow; the sweep costs one request per distinct team |
+| `LIVE_EDIT_BUDGET` | 10 | card edits a second in total; the per-person interval stretches beyond that |
+| `COMMAND_RATE_LIMIT` | 0 | commands per chat per minute, 0 is off; meant for the open mode |
 | `COMEBACK_ROUNDS` | 9 | the swing that counts as a comeback; 0 removes the line |
 | `DEGRADED_ALERT_SECONDS` | 300 | how long before reporting that the service has gone blind (max 600) |
 
