@@ -178,6 +178,18 @@ def test_a_group_that_lost_its_colon_is_dropped_and_never_guessed_at(caplog):
     assert "'ru'" in caplog.text and "'BY'" in caplog.text
 
 
+def test_a_dropped_group_takes_its_own_flags_with_it(caplog):
+    """`ru BY,KZ` loses its colon, so `ru` and `BY` are dropped — but `KZ` is
+    separated from BY by a COMMA, and if the drop left English in force it
+    alone came out English while its own group went missing. Every drop ends
+    the current language, whichever of the two ways it was dropped."""
+    with caplog.at_level(logging.WARNING):
+        table = aliases_from("en:GB,US,WORLD ru BY,KZ")
+    assert table == {"GB": "en", "US": "en", "WORLD": "en"}
+    for flag in ("RU", "BY", "KZ"):
+        assert st.language_of(flag, table) == flag.lower()
+
+
 def test_a_group_with_no_language_takes_nothing_with_it(caplog):
     """A colon with nothing before it names no language. It must not leave the
     PREVIOUS one in force either, or the flags trailing a group we could not

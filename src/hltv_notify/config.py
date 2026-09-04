@@ -262,7 +262,9 @@ class Config:
           commas — belong to it. The next colon opens the next language,
           wherever it stands: after a space, a semicolon or a comma;
         * anything following a SPACE without a colon of its own is not part of
-          the format. It is dropped and said so, never guessed at.
+          the format. It is dropped and said so, never guessed at — and the
+          drop ENDS the current language, so the flags trailing a group we
+          could not read do not attach to the one before it.
 
         The second rule is the one that had to be learned. Without it a group
         that lost its colon — `en:GB,US ru BY` — does not go missing, it maps
@@ -313,7 +315,13 @@ class Config:
             elif language and "," in separator:
                 flags = [token]
             else:
+                # Same clearing as above, and for the same reason: the flags
+                # trailing a group we could not read — `ru BY,KZ` — must not
+                # attach to the language before it. Only KZ is separated by a
+                # comma there, so without this it alone would come out English
+                # while its own group was dropped.
                 dropped.append(token)
+                language = ""
                 continue
             for flag in flags:
                 flag = flag.strip().upper()
