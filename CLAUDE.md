@@ -211,18 +211,28 @@ somebody asking for Norwegian casts was answered with all of them.
 `LIST_ANY_WORDS` subtracts it, and that is the entire reason the constant
 exists rather than the expression being written inline.
 
-**A config format needs ONE rule about what separates, and it is not
-whitespace.** `STREAM_LANGUAGE_ALIASES` was got wrong twice in two commits.
-Splitting groups on whitespace lost `en: GB, US` completely — four pieces, none
-parseable, table EMPTY. Squeezing whitespace out around every separator first
-then read the comma in `en:GB,US, ru:BY` as belonging INSIDE English and stored
-a flag called "ru:BY", so `BY` never meant Russian. What works is to make the
-COLON the only thing that opens a group and let space, comma and semicolon all
-separate alike. Both failures were silent, and an alias table is invisible when
-wrong: the block still appears, it just stops counting `AU` and `US` as English
-and drops the 155-viewer cast for the 8-viewer one. Hence also the WARNING when
-a non-empty value parses to nothing — which the second bug slipped past,
-because a half-parsed table is not an empty one.
+**A lenient parser must DROP what it cannot read, never guess.**
+`STREAM_LANGUAGE_ALIASES` took three attempts, and each of the first two fixed
+one shape of input by breaking another. Splitting groups on whitespace lost
+`en: GB, US` completely — four pieces, none parseable, table EMPTY. Squeezing
+the whitespace out around every separator then read the comma in
+`en:GB,US, ru:BY` as belonging INSIDE English and stored a flag called
+"ru:BY". Making the colon the only thing that opens a group fixed both and
+introduced the worst one yet: a group that lost its colon (`en:GB,US ru BY`)
+no longer went missing, it mapped `RU` onto English and labelled every Russian
+broadcast English. The rule that holds is TWO rules — a colon opens a language
+and its comma-separated flags follow it; anything after a SPACE with no colon
+of its own is dropped and logged. Which separator preceded a token is
+information the parser needs, so `re.split` keeps them.
+
+Every one of those failures was silent, and an alias table is invisible when
+wrong: the block still appears, it just has the wrong broadcasts in it. Note
+that the "parsed to nothing" WARNING caught none of them — a half-parsed table
+is not an empty one — which is why the drop is logged per token. And note the
+direction: an unclaimed flag is still its own language, so dropping is right
+where guessing is wrong everywhere it is read.
+`tests/test_streams.py` now asserts every shape at once, working and broken,
+so a fourth version cannot trade one for another.
 
 **Only Twitch and Kick get stream links, and the host is checked, not the
 provider.** HLTV lists YouTube too, and there is no clip button there, so a
@@ -583,7 +593,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 572 tests
+python -m pytest                                    # 581 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

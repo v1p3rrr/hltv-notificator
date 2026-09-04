@@ -104,8 +104,16 @@ The values live in `.env`; the defaults are a balanced profile:
 | `STREAM_LINKS` | true | broadcast links under a multikill. A **default**: `/settings streams` |
 | `STREAM_LINKS_MAX` | 3 | how many to list; 0 is **all**. A **default**: `/settings streams_count` |
 | `STREAM_LANGUAGES` | `en,ru` | languages worth a tap. A **default**: `/settings streams_langs` |
-| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that stand for one language; an unlisted flag is its own. The **colon** is what opens a new language; spaces, commas and semicolons all separate, so `en:GB,US ru:BY` and `en: GB, US, ru:BY` are the same. A value that parses to nothing is logged at WARNING, because an empty table breaks nothing visibly — it just stops English arriving under `AU` and `US` |
+| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that stand for one language; an unlisted flag is its own. A **colon** opens a language and the comma-separated flags after it belong to it, so `en:GB,US ru:BY` and `en: GB, US, ru:BY` are the same. Anything after a space with **no colon of its own** is dropped with a WARNING rather than guessed at, and an empty table is warned about too — see below |
 | `DEGRADED_ALERT_SECONDS` | 300 | how long before reporting that the service has gone blind (max 600) |
+
+Both warnings about `STREAM_LANGUAGE_ALIASES` are worth reading rather than
+scrolling past, because a wrong alias table is invisible from the outside: the
+stream block still appears under every multikill, it just has the wrong
+broadcasts in it. Dropping is deliberate — a flag nobody claims is still its
+own language, whereas a flag attached to the wrong one is wrong everywhere it
+is read. `en:GB,US ru BY` would otherwise make `RU` an English flag and label
+every Russian cast English.
 
 The ceiling of **1 request every 30 seconds** is hardcoded and cannot be raised
 by config. Requests are sequential, with ±20% jitter.

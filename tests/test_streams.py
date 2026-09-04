@@ -135,33 +135,67 @@ def aliases_from(raw):
     return Config(stream_language_aliases=raw).flag_languages()
 
 
-def test_the_alias_table_survives_the_spaces_a_person_writes():
-    """Whitespace separates one GROUP from the next, so a space written inside
-    one split it into pieces that each parsed to nothing and the table came
-    back empty — for the form a person is most likely to type."""
-    packed = aliases_from("en:GB,US,WORLD,AU")
-    assert packed == {"GB": "en", "US": "en", "WORLD": "en", "AU": "en"}
-    for spaced in ("en: GB, US, WORLD, AU",
-                   "en : GB , US , WORLD , AU",
-                   "en:GB, US, WORLD, AU"):
-        assert aliases_from(spaced) == packed
+# Every shape of the same table, in one place. Three versions of this parser
+# each fixed one of these and broke another, so they are asserted together:
+# whichever way a person writes two languages and three flags, it reads the
+# same. A colon opens a language; space, comma and semicolon all separate.
+SAME_TABLE = {"GB": "en", "US": "en", "BY": "ru"}
 
 
-def test_a_space_still_separates_one_language_from_the_next():
-    assert aliases_from("en:GB,US ru:BY,KZ") == {
-        "GB": "en", "US": "en", "BY": "ru", "KZ": "ru"}
-    assert aliases_from("en: GB, US; ru: BY") == {
-        "GB": "en", "US": "en", "BY": "ru"}
+@pytest.mark.parametrize("written", [
+    "en:GB,US ru:BY",              # as documented
+    "en:GB,US;ru:BY",              # semicolon between the languages
+    "en:GB,US, ru:BY",             # a comma between them — appending one
+    "en:GB,US,ru:BY",              # ...with no space either
+    "en: GB, US ru: BY",           # a space after every colon
+    "en : GB , US ; ru : BY",      # spaces around everything
+    "en:GB, US ru:BY",             # mixed
+    "  en:GB,US   ru:BY  ",        # padded, and doubled separators
+    "en:GB,US\nru:BY",             # written over two lines
+])
+def test_every_shape_of_the_alias_table_reads_the_same(written):
+    assert aliases_from(written) == SAME_TABLE
 
 
-def test_a_second_language_may_be_appended_with_a_comma():
-    """Extending the shipped default by writing `, ru:BY` after it is the
-    obvious thing to do. Read as a separator inside English it stored the flag
-    "ru:BY" and BY never meant Russian — silently, and the warning below could
-    not catch it because the table was not empty."""
-    for written in ("en:GB,US, ru:BY", "en:GB,US,ru:BY", "en:GB, US ru:BY"):
-        assert aliases_from(written) == {"GB": "en", "US": "en", "BY": "ru"}
-    assert not any(":" in flag for flag in aliases_from("en:GB,US, ru:BY"))
+def test_a_flag_list_may_be_as_long_as_it_likes():
+    assert aliases_from("en: GB, US, WORLD, AU, CA, NZ, IE") == {
+        flag: "en" for flag in ("GB", "US", "WORLD", "AU", "CA", "NZ", "IE")}
+
+
+# ---------- and every shape that is NOT the format ----------
+
+def test_a_group_that_lost_its_colon_is_dropped_and_never_guessed_at(caplog):
+    """The dangerous direction. A token after a space with no colon of its own
+    used to become a flag of the PREVIOUS language, so `ru` mapped RU onto
+    English and every Russian broadcast was labelled English — with a table
+    that looked perfectly healthy, so no warning could fire. Dropping is safe:
+    a flag nobody claims is still its own language."""
+    with caplog.at_level(logging.WARNING):
+        table = aliases_from("en:GB,US,WORLD ru BY")
+    assert table == {"GB": "en", "US": "en", "WORLD": "en"}
+    assert st.language_of("RU", table) == "ru"      # NOT "en"
+    assert st.language_of("BY", table) == "by"
+    assert "'ru'" in caplog.text and "'BY'" in caplog.text
+
+
+def test_a_group_with_no_language_takes_nothing_with_it(caplog):
+    """A colon with nothing before it names no language. It must not leave the
+    PREVIOUS one in force either, or the flags trailing a group we could not
+    read would quietly attach to whatever came before."""
+    with caplog.at_level(logging.WARNING):
+        assert aliases_from(":GB, KZ en:US") == {"US": "en"}
+    assert "':GB'" in caplog.text and "'KZ'" in caplog.text
+
+
+def test_a_value_with_no_colon_at_all_is_an_empty_table(caplog):
+    with caplog.at_level(logging.WARNING):
+        assert aliases_from("en GB US") == {}
+    assert "empty table" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        # Nothing configured is not a mistake: every flag is its own language.
+        assert aliases_from("") == {}
+    assert caplog.text == ""
 
 
 def test_a_spaced_table_keeps_the_australian_cast_in_the_block():
@@ -171,19 +205,6 @@ def test_a_spaced_table_keeps_the_australian_cast_in_the_block():
     chosen = st.pick([one("AU", 155), one("RU", 8)], primary=("en", "ru"),
                      limit=3, aliases=aliases_from("en: GB, US, WORLD, AU"))
     assert [item["viewers"] for item in chosen] == [155, 8]
-
-
-def test_a_table_that_parses_to_nothing_says_so_in_the_log(caplog):
-    """An empty table breaks nothing visibly — the block still appears, just
-    with the wrong broadcasts in it — so it has to be said out loud."""
-    with caplog.at_level(logging.WARNING):
-        assert aliases_from("en GB US") == {}
-    assert "STREAM_LANGUAGE_ALIASES" in caplog.text
-    caplog.clear()
-    with caplog.at_level(logging.WARNING):
-        # Nothing configured is not a mistake: every flag is its own language.
-        assert aliases_from("") == {}
-    assert caplog.text == ""
 
 
 # ---------- choosing ----------

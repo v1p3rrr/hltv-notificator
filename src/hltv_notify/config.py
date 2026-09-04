@@ -255,44 +255,81 @@ class Config:
         A flag missing from here is its own language, lowercased: `RU` -> `ru`,
         `BR` -> `br`. So the table only has to carry the exceptions.
 
-        Written `en:GB,US,WORLD ru:BY`, but nothing hangs on WHICH separator
-        stands where: the value is cut on spaces, commas and semicolons alike,
-        a token carrying a colon opens a new language, and every token after it
-        is one of that language's flags. Nothing else is a rule, and that is
-        the point — both shapes a person actually types come out the same. Two
-        earlier versions each got one of them wrong: splitting on whitespace
-        alone lost `en: GB, US` entirely (four pieces, none of them parseable),
-        and squeezing the whitespace out first read the comma in
-        `en:GB,US, ru:BY` as a separator INSIDE English and stored the flag
-        "ru:BY" — so `BY` never meant Russian.
+        Written `en:GB,US,WORLD ru:BY`. Two rules, and they are deliberately
+        the whole of it:
+
+        * a COLON opens a language, and the flags after it — separated by
+          commas — belong to it. The next colon opens the next language,
+          wherever it stands: after a space, a semicolon or a comma;
+        * anything following a SPACE without a colon of its own is not part of
+          the format. It is dropped and said so, never guessed at.
+
+        The second rule is the one that had to be learned. Without it a group
+        that lost its colon — `en:GB,US ru BY` — does not go missing, it maps
+        `RU` onto English, and every Russian broadcast is labelled English
+        while the table looks perfectly healthy. Dropping is the only safe
+        direction: a flag left out is still its own language, which is right,
+        whereas a flag pointed at the wrong one is silently wrong everywhere it
+        is read.
+
+        This is the third version. The first split groups on whitespace and
+        lost `en: GB, US` entirely; the second squeezed the whitespace out
+        around every separator and then read the comma in `en:GB,US, ru:BY` as
+        belonging inside English. `tests/test_streams.py` holds every shape at
+        once now, working and broken, so a fourth cannot trade one for another.
 
         An unreadable value is not a visible failure: the block still appears,
         it just stops counting `AU` and `US` as English and drops the most
-        watched cast. Hence the warning below.
+        watched cast. Hence the warnings below.
         """
         table: Dict[str, str] = {}
+        dropped: List[str] = []
         language = ""
-        # Whitespace around the COLON is squeezed out first so `en : GB` still
-        # opens a language. It is safe to do there and only there: a colon
-        # always binds a language to what follows it, whereas doing the same
-        # around the comma is what merged two groups into one.
+        # Whitespace around the COLON goes first, so `en : GB` still opens a
+        # language. Safe there and only there: a colon always binds a language
+        # to what follows it, whereas doing the same around the comma is what
+        # merged two groups into one.
         text = re.sub(r"\s*:\s*", ":", self.stream_language_aliases)
-        for token in re.split(r"[\s,;]+", text):
+        # The separators are KEPT. Which one preceded a token is exactly what
+        # tells a further flag of the language just opened (a comma) from a
+        # group that lost its colon (a space).
+        pieces = re.split(r"([\s,;]+)", text)
+        separator = ""
+        for index, piece in enumerate(pieces):
+            if index % 2:
+                separator = piece
+                continue
+            token = piece.strip()
             if not token:
                 continue
             if ":" in token:
-                language, _, flag = token.partition(":")
-                language = language.strip().lower()
+                name, *flags = token.split(":")
+                language = name.strip().lower()
+                if not language:
+                    # And it stays empty on purpose: nothing following a group
+                    # we could not read may attach to whatever came before it.
+                    dropped.append(token)
+                    continue
+            elif language and "," in separator:
+                flags = [token]
             else:
-                flag = token
-            flag = flag.strip().upper()
-            if language and flag:
-                table[flag] = language
+                dropped.append(token)
+                continue
+            for flag in flags:
+                flag = flag.strip().upper()
+                if flag:
+                    table[flag] = language
+        if dropped:
+            log.warning(
+                "STREAM_LANGUAGE_ALIASES: ignored %s — a group is a language, a "
+                "colon and its flags, like en:GB,US. A flag nobody claims stays "
+                "its own language, which is safer than guessing at one.",
+                ", ".join(repr(one) for one in dropped))
         if not table and self.stream_language_aliases.strip():
             log.warning(
-                "STREAM_LANGUAGE_ALIASES=%r parsed to nothing — expected groups "
-                "like en:GB,US. Every flag now stands for its own language, so "
-                "an English cast under AU or US no longer counts as English.",
+                "STREAM_LANGUAGE_ALIASES=%r left an empty table. Every flag now "
+                "stands for its own language, so an English cast under AU or US "
+                "no longer counts as English.",
                 self.stream_language_aliases)
         return table
 
