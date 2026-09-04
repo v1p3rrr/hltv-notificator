@@ -104,7 +104,8 @@ COMMANDS = (
     ("unmute", "<id>", "Clear all mutes for a team"),
     ("remind", "[15m|1h]", "Pre-match reminders; /remind rm 15m removes one"),
     ("tz", "<Europe/Berlin>", "Your timezone"),
-    ("settings", "[name] [value]", "Your alerts: multikill, comeback, half, overtime, card"),
+    ("settings", "[name] [value]",
+     "Your alerts: multikill, comeback, half, overtime, card, streams"),
     ("pause", "", "Go quiet"),
     ("resume", "", "Start sending again"),
     ("check", "", "Read the schedule now, without waiting for the next cycle"),
@@ -773,8 +774,14 @@ class CommandBot:
         return self.storage.settings_for(chat_id, prefs.defaults(self.config))
 
     def _settings(self, chat_id: str, argument: str) -> str:
-        """`/settings`, `/settings multikill 5`, `/settings comeback default`."""
-        parts = (argument or "").split()
+        """`/settings`, `/settings multikill 5`, `/settings comeback default`.
+
+        Split into the name and ALL the rest, not into words: a language list
+        is one value that a person may well type with spaces
+        (`/settings streams_langs en, ru`), and taking only the next word would
+        silently store half of it.
+        """
+        parts = (argument or "").split(None, 1)
         if not parts:
             return self._settings_text(chat_id)
 
@@ -793,7 +800,7 @@ class CommandBot:
                     f"Change it: /settings {name} {prefs.example(item)}, "
                     f"or /settings {name} default")
 
-        raw = parts[1].lower()
+        raw = parts[1].strip().lower()
         if raw in {"default", "reset"}:
             self.storage.clear_setting(chat_id, name)
             restored = prefs.default_for(self.config, name)
@@ -804,6 +811,16 @@ class CommandBot:
         if value is None:
             return (f"I could not read {_quoted(parts[1])}.\n"
                     f"{fmt.escape(item.label)} takes {prefs.range_hint(item)}.")
+
+        if item.textual:
+            # A list goes into its own column. There is no "on" for it: the
+            # empty list is a meaning of its own ("any language"), so there is
+            # nothing for "back to the default" to be confused with beyond
+            # `default`, handled above.
+            self.storage.set_text_setting(chat_id, name, str(value))
+            return (f"<b>{fmt.escape(item.label)}</b>: {item.describe(value)}\n"
+                    f"{fmt.escape(item.summary)}")
+
         if value < 0:
             # "on" for a numeric setting means "back to the service default".
             restored = prefs.default_for(self.config, name)
@@ -853,6 +870,21 @@ class CommandBot:
             return self._settings_screen(chat_id, "")
         if len(args) < 2:
             return self._settings_screen(chat_id, item.summary)
+
+        if item.textual:
+            # Each button is one language, and pressing it toggles that one.
+            # Sending the whole list in callback_data would not fit its 64
+            # bytes once a few languages are on.
+            wanted = prefs.parse_languages(self._setting_values(chat_id)[name])
+            code = args[1].lower()
+            if code in wanted:
+                wanted.remove(code)
+            else:
+                wanted.append(code)
+            self.storage.set_text_setting(chat_id, name, ",".join(wanted))
+            return self._settings_screen(
+                chat_id, f"{item.label}: {item.describe(','.join(wanted))}")
+
         try:
             value = item.clamp(int(args[1]))
         except ValueError:

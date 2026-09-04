@@ -405,3 +405,39 @@ def test_the_mute_migration_leaves_other_teams_alone_and_runs_once(tmp_path):
     assert storage._migrate_overtime_mutes() == 0
     assert storage.team_mutes("555", 2) == ["E12"]
     storage.close()
+
+
+def test_a_settings_table_without_text_value_gains_it(tmp_path):
+    """The column arrived with the stream languages.
+
+    A database written by the previous version has `subscriber_settings`
+    without it, and CREATE TABLE IF NOT EXISTS will not reach an existing
+    table — that is what the `added` dict in `_migrate` is for. What must
+    survive is the numbers already in there.
+    """
+    path = tmp_path / "settings.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE subscriber_settings (
+            chat_id TEXT NOT NULL,
+            name    TEXT NOT NULL,
+            value   INTEGER NOT NULL,
+            PRIMARY KEY (chat_id, name)
+        );
+        INSERT INTO subscriber_settings (chat_id, name, value) VALUES ('555', 'multikill', 3);
+        INSERT INTO subscriber_settings (chat_id, name, value) VALUES ('555', 'card', 0);
+    """)
+    conn.commit()
+    conn.close()
+
+    storage = Storage(path)
+    # The numbers are untouched...
+    assert storage.setting("555", "multikill", 4) == 3
+    assert storage.setting("555", "card", 1) == 0
+    # ...and a row written before the column existed reads as "not textual",
+    # so the service default answers instead of an empty string.
+    assert storage.text_setting("555", "streams_langs", "en,ru") == "en,ru"
+    storage.set_text_setting("555", "streams_langs", "ru")
+    assert storage.text_setting("555", "streams_langs", "en,ru") == "ru"
+    assert storage.setting("555", "multikill", 4) == 3
+    storage.close()

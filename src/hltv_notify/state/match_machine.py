@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -123,6 +124,13 @@ class MatchMachine:
         lineup = [line.name for line in observation.maps]
         if any(name and name.upper() != "TBA" for name in lineup):
             self.storage.set_map_lineup(match_id, lineup)
+        # The broadcasts, so a multikill can carry links to them. Refreshed on
+        # every poll and NOT guarded like the lineup above — that guard exists
+        # to avoid recording a veto of "TBA", whereas here the newest order is
+        # always the better one. `set_match_streams` ignores an empty list on
+        # its own, which is the only case worth skipping.
+        self.storage.set_match_streams(
+            match_id, [asdict(one) for one in observation.streams])
 
         if target == MatchState.LIVE and previous not in TERMINAL:
             # Not "on the transition to LIVE" any more, but "while it is live

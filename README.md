@@ -114,6 +114,44 @@ Only those two move it. A multikill does not: there are several a map, and the
 card would spend the match jumping around. Neither does anything about a
 different match.
 
+### A multikill comes with somewhere to watch it
+
+A 4k is worth clipping, and a clip has to be made while it is still on the
+stream. So the message carries the broadcasts, most watched first:
+
+```
+🔥 donk — 4k round
+Mirage, round 12 · score 7:5
+Natus Vincere — FaZe
+> 🟣 🇷🇺 GLuck
+> 🟢 🌍 DutchBoyCasts
+> 🟢 🇷🇺 NarodCast
+Watch the match
+```
+
+🟣 is Twitch, 🟢 is Kick. Those are the only two: HLTV lists YouTube as well,
+but there is no clip button there, so a link would be a dead end.
+
+The list is read off the match page the service already polls, so it costs no
+extra requests — and it is refreshed on every poll, because a caster on a
+hundred viewers when the match began can be behind three others on a thousand
+an hour later.
+
+**Language comes before popularity, up to a point.** A link you cannot follow
+is worse than no link, so a broadcast outside your languages appears only when
+the match has none at all in them — one English cast beats five Portuguese
+ones even though it leaves the list short. And from three links up, the last
+slot goes to a *second* of your languages if the top of the list is all one and
+another is casting further down: three English streams become two English and
+the most watched Russian one. Below three links there is no such rule — with
+two slots it costs more than it gives.
+
+```
+/settings streams off         no links at all
+/settings streams_count 4     four instead of three; 0 lists every one of them
+/settings streams_langs en,ru which languages are worth a tap; "any" for no preference
+```
+
 ### A few more examples
 
 ```
@@ -165,7 +203,7 @@ documentation, and in the text `/mute` command, so here is the whole list:
 | `E6` | a map finished, with the score |
 | `E7` | the match finished |
 | `E8`, `E8R` | the service has gone blind / has recovered |
-| `E9` | a multikill: 4+ kills in one round |
+| `E9` | a multikill: 4+ kills in one round, with links to the broadcasts |
 | `E10` | a reminder before the match |
 | `E11` | map point |
 | `E12` | half time |
@@ -375,7 +413,7 @@ Not everything has a button: a few commands carry a value that has to be typed
 | `/unmute <id>` | clear that team's mutes | yes |
 | `/remind 15m` | remind 15 min before a match; `/remind rm 15m` removes it | partly — 10, 15, 30 min, 1 h and 2 h are buttons, any other interval is typed |
 | `/tz Europe/Berlin` | your timezone | **no** |
-| `/settings` | your own thresholds — multikill, comeback, half, overtime, the live card. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
+| `/settings` | your own thresholds — multikill, comeback, half, overtime, the live card, the stream links. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
 | `/pause`, `/resume` | go completely quiet / start receiving again | yes |
 | `/check` | read the schedule now instead of waiting for the next cycle, which is up to 30 min when nothing is due | **no** |
 | `/whoami` | your numeric `chat_id` — the value that goes into `TELEGRAM_CHAT_ID` | **no** |
@@ -399,6 +437,8 @@ in `.env`:
 /settings half on             a message when the sides swap
 /settings overtime on         a message at the start of every overtime
 /settings card off            no live score card, just the milestones
+/settings streams_count 4     four broadcast links under a multikill, not three
+/settings streams_langs en,ru which languages are worth a tap
 /settings multikill default   back to whatever the service is configured with
 ```
 
@@ -511,6 +551,10 @@ are most likely to touch:
 | `HALF_ALERTS` | = `PHASE_ALERTS` | alert at half time — the **default** for `/settings half` |
 | `OVERTIME_ALERTS` | = `PHASE_ALERTS` | alert at each new overtime — the **default** for `/settings overtime` |
 | `COMEBACK_ROUNDS` | `9` | swing that counts as a comeback; `0` removes the line — the **default** for `/settings comeback` |
+| `STREAM_LINKS` | `true` | broadcast links under a multikill — the **default** for `/settings streams` |
+| `STREAM_LINKS_MAX` | `3` | how many to list; `0` means **all** — the **default** for `/settings streams_count` |
+| `STREAM_LANGUAGES` | `en,ru` | languages worth a tap — the **default** for `/settings streams_langs` |
+| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that mean one language; an unlisted flag is its own |
 | `TELEGRAM_WHITELIST_ONLY` | `true` | answer only the listed chats |
 | `MAX_TEAMS_PER_SUBSCRIBER` | `10` | how many teams one person may follow; `0` removes the limit |
 | `COMMAND_RATE_LIMIT` | `0` | commands one chat may send per minute; `0` is off |

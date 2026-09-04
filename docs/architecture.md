@@ -560,6 +560,51 @@ the tracker is constructed when the map starts. And one person asking for 3k
 makes the service track 3k rounds for everybody — that is arithmetic on frames
 already being read, not messages, and nobody else receives them.
 
+## Broadcast links under a multikill
+
+A 4k is worth clipping, and the clip has to be made while the moment is still
+on the stream — so E9 carries the broadcasts rather than making the reader go
+looking through the match page.
+
+**The source is free.** Streams are on the match page, which is already fetched
+every 60-300 s while a match runs, so `match_page.parse` returns them alongside
+the maps and the score. Fetching that page when E9 fires was considered and
+rejected: the 1-request-per-30-seconds ceiling is process-wide and behind a
+single lock, so an out-of-turn read would hold the message up to 30 s and steal
+the slot from schedule polling — making the one thing that must be fast an
+order of magnitude slower, several times a map. Staleness is bounded by the
+poll cadence instead, and what ages is the ORDER, not the set of casters.
+
+`Storage.set_match_streams` rewrites the list on every observation rather than
+writing it once: a caster on a hundred viewers at the start of a match can be
+behind three others on a thousand an hour later. It ignores an EMPTY parse
+though — a page served mid-edit must not cost every link, and there is no way
+back before the next multikill.
+
+**Only Twitch and Kick.** HLTV also lists YouTube, which has no clip button; a
+link there is a dead end dressed up as a choice. Two lists guard this: what
+HLTV calls the provider, and what host the link may actually reach. The second
+is the one that matters — the href comes off a web page, and `HLTV_BASE + href`
+was a real SSRF in this project's history.
+
+**The choosing is the same three-stage split as the thresholds.** One multikill
+reaches many readers with different languages and different appetites, so the
+event carries the WHOLE list and `streams.pick` runs in the renderer, where the
+reader is known. Two rules, and they are not the same rule:
+
+* a language outside the reader's list appears only when the match has none at
+  all in it. One English cast beats five Portuguese ones even though the list
+  comes out short — an unfollowable link is not a fallback;
+* from three links up, the last slot goes to a *second* of the reader's
+  languages when the top is all one and another is casting further down. Below
+  three there is no quota: with two slots it costs more than it gives.
+
+**Flags are countries, languages are not.** HLTV marks a broadcast with a flag,
+so English arrives under `GB`, `US`, `WORLD` and every anglophone country.
+`STREAM_LANGUAGE_ALIASES` folds them; an unlisted flag is its own language, so
+only exceptions need writing. Measured on fixture 2397091: without `AU` in that
+table the block drops a cast on 155 viewers in favour of one on 8.
+
 ## The card follows the conversation down
 
 The card is the message a person watches during a map, and it is a fixed

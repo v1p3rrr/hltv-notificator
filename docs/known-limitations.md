@@ -327,3 +327,39 @@ the right in a group. The card then stays in place and is edited as before, and
 the burial is written off rather than retried, so a chat that refuses deletes
 does not get one attempt per frame for the rest of the map. It is logged at
 WARNING.
+
+## The stream list is as fresh as the last page poll
+
+Broadcasts are read off the match page, which is polled every 60 s without a
+live feed and every 300 s with one. So the ORDER can be up to five minutes old:
+a caster who has just overtaken the others may not be at the top yet, and one
+who has just gone offline can still be listed. The set of casters barely moves
+mid-match, and a stale order still yields a working link.
+
+Fetching the page when the multikill happens would fix the order and break the
+thing the block exists for — the request ceiling is process-wide, so it would
+hold the message for up to 30 seconds. `POLL_LIVE_WITH_FEED_SECONDS` is the
+lever if this ever proves too stale, at the cost of requests for every live
+match.
+
+## Only Twitch and Kick are listed
+
+HLTV also carries YouTube broadcasts and its own player. Neither can be clipped
+from, which is the entire purpose of the block, so they are dropped rather than
+shown. A match cast only on YouTube therefore gets no block at all.
+
+## A language nobody wants is dropped even when the list comes out empty
+
+If the reader wants `en,ru` and the match is cast only in Portuguese, the block
+shows the Portuguese ones — there is nothing else. But if there is a SINGLE
+English cast among five Portuguese ones, only that one is shown, and the list
+is one line instead of three. That is deliberate: a link in a language you
+cannot follow costs a tap and gives nothing. `/settings streams_langs any`
+turns the preference off entirely.
+
+## A match whose page has not been read yet has no links
+
+The live feed can come up before the match page has been parsed once — after a
+restart mid-match, for instance. The multikill then arrives without the block
+rather than waiting for it. The next poll fills the list in, and every later
+multikill on that match has it.

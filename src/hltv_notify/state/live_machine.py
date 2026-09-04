@@ -264,6 +264,14 @@ class LiveMachine:
             map_name, frame.current_round, frame.round_state,
             frame.our_players(tracked_team))
         events: List[Event] = []
+        # Read once for the whole frame, not per player: two multikills in one
+        # round is rare but it happens, and the list is the same for both.
+        #
+        # The WHOLE list goes into the payload, unpicked. Which of them a
+        # reader sees depends on their languages and their count, and an event
+        # is born once for everybody — so the choosing belongs at render time,
+        # exactly like the comeback line's threshold.
+        streams = self.storage.match_streams(match_id) if taken else []
         for player, kills in taken:
             log.info("match %s: %s took %d kills in round %d on %s",
                      match_id, player.nick, kills, frame.current_round, map_name)
@@ -281,6 +289,7 @@ class LiveMachine:
                     "round": frame.current_round,
                     "score_team": ours,
                     "score_opponent": theirs,
+                    "streams": streams,
                 },
             ))
         return events

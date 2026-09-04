@@ -26,52 +26,79 @@ like `REMINDERS` does for `/remind`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
+
+from .streams import parse_languages
+
+# What a setting's value IS. One tag rather than a flag per type: with a
+# separate `boolean` and `languages` both could be true at once, and every
+# consumer would have to decide which wins. Each of these is switched on in
+# `describe`, `parse_value`, `range_hint` and `menu.settings_screen`.
+NUMBER = "number"
+BOOLEAN = "boolean"
+LANGUAGES = "languages"
+
+Value = Union[int, str]
 
 
 @dataclass(frozen=True)
 class Setting:
     """One knob.
 
-    Everything is stored as an integer, booleans included: one type in the
-    database means one accessor, one parser and one migration story. `maximum`
-    of 1 with `boolean` set is what makes it render as on/off.
+    Numbers and booleans are stored as INTEGER, a language list as TEXT — see
+    `Storage.set_setting` / `set_text_setting`. The kind is what says which,
+    and nothing else may guess.
     """
 
     name: str
     label: str            # on a button
     summary: str          # in /settings and /help
     default: Callable     # taken from the Config
+    kind: str = NUMBER
     maximum: int = 99
     # The smallest value that is not "off" and that the service will really
     # honour. Usually 1, but the multikill tracker floors its threshold at 2,
     # so accepting 1 there would store a number the alerts ignore and report it
-    # back as if it were in force. Zero is always "off" and always allowed,
-    # which is why there is no separate `minimum`: a field nothing reads is a
-    # trap, and this registry had one for exactly one commit.
+    # back as if it were in force. Zero is always allowed, which is why there
+    # is no separate `minimum`: a field nothing reads is a trap, and this
+    # registry had one for exactly one commit.
     smallest_on: int = 1
     presets: Tuple[int, ...] = ()
     unit: str = ""
-    boolean: bool = False
+    # How zero reads, and the word a person types for it. Almost always "off",
+    # but `streams_count` uses zero for "every one of them" — and a setting
+    # that reports "off" while showing all the streams would be describing
+    # something the code does not do.
+    zero_word: str = "off"
+
+    # ------------------------------------------------------------------
+
+    @property
+    def textual(self) -> bool:
+        return self.kind == LANGUAGES
 
     def clamp(self, value: int) -> int:
         if value <= 0:
             return 0
         return max(self.smallest_on, min(self.maximum, value))
 
-    def describe(self, value: int) -> str:
+    def describe(self, value: Value) -> str:
         """The value as a person reads it."""
-        if self.boolean:
-            return "on" if value else "off"
-        if value <= 0:
-            return "off"
-        return f"{value} {self.unit}".strip()
+        if self.kind == LANGUAGES:
+            codes = parse_languages(str(value or ""))
+            return ", ".join(codes) if codes else "any language"
+        number = int(value or 0)
+        if self.kind == BOOLEAN:
+            return "on" if number else "off"
+        if number <= 0:
+            return self.zero_word
+        return f"{number} {self.unit}".strip()
 
-    def describe_short(self, value: int) -> str:
+    def describe_short(self, value: Value) -> str:
         """The same, for a button, where the unit does not fit."""
-        if self.boolean or value <= 0:
+        if self.kind == LANGUAGES or self.kind == BOOLEAN or int(value or 0) <= 0:
             return self.describe(value)
-        return str(value)
+        return str(int(value))
 
 
 # Ordered as they appear in /settings and on the buttons.
@@ -105,21 +132,45 @@ SETTINGS: Tuple[Setting, ...] = (
         label="Half time",
         summary="A message when the sides swap",
         default=lambda c: 1 if c.half_alerts else 0,
-        maximum=1, presets=(0, 1), boolean=True,
+        kind=BOOLEAN, maximum=1, presets=(0, 1),
     ),
     Setting(
         name="overtime",
         label="Overtime",
         summary="A message at the start of every overtime",
         default=lambda c: 1 if c.overtime_alerts else 0,
-        maximum=1, presets=(0, 1), boolean=True,
+        kind=BOOLEAN, maximum=1, presets=(0, 1),
     ),
     Setting(
         name="card",
         label="Live score card",
         summary="The message kept up to date round by round during a map",
         default=lambda c: 1 if c.live_message else 0,
-        maximum=1, presets=(0, 1), boolean=True,
+        kind=BOOLEAN, maximum=1, presets=(0, 1),
+    ),
+    # Three knobs for the stream block, because they answer three different
+    # questions: whether it appears at all, how long it is, and which
+    # broadcasts are worth a tap.
+    Setting(
+        name="streams",
+        label="Stream links",
+        summary="Broadcast links under a multikill, so it can be clipped by hand",
+        default=lambda c: 1 if c.stream_links else 0,
+        kind=BOOLEAN, maximum=1, presets=(0, 1),
+    ),
+    Setting(
+        name="streams_count",
+        label="How many streams",
+        summary="How many broadcasts to list; 0 lists every one of them",
+        default=lambda c: c.stream_links_max,
+        maximum=6, presets=(0, 2, 3, 4), unit="links", zero_word="all",
+    ),
+    Setting(
+        name="streams_langs",
+        label="Stream languages",
+        summary="Languages worth a tap; others appear only when there are none",
+        default=lambda c: ",".join(c.stream_language_list()),
+        kind=LANGUAGES,
     ),
 )
 
@@ -130,18 +181,22 @@ def get(name: str) -> Optional[Setting]:
     return BY_NAME.get(name)
 
 
-def default_for(config, name: str) -> int:
+def default_for(config, name: str) -> Value:
     """The value a subscriber who has never touched this one gets."""
     item = BY_NAME.get(name)
-    return item.clamp(int(item.default(config))) if item else 0
+    if item is None:
+        return 0
+    if item.textual:
+        return ",".join(parse_languages(str(item.default(config) or "")))
+    return item.clamp(int(item.default(config)))
 
 
-def defaults(config) -> Dict[str, int]:
+def defaults(config) -> Dict[str, Value]:
     return {item.name: default_for(config, item.name) for item in SETTINGS}
 
 
-def parse_value(item: Setting, raw: str) -> Optional[int]:
-    """`"5"`, `"on"`, `"off"` -> a number. None means it could not be read.
+def parse_value(item: Setting, raw: str) -> Optional[Value]:
+    """`"5"`, `"on"`, `"off"` -> a value. None means it could not be read.
 
     Words are accepted for every setting, not only the boolean ones: "off" is
     how a person says zero, and refusing it for `multikill` while accepting it
@@ -150,9 +205,27 @@ def parse_value(item: Setting, raw: str) -> Optional[int]:
     text = (raw or "").strip().lower()
     if not text:
         return None
-    if text in {"on", "true", "yes", "1"} and item.boolean:
+
+    if item.textual:
+        # "any" is the empty list: no language is privileged, so the block is
+        # simply the most watched broadcasts whatever they speak.
+        if text in {"any", "all", "off", "none"}:
+            return ""
+        codes = parse_languages(text)
+        if not codes or not all(code.isalpha() and 2 <= len(code) <= 8 for code in codes):
+            return None
+        return ",".join(codes)
+
+    if text in {"on", "true", "yes", "1"} and item.kind == BOOLEAN:
         return 1
-    if text in {"off", "false", "no", "none"}:
+    # The synonyms belong to the WORD, not to the number. For `streams_count`
+    # zero means "all", and letting "off" through would store the value that
+    # lists every stream under the name of the one that lists none — while a
+    # real off switch (`streams`) exists next to it.
+    zero_words = {item.zero_word}
+    if item.zero_word == "off":
+        zero_words |= {"false", "no", "none"}
+    if text in zero_words:
         return 0
     if text in {"on", "true", "yes"}:
         # A non-boolean turned on means "back to the default", which the caller
@@ -176,17 +249,21 @@ def range_hint(item: Setting) -> str:
     and Telegram answers 400 to a tag it does not know — so `<off, or 2-5>`
     is a message that never arrives.
     """
-    if item.boolean:
+    if item.textual:
+        return "language codes such as en,ru — or the word any"
+    if item.kind == BOOLEAN:
         return "on or off"
-    return f"off, or {item.smallest_on}-{item.maximum}"
+    return f"{item.zero_word}, or {item.smallest_on}-{item.maximum}"
 
 
 def example(item: Setting) -> str:
     """A value worth showing in "change it like this"."""
-    return "on" if item.boolean else str(item.smallest_on)
+    if item.textual:
+        return "en,ru"
+    return "on" if item.kind == BOOLEAN else str(item.smallest_on)
 
 
-def summary_lines(values: Dict[str, int]) -> List[str]:
+def summary_lines(values: Dict[str, Value]) -> List[str]:
     """`/settings` with no arguments."""
     return [f"<code>{item.name}</code> — {item.describe(values.get(item.name, 0))}"
             f"  ·  {item.summary}" for item in SETTINGS]

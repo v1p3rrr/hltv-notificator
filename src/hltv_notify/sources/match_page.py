@@ -46,6 +46,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
@@ -89,6 +90,21 @@ class MapLine:
 
 
 @dataclass(frozen=True)
+class StreamLink:
+    """One broadcast of the match, as listed on the page.
+
+    `flag` is the two-letter code off the flag image (`RU`, `AU`) or `WORLD`.
+    HLTV uses a country to mean a language, so that is what it is read as.
+    """
+
+    provider: str          # "twitch" | "kick"
+    name: str              # the caster, as shown
+    flag: str              # "RU", "WORLD", ...
+    viewers: int
+    url: str
+
+
+@dataclass(frozen=True)
 class MatchObservation:
     match_id: int
     status: str
@@ -106,6 +122,9 @@ class MatchObservation:
     # and of overtime. Needed to work out "how many rounds are left to win".
     max_rounds_regulation: Optional[int] = None
     max_rounds_overtime: Optional[int] = None
+    # Broadcasts, most watched first. Empty is normal: before the veto, and on
+    # a match nobody is casting.
+    streams: Tuple[StreamLink, ...] = ()
 
     # ------------------------------------------------------------------
 
@@ -222,6 +241,102 @@ class MatchObservation:
         return "|".join(parts)
 
 
+# The only platforms worth listing. The point of the block is to open a stream
+# and clip the moment by hand, and YouTube — which HLTV also lists — has no
+# clip button, so a link there is a dead end dressed up as a choice. Anything
+# not on this list is dropped rather than shown.
+#
+# Two lists and not one: the provider says what HLTV CALLS it, the hosts say
+# where the link may actually lead. The second is the one that matters — the
+# href comes off a web page, and this project has already been burned once by
+# trusting one (`HLTV_BASE + href`, a real SSRF). We only put these in a
+# message rather than requesting them, but an attacker-chosen host in a link
+# the owner is invited to tap is not something to wave through.
+STREAM_PROVIDERS = {"twitch": {"twitch.tv", "www.twitch.tv"},
+                    "kick": {"kick.com", "www.kick.com"}}
+
+FLAG_FILE_RE = re.compile(r"/flags/\d+x\d+/([A-Za-z]{2,8})\.")
+
+
+def _viewers(text: str) -> int:
+    """The viewer count, however the page chose to write it.
+
+    Every fixture we have shows a plain number (51, 155) — a tier-one match with
+    tens of thousands of viewers is not among them, so whether HLTV abbreviates
+    at that size is UNKNOWN. This tolerates the shapes it might use rather than
+    asserting one: "1,234", "1.2k", "3M". Getting it wrong is not cosmetic —
+    the whole list is ordered by this number, so an unreadable count on the
+    biggest broadcast would sort it to the BOTTOM, which is the opposite of
+    what the block is for.
+
+    Zero on anything unrecognised, with a line in the log: a stream that sorts
+    last still works, a crash in the parser loses the match page entirely.
+    """
+    raw = (text or "").strip().lower().replace(",", "").replace(" ", "")
+    if not raw:
+        return 0
+    multiplier = 1
+    if raw[-1] in "km":
+        multiplier = 1000 if raw[-1] == "k" else 1000000
+        raw = raw[:-1]
+    try:
+        return max(0, int(float(raw) * multiplier))
+    except ValueError:
+        log.warning("could not read a viewer count from %r", text)
+        return 0
+
+
+def _stream(box) -> Optional[StreamLink]:
+    """One `.stream-box`, or None when it is not a platform we can use."""
+    provider = (box.get("data-stream-provider") or "").strip().lower()
+    hosts = STREAM_PROVIDERS.get(provider)
+    if hosts is None:
+        return None
+
+    link = box.select_one(".external-stream a[href]")
+    if link is None:
+        return None
+    url = link["href"].strip()
+    try:
+        parts = urlparse(url)
+    except ValueError:
+        return None
+    if parts.scheme != "https" or (parts.hostname or "").lower() not in hosts:
+        log.warning("stream link of provider %s points at %s — dropped",
+                    provider, parts.hostname)
+        return None
+
+    embed = box.select_one("[data-stream-embed]")
+    flag_el = box.select_one("img.stream-flag")
+    found = FLAG_FILE_RE.search(flag_el.get("src") or "") if flag_el else None
+    viewers_el = box.select_one(".viewers")
+    return StreamLink(
+        provider=provider,
+        # The caster's name is the anchor text of the link in the message, so
+        # an empty one would render as a bare underline.
+        name=(embed.get_text(strip=True) if embed else "") or parts.path.strip("/") or provider,
+        flag=(found.group(1).upper() if found else "WORLD"),
+        viewers=_viewers(viewers_el.get_text(strip=True)) if viewers_el else 0,
+        url=url,
+    )
+
+
+def _streams(soup) -> Tuple[StreamLink, ...]:
+    """Every usable broadcast, most watched first.
+
+    Sorted here rather than at render time so that everything downstream — the
+    stored list, the payload, the selection — agrees on what "the top three"
+    means without each re-deriving it.
+    """
+    found = []
+    for box in soup.select("div.stream-box"):
+        one = _stream(box)
+        if one is not None:
+            found.append(one)
+    found.sort(key=lambda item: item.viewers, reverse=True)
+    return tuple(found)
+
+
 def _int_or_none(text: str) -> Optional[int]:
     text = text.strip()
     return int(text) if text.lstrip("-").isdigit() and text != "-" else None
@@ -329,4 +444,5 @@ def parse(html: str, match_id: int) -> MatchObservation:
         scorebot_id=scorebot_id,
         max_rounds_regulation=regulation,
         max_rounds_overtime=overtime,
+        streams=_streams(soup),
     )

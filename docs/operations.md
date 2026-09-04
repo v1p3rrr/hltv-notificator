@@ -21,6 +21,7 @@
 | "The match has stalled" | only when there is no live feed; between maps the threshold is three times longer |
 | The live score message during a map | done, one per map, `/settings card` (default `LIVE_MESSAGE`); it is also the map's card and carries the map start, so it is not opened during the warmup, and it is moved back to the bottom of the chat after E11, E12 and E13 |
 | A multikill by a player of our team | done, at the Nth kill, `/settings multikill` (default `MULTIKILL_THRESHOLD`) |
+| Broadcast links under a multikill | done, a quoted block on E9, `/settings streams` (default `STREAM_LINKS`); read off the match page we already poll, Twitch and Kick only |
 
 ## Starting up
 
@@ -100,6 +101,10 @@ The values live in `.env`; the defaults are a balanced profile:
 | `LIVE_EDIT_BUDGET` | 10 | card edits a second in total; the per-person interval stretches beyond that |
 | `COMMAND_RATE_LIMIT` | 0 | commands per chat per minute, 0 is off; meant for the open mode |
 | `COMEBACK_ROUNDS` | 9 | the swing that counts as a comeback; 0 removes the line. A **default**: `/settings comeback` overrides it per person |
+| `STREAM_LINKS` | true | broadcast links under a multikill. A **default**: `/settings streams` |
+| `STREAM_LINKS_MAX` | 3 | how many to list; 0 is **all**. A **default**: `/settings streams_count` |
+| `STREAM_LANGUAGES` | `en,ru` | languages worth a tap. A **default**: `/settings streams_langs` |
+| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that stand for one language; an unlisted flag is its own |
 | `DEGRADED_ALERT_SECONDS` | 300 | how long before reporting that the service has gone blind (max 600) |
 
 The ceiling of **1 request every 30 seconds** is hardcoded and cannot be raised
@@ -141,6 +146,9 @@ and with no card there is nothing to move.
 | `half` | a message when the sides swap | `HALF_ALERTS` (default `PHASE_ALERTS`) |
 | `overtime` | a message at the start of every overtime | `OVERTIME_ALERTS` (default `PHASE_ALERTS`) |
 | `card` | the live score card during a map | `LIVE_MESSAGE` |
+| `streams` | the block of broadcast links under E9 | `STREAM_LINKS` |
+| `streams_count` | how many to list; `0` is **all**, not "none" | `STREAM_LINKS_MAX` |
+| `streams_langs` | languages worth a tap; `any` for no preference | `STREAM_LANGUAGES` |
 
 A row is written only when somebody changes something, so raising a default in
 `.env` still reaches everyone who never touched it, and `/settings <name>

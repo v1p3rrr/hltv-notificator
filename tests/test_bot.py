@@ -632,6 +632,10 @@ def test_no_command_answers_with_something_telegram_cannot_parse(bot):
                  "/settings multikill banana", "/settings multikill 1",
                  "/settings multikill on", "/settings multikill 3",
                  "/settings multikill default", "/remind", "/tz",
+                 "/settings streams", "/settings streams_count",
+                 "/settings streams_count off", "/settings streams_count all",
+                 "/settings streams_langs", "/settings streams_langs en, ru",
+                 "/settings streams_langs nonsense!", "/settings streams_langs any",
                  "/mute", "/mute 12857", "/unmute", "/untrack",
                  "/track", "/pause", "/resume", "/whoami", "/nonsense"]:
         send(command_bot, text)
@@ -651,3 +655,40 @@ def test_the_settings_hint_names_a_value_that_would_be_accepted(bot):
         suggested = re.search(rf"/settings {item.name} (\S+?),", reply)
         assert suggested, reply
         assert prefs.parse_value(item, suggested.group(1)) is not None
+
+
+# ---------- the stream block's settings ----------
+
+def test_a_language_list_may_be_typed_with_spaces(bot):
+    """`/settings streams_langs en, ru` is how a person writes a list.
+
+    The argument used to be split into words and only the first taken, which
+    would have stored "en" and silently dropped the rest.
+    """
+    command_bot, telegram, storage = bot
+    send(command_bot, "/settings streams_langs en, ru")
+    assert storage.text_setting(CHAT, "streams_langs", "") == "en,ru"
+    assert "en, ru" in telegram.sent[-1][1]
+
+
+def test_a_language_button_toggles_one_code(bot):
+    command_bot, telegram, storage = bot
+    send(command_bot, "/settings streams_langs en,ru")
+    press(command_bot, "s:streams_langs:pt")
+    assert storage.text_setting(CHAT, "streams_langs", "") == "en,ru,pt"
+    press(command_bot, "s:streams_langs:ru")
+    assert storage.text_setting(CHAT, "streams_langs", "") == "en,pt"
+
+
+def test_the_count_refuses_off_and_offers_all(bot):
+    """`streams_count` uses zero for "every one of them", and there is a real
+    off switch next to it. Accepting "off" here would store the value that
+    shows ALL the streams under the word that means none."""
+    command_bot, telegram, storage = bot
+    send(command_bot, "/settings streams_count off")
+    reply = telegram.sent[-1][1]
+    assert "could not read" in reply
+    assert "all, or 1-6" in reply
+    send(command_bot, "/settings streams_count all")
+    assert storage.setting(CHAT, "streams_count", 3) == 0
+    assert "all" in telegram.sent[-1][1]

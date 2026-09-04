@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .proxy import ProxySettings
+from .streams import parse_languages
 
 # The request-rate ceiling, hardcoded. Not raisable by config — see
 # docs/operations.md.
@@ -171,6 +172,25 @@ class Config:
     # the first is a streak. 0 switches the line off entirely.
     comeback_rounds: int = field(default_factory=lambda: _int("COMEBACK_ROUNDS", 9))
 
+    # Broadcast links under a multikill, so the moment can be clipped by hand
+    # before it scrolls off the stream. All three are DEFAULTS: each is a knob
+    # in /settings, and a row exists there only once somebody changes it.
+    stream_links: bool = field(default_factory=lambda: _bool("STREAM_LINKS", True))
+    # 0 means every stream, not "off" — off is STREAM_LINKS. See
+    # settings.Setting.zero_word.
+    stream_links_max: int = field(default_factory=lambda: _int("STREAM_LINKS_MAX", 3))
+    # Languages worth showing. Anything else appears ONLY when the match has no
+    # broadcast in any of them at all.
+    stream_languages: str = field(
+        default_factory=lambda: _str("STREAM_LANGUAGES", "en,ru"))
+    # Which flags mean which language. HLTV marks a broadcast with a COUNTRY,
+    # so English arrives under half a dozen of them; without the aliases an
+    # Australian cast on 155 viewers loses to a Russian one on 8. In the
+    # environment rather than in code so a missing flag needs no release.
+    stream_language_aliases: str = field(
+        default_factory=lambda: _str("STREAM_LANGUAGE_ALIASES",
+                                     "en:GB,US,WORLD,AU,CA,NZ,IE"))
+
     # Pre-match reminders: the defaults handed to a new subscriber, who then
     # edits them via /remind.
     default_reminders: str = field(default_factory=lambda: _str("REMINDERS", "15"))
@@ -224,6 +244,26 @@ class Config:
             if part.isdigit():
                 values.append(int(part))
         return sorted(set(values), reverse=True)
+
+    def stream_language_list(self) -> List[str]:
+        """The default primary languages, in the order they were written."""
+        return parse_languages(self.stream_languages)
+
+    def flag_languages(self) -> Dict[str, str]:
+        """`{"GB": "en", "US": "en", ...}` — flags that stand for a language.
+
+        A flag missing from here is its own language, lowercased: `RU` -> `ru`,
+        `BR` -> `br`. So the table only has to carry the exceptions.
+        """
+        table: Dict[str, str] = {}
+        for group in self.stream_language_aliases.replace(";", " ").split():
+            language, _, flags = group.partition(":")
+            language = language.strip().lower()
+            if not language or not flags:
+                continue
+            for flag in flags.replace(",", " ").split():
+                table[flag.strip().upper()] = language
+        return table
 
     def allowed_chat_ids(self) -> List[str]:
         """Allowed chats in declaration order, without duplicates.

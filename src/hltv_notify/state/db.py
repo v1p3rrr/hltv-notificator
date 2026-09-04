@@ -172,12 +172,17 @@ CREATE TABLE IF NOT EXISTS live_messages (
 -- something: absence means "whatever the environment says", so raising a
 -- default in .env still reaches everybody who never touched it.
 --
--- Everything is an INTEGER, booleans included. One type is one accessor and
--- one parser; see hltv_notify.settings for what the names mean.
+-- Numbers and booleans live in `value`; a list — the stream languages — lives
+-- in `text_value`, and a NON-NULL `text_value` is what makes a row textual.
+-- Which column a name uses is decided in ONE place, `settings.Setting.kind`,
+-- and the two writers must be kept in step: `set_setting` blanks `text_value`
+-- and `set_text_setting` blanks `value`, or a name that changed kind would be
+-- read back through the wrong column.
 CREATE TABLE IF NOT EXISTS subscriber_settings (
-    chat_id TEXT NOT NULL,
-    name    TEXT NOT NULL,
-    value   INTEGER NOT NULL,
+    chat_id    TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    value      INTEGER NOT NULL,
+    text_value TEXT,
     PRIMARY KEY (chat_id, name)
 );
 
@@ -265,6 +270,11 @@ class Storage:
             "subscribers": {
                 "timezone": "TEXT",
                 "paused": "INTEGER NOT NULL DEFAULT 0",
+            },
+            "subscriber_settings": {
+                # NULL on every row written before the stream languages
+                # existed, which is exactly what "this row is a number" means.
+                "text_value": "TEXT",
             },
         }
         for table, columns in added.items():
@@ -504,10 +514,37 @@ class Storage:
     # ---------- per-subscriber settings ----------
 
     def set_setting(self, chat_id: str, name: str, value: int) -> None:
+        """A numeric setting. `text_value` is blanked deliberately: a non-NULL
+        one is what marks a row as textual, so leaving a stale string behind
+        would make `settings_for` read this number back as a language list."""
         self.conn.execute(
-            "INSERT INTO subscriber_settings (chat_id, name, value) VALUES (?, ?, ?) "
-            "ON CONFLICT(chat_id, name) DO UPDATE SET value = excluded.value",
+            "INSERT INTO subscriber_settings (chat_id, name, value, text_value) "
+            "VALUES (?, ?, ?, NULL) "
+            "ON CONFLICT(chat_id, name) DO UPDATE SET value = excluded.value, "
+            "text_value = NULL",
             (str(chat_id), name, int(value)))
+
+    def set_text_setting(self, chat_id: str, name: str, value: str) -> None:
+        """A textual setting — today only the stream languages.
+
+        An empty string is a real value ("any language"), not an absence: that
+        is why it is stored rather than deleted. Absence still means "whatever
+        the environment says".
+        """
+        self.conn.execute(
+            "INSERT INTO subscriber_settings (chat_id, name, value, text_value) "
+            "VALUES (?, ?, 0, ?) "
+            "ON CONFLICT(chat_id, name) DO UPDATE SET value = 0, "
+            "text_value = excluded.text_value",
+            (str(chat_id), name, str(value)))
+
+    def text_setting(self, chat_id: str, name: str, default: str) -> str:
+        row = self.conn.execute(
+            "SELECT text_value FROM subscriber_settings WHERE chat_id = ? AND name = ?",
+            (str(chat_id), name)).fetchone()
+        if row is None or row["text_value"] is None:
+            return default
+        return str(row["text_value"])
 
     def clear_setting(self, chat_id: str, name: str) -> None:
         """Back to the environment's default: the row goes away rather than
@@ -523,13 +560,20 @@ class Storage:
             (str(chat_id), name)).fetchone()
         return int(row["value"]) if row is not None else int(default)
 
-    def settings_for(self, chat_id: str, defaults: Dict[str, int]) -> Dict[str, int]:
+    def settings_for(self, chat_id: str, defaults: Dict[str, Any]) -> Dict[str, Any]:
+        """Everything this person has changed, over the service's defaults.
+
+        A non-NULL `text_value` is what makes a row textual — the same rule
+        `set_setting` and `set_text_setting` write by.
+        """
         values = dict(defaults)
         for row in self.conn.execute(
-                "SELECT name, value FROM subscriber_settings WHERE chat_id = ?",
+                "SELECT name, value, text_value FROM subscriber_settings WHERE chat_id = ?",
                 (str(chat_id),)):
-            if row["name"] in values:
-                values[row["name"]] = int(row["value"])
+            if row["name"] not in values:
+                continue
+            values[row["name"]] = (str(row["text_value"]) if row["text_value"] is not None
+                                   else int(row["value"]))
         return values
 
     def threshold_in_use(self, name: str, default: int) -> int:
@@ -1254,6 +1298,36 @@ class Storage:
             return list(json.loads(raw))
         except (ValueError, TypeError):
             return []
+
+    # ---------- the broadcasts of one match ----------
+
+    def set_match_streams(self, match_id: int, streams: List[Dict[str, Any]]) -> None:
+        """The streams listed on the match page, most watched first.
+
+        Rewritten on EVERY observation rather than written once: a caster on a
+        hundred viewers when the match began can be behind three others on a
+        thousand an hour later, and a write-once list would pin the message to
+        the opening lineup.
+
+        An empty list is ignored rather than stored. The streams section can be
+        missing from a page served mid-edit, and dropping every link because of
+        one such read is worse than showing a five-minute-old order. There is
+        no way back from it either — the block is only built when a multikill
+        happens, which may be the very next frame.
+        """
+        if not streams:
+            return
+        self.set_meta(f"streams:{match_id}", json.dumps(streams, ensure_ascii=False))
+
+    def match_streams(self, match_id: int) -> List[Dict[str, Any]]:
+        raw = self.get_meta(f"streams:{match_id}")
+        if not raw:
+            return []
+        try:
+            found = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        return [one for one in found if isinstance(one, dict)]
 
     # ---------- meta ----------
 

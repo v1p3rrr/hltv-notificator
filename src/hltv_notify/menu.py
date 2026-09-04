@@ -105,7 +105,33 @@ def reminders(active: List[int]) -> Dict:
     return keyboard(rows + [back()])
 
 
-def settings_screen(values: Dict[str, int]) -> Dict:
+# Languages offered as buttons for the stream block. Not every language HLTV
+# ever shows — a screen of forty toggles helps nobody — just the ones a cast is
+# routinely found in. Anything else is still reachable by typing
+# `/settings streams_langs`, and whatever a person has set is added to this row
+# so their own choice is never missing from it.
+LANGUAGE_BUTTONS = ("en", "ru", "pt", "es", "fr", "de", "pl", "ua")
+
+
+def _language_rows(item, current: str) -> List[List[tuple]]:
+    """Toggles for a language list: press to add, press again to remove."""
+    chosen = prefs.parse_languages(str(current or ""))
+    codes = list(LANGUAGE_BUTTONS) + [one for one in chosen
+                                      if one not in LANGUAGE_BUTTONS]
+    rows: List[List[tuple]] = []
+    row: List[tuple] = []
+    for code in codes:
+        row.append((("✅ " if code in chosen else "○ ") + code.upper(),
+                    f"s:{item.name}:{code}"))
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return rows
+
+
+def settings_screen(values: Dict[str, object]) -> Dict:
     """One row per setting: its presets, with the active one ticked.
 
     The rows are generated from `settings.SETTINGS` rather than written out,
@@ -114,10 +140,14 @@ def settings_screen(values: Dict[str, int]) -> Dict:
     """
     rows: List[List[tuple]] = []
     for item in prefs.SETTINGS:
-        current = values.get(item.name, 0)
+        current = values.get(item.name, "" if item.textual else 0)
         # A caption row, then the choices. One wide row would fit, but four
         # presets beside a label is unreadable on a phone.
         rows.append([(f"{item.label}: {item.describe(current)}", f"s:{item.name}")])
+        if item.textual:
+            # A list has no presets to tick — every code is its own switch.
+            rows.extend(_language_rows(item, str(current or "")))
+            continue
         rows.append([(("🔘 " if value == current else "○ ") + item.describe_short(value),
                       f"s:{item.name}:{value}") for value in item.presets])
     return keyboard(rows + [back()])

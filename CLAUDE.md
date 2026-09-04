@@ -76,6 +76,7 @@ src/hltv_notify/
   scheduler.py         team-page polling, frequency modes
   match_poller.py      match-page polling, brings live workers up
   live_worker.py       the feed connection, reconnects, the supervisor
+  streams.py           choosing which broadcasts go under a multikill
   replay.py            replaying a recorded dump through the state machine
   bot.py               bot commands
   sources/
@@ -170,6 +171,40 @@ things write out — the queue, the live card, command replies, button
 acknowledgements — and they share one budget. A limiter per sender leaves
 everybody inside their own rules and the total over. Per-CHAT spacing stays
 in the queue, because that is also where the ordering guarantee is.
+
+**The settings store now holds TWO value types, and the writers must blank each
+other.** `subscriber_settings` has `value INTEGER NOT NULL` and `text_value
+TEXT`, and a NON-NULL `text_value` is what makes a row textual — that is the
+whole type test, used by `settings_for`. So `set_setting` writes `text_value =
+NULL` and `set_text_setting` writes `value = 0`. Leave either out and a name
+that changed kind is read back through the wrong column. Which column a name
+uses is decided in ONE place, `settings.Setting.kind`; nothing else may guess.
+
+**`Setting.kind` replaced `boolean` rather than joining it.** Two type flags
+can both be true, and every consumer would then have to decide which wins —
+`describe`, `parse_value`, `range_hint` and `menu.settings_screen` all switch
+on it. Same reasoning as the "one list" rule, one level down.
+
+**Zero does not always mean off — `Setting.zero_word` says what it means.**
+`streams_count` uses zero for "list every one of them", and there is a real off
+switch (`streams`) beside it. The word is read in two places: `describe`, so
+the setting does not report "off" while showing all the streams, and
+`parse_value`, which must REFUSE "off" where zero does not mean off — otherwise
+the word for "none" would store the value for "all".
+
+**Only Twitch and Kick get stream links, and the host is checked, not the
+provider.** HLTV lists YouTube too, and there is no clip button there, so a
+link is a dead end. `data-stream-provider` says what HLTV calls it;
+`STREAM_PROVIDERS` also pins the hosts the href may reach, because that href
+comes off a web page and `HLTV_BASE + href` was a real SSRF here once.
+
+**`set_match_streams` overwrites on every poll but ignores an empty parse.**
+Those are two different guards and it is easy to copy the wrong one: the
+`set_map_lineup` call right beside it is guarded against recording a veto of
+"TBA", whereas here the newest order is always better — a caster on a hundred
+viewers at the start can be behind three others on a thousand later. But an
+empty read is a page served mid-edit, not a match nobody casts, and there is no
+way back from wiping the list before the next multikill.
 
 **THREE stores hold an event type, and splitting one reaches all three.**
 The journal's keys (`sent_events`, `outbox`), the per-person setting
@@ -516,7 +551,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 506 tests
+python -m pytest                                    # 561 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

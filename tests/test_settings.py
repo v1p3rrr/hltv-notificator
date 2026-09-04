@@ -309,3 +309,103 @@ def test_the_umbrella_variable_is_not_a_field(monkeypatch):
     assert both.half_alerts and both.overtime_alerts
     monkeypatch.setenv("OVERTIME_ALERTS", "false")
     assert Config().half_alerts and not Config().overtime_alerts
+
+
+# ---------- a setting whose value is not a number ----------
+
+def test_a_language_list_round_trips_through_its_own_column(storage):
+    storage.add_subscriber(CHAT)
+    assert storage.text_setting(CHAT, "streams_langs", "en,ru") == "en,ru"
+    storage.set_text_setting(CHAT, "streams_langs", "ru,pt")
+    assert storage.text_setting(CHAT, "streams_langs", "en,ru") == "ru,pt"
+
+
+def test_an_empty_language_list_is_a_value_and_not_an_absence(storage, config):
+    """"any language" is something a person chose. Storing it as a deleted row
+    would hand them back the service default instead."""
+    storage.add_subscriber(CHAT)
+    storage.set_text_setting(CHAT, "streams_langs", "")
+    assert storage.text_setting(CHAT, "streams_langs", "en,ru") == ""
+    storage.clear_setting(CHAT, "streams_langs")
+    assert storage.text_setting(CHAT, "streams_langs", "en,ru") == "en,ru"
+
+
+def test_the_two_writers_do_not_leave_each_other_behind(storage):
+    """A non-NULL text_value is what marks a row as textual, so a numeric write
+    has to blank it — otherwise settings_for would read the number back as a
+    language list, and the other way round."""
+    storage.add_subscriber(CHAT)
+    storage.set_text_setting(CHAT, "streams_langs", "ru")
+    storage.set_setting(CHAT, "streams_langs", 2)
+    assert storage.text_setting(CHAT, "streams_langs", "en") == "en"
+
+    storage.set_setting(CHAT, "streams_count", 4)
+    storage.set_text_setting(CHAT, "streams_count", "ru")
+    assert storage.setting(CHAT, "streams_count", 3) == 0
+
+
+def test_settings_for_hands_back_both_kinds(storage, config):
+    storage.add_subscriber(CHAT)
+    storage.set_setting(CHAT, "streams_count", 2)
+    storage.set_text_setting(CHAT, "streams_langs", "ru")
+    values = storage.settings_for(CHAT, settings.defaults(config))
+    assert values["streams_count"] == 2
+    assert values["streams_langs"] == "ru"
+    assert values["multikill"] == settings.default_for(config, "multikill")
+
+
+# ---------- zero does not always mean off ----------
+
+def test_zero_reads_as_the_word_the_setting_gave_it():
+    """`streams_count` uses zero for "all". Reporting "off" there would be the
+    setting describing something the code does not do — and there is a real off
+    switch (`streams`) beside it."""
+    assert settings.get("streams_count").describe(0) == "all"
+    assert settings.get("multikill").describe(0) == "off"
+    assert settings.range_hint(settings.get("streams_count")) == "all, or 1-6"
+
+
+def test_the_word_off_is_refused_where_zero_does_not_mean_off():
+    assert settings.parse_value(settings.get("streams_count"), "off") is None
+    assert settings.parse_value(settings.get("streams_count"), "all") == 0
+    assert settings.parse_value(settings.get("streams"), "off") == 0
+
+
+def test_there_is_exactly_one_type_tag():
+    """`kind` replaced a `boolean` flag rather than joining it: two flags could
+    both be true, and every consumer would have to decide which wins."""
+    for item in settings.SETTINGS:
+        assert not hasattr(item, "boolean")
+        assert item.kind in (settings.NUMBER, settings.BOOLEAN, settings.LANGUAGES)
+        assert item.textual == (item.kind == settings.LANGUAGES)
+
+
+def test_a_language_list_is_normalised_however_it_is_typed():
+    item = settings.get("streams_langs")
+    assert settings.parse_value(item, "EN , ru,en") == "en,ru"
+    assert settings.parse_value(item, "any") == ""
+    assert settings.parse_value(item, "3") is None
+    assert item.describe("") == "any language"
+
+
+# ---------- the buttons follow the registry ----------
+
+def test_the_language_row_is_toggles_and_carries_the_person_s_own_codes(config):
+    values = settings.defaults(config)
+    values["streams_langs"] = "ru,kz"
+    screen = menu.settings_screen(values)
+    payloads = [button["callback_data"]
+                for row in screen["inline_keyboard"] for button in row]
+    assert "s:streams_langs:ru" in payloads
+    assert "s:streams_langs:kz" in payloads      # not in the built-in row
+    assert "s:streams_langs:en" in payloads
+    # Telegram caps callback_data at 64 bytes.
+    assert all(len(one.encode("utf-8")) <= 64 for one in payloads)
+
+
+def test_every_setting_reaches_the_buttons(config):
+    screen = menu.settings_screen(settings.defaults(config))
+    payloads = [button["callback_data"]
+                for row in screen["inline_keyboard"] for button in row]
+    for item in settings.SETTINGS:
+        assert any(one.startswith(f"s:{item.name}") for one in payloads), item.name

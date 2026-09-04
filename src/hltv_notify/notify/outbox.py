@@ -12,6 +12,7 @@ import time
 from typing import Dict, Optional
 
 from .. import settings
+from .. import streams as stream_lib
 from ..config import Config
 from ..models import Event
 from ..state.db import Storage
@@ -69,6 +70,10 @@ class Notifier:
         # milestone of the same map. Optional: the replay tool and most tests
         # have no card at all.
         self.live_messenger = live_messenger
+        # Which flags stand for which language. Parsed once: the config is
+        # frozen for the life of the process, and this is read for every
+        # multikill for every recipient.
+        self._flag_languages = config.flag_languages()
         # Set by enqueue so the worker does not sleep out its five seconds
         # with a message already waiting. It matters where two messages have
         # to arrive in order — the live card waits for the "match started" it
@@ -92,7 +97,17 @@ class Notifier:
                 # And their own bar for what counts as a comeback. The map was
                 # watched once, at the lowest bar in use; whether the line is
                 # worth printing is decided here, per reader.
-                comeback_threshold=self._threshold(chat_id, "comeback"))
+                comeback_threshold=self._threshold(chat_id, "comeback"),
+                # And their own taste in broadcasts. Same reasoning again: one
+                # multikill, many readers, and which streams are worth a tap
+                # is not a property of the event.
+                #
+                # Asked for only when the payload actually carries streams,
+                # which costs two queries per recipient. Keyed off the payload
+                # rather than off a list of event types: a list would be a
+                # fourth thing to keep in step, and this one cannot drift.
+                stream_prefs=(self._stream_prefs(chat_id)
+                              if event.payload.get("streams") else None))
             if self.storage.record_event(
                     idempotency_key=event.idempotency_key,
                     event_type=event.type,
@@ -113,6 +128,23 @@ class Notifier:
     def _threshold(self, chat_id: str, name: str) -> int:
         return self.storage.setting(
             chat_id, name, settings.default_for(self.config, name))
+
+    def _stream_prefs(self, chat_id: str):
+        """This reader's broadcast block, or None when they switched it off.
+
+        None rather than a zero limit: zero is a real value there and means
+        "list every one of them", so the two cannot share a number. That is
+        also why `streams` exists as its own switch.
+        """
+        if self._threshold(chat_id, "streams") <= 0:
+            return None
+        wanted = self.storage.text_setting(
+            chat_id, "streams_langs",
+            str(settings.default_for(self.config, "streams_langs")))
+        return stream_lib.StreamPreference(
+            limit=self._threshold(chat_id, "streams_count"),
+            languages=tuple(stream_lib.parse_languages(wanted)),
+            aliases=self._flag_languages)
 
     def _wants(self, chat_id: str, event: Event) -> bool:
         """The recipient's own threshold, as opposed to muting.

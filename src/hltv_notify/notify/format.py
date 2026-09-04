@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from .. import streams as st
 from ..models import Event
+from ..streams import StreamPreference
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -154,9 +156,35 @@ def comeback_line(payload: dict, *, team: str, opponent: str,
             f"{reached} and still lost the map")
 
 
+def stream_block(streams, prefs: Optional[StreamPreference]) -> str:
+    """The broadcasts worth a tap, as a quoted block. "" when there are none.
+
+    A quote and not plain lines: it is a sidebar to the message rather than
+    part of what happened, and Telegram lets it be collapsed.
+    """
+    if prefs is None or not streams:
+        # None is "this reader switched the block off". An empty list is a
+        # match whose page has not been read yet, or one nobody is casting.
+        return ""
+    chosen = st.pick(streams, primary=prefs.languages, limit=prefs.limit,
+                     aliases=prefs.aliases)
+    if not chosen:
+        return ""
+    lines = []
+    for one in chosen:
+        icon = st.PROVIDER_ICON.get(one.get("provider") or "", "")
+        # The caster's name is the anchor text, so the line reads as a person
+        # rather than as a URL. `_link` escapes both halves — the name comes
+        # off a web page and goes into HTML.
+        lines.append(f"{icon} {st.flag_emoji(one.get('flag'))} "
+                     f"{_link(one.get('url') or '', one.get('name') or 'stream')}")
+    return "<blockquote>" + "\n".join(lines) + "</blockquote>"
+
+
 def render(event: Event, *, team_name: str, tz_name: str,
            for_team_id: Optional[int] = None,
-           comeback_threshold: Optional[int] = None) -> str:
+           comeback_threshold: Optional[int] = None,
+           stream_prefs: Optional[StreamPreference] = None) -> str:
     """Event -> finished text in Telegram's HTML markup."""
     payload = orient(event.payload, for_team_id)
     opponent = _esc(payload.get("opponent") or "TBD")
@@ -321,13 +349,20 @@ def render(event: Event, *, team_name: str, tz_name: str,
         kills = payload.get("kills", 0)
         icon = "🔥" if kills < 5 else "💥"
         headline = "ACE" if kills >= 5 else f"{kills}k round"
-        return "\n".join([
+        lines = [
             f"{icon} <b>{_esc(payload.get('nick'))} — {headline}</b>",
             f"{_esc(payload.get('map_name'))}, round {payload.get('round')} · "
             f"score {payload.get('score_team')}:{payload.get('score_opponent')}",
             f"{team} — {opponent}",
-            _link(url, "Watch the match"),
-        ])
+        ]
+        # Above the match link and not below it: the whole point is to be on a
+        # broadcast within seconds, and the thing to tap should be the thing
+        # the eye lands on.
+        block = stream_block(payload.get("streams"), stream_prefs)
+        if block:
+            lines.append(block)
+        lines.append(_link(url, "Watch the match"))
+        return "\n".join(lines)
 
     if event.type == "E8R":
         return "\n".join([
