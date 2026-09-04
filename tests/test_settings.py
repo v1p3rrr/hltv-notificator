@@ -386,11 +386,22 @@ def test_an_on_word_is_never_stored_as_a_language():
 
 def test_an_off_word_for_a_list_is_the_empty_list():
     """With no language preferred the filter is simply off — which is a value,
-    not an absence. "no" and "false" used to be stored as language codes."""
+    not an absence. "false" used to be stored as a language code."""
     item = settings.get("streams_langs")
-    for word in ("off", "no", "none", "false", "any", "all"):
+    for word in ("off", "none", "false", "any", "all"):
         assert settings.parse_value(item, word) == ""
         assert not settings.is_reset(item, word)
+
+
+def test_the_one_off_word_that_is_also_a_language_stays_a_language():
+    """`no` is Norwegian: HLTV flags a cast with `NO.gif` and `language_of`
+    reads it as `no`. Swallowing it as an off word would answer "any language"
+    to somebody who asked for Norwegian — the opposite of the request."""
+    item = settings.get("streams_langs")
+    assert settings.parse_value(item, "no") == "no"
+    assert settings.parse_value(item, "no,en") == "no,en"
+    # And it is still an off word everywhere it does not collide.
+    assert settings.parse_value(settings.get("card"), "no") == 0
 
 
 def test_a_number_still_takes_on_down_its_own_path():

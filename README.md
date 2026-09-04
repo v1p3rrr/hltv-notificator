@@ -555,7 +555,7 @@ are most likely to touch:
 | `STREAM_LINKS` | `true` | broadcast links under a multikill — the **default** for `/settings streams` |
 | `STREAM_LINKS_MAX` | `3` | how many to list; `0` means **all** — the **default** for `/settings streams_count` |
 | `STREAM_LANGUAGES` | `en,ru` | languages worth a tap — the **default** for `/settings streams_langs` |
-| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that mean one language; an unlisted flag is its own. A space separates groups (`en:GB,US ru:BY`); spaces around `:` and `,` are ignored |
+| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that mean one language; an unlisted flag is its own. The colon opens a language, and spaces, commas and semicolons all separate: `en:GB,US ru:BY` and `en: GB, US, ru:BY` are the same |
 | `TELEGRAM_WHITELIST_ONLY` | `true` | answer only the listed chats |
 | `MAX_TEAMS_PER_SUBSCRIBER` | `10` | how many teams one person may follow; `0` removes the limit |
 | `COMMAND_RATE_LIMIT` | `0` | commands one chat may send per minute; `0` is off |

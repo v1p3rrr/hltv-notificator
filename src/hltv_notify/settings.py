@@ -51,6 +51,12 @@ OFF_WORDS = frozenset({"off", "false", "no", "none"})
 # Only for a list: "any" is not "off", it is a value — every language is
 # welcome. It reads better than the empty string a person cannot type.
 ANY_WORDS = frozenset({"any", "all"})
+# What a LIST takes for "no language preferred". The off words mean it too —
+# with nothing preferred the filter is off — except "no", which is the code a
+# Norwegian broadcast produces (`NO.gif` -> `no`) and the ONE off word that is
+# also real data. Answering "any language" to somebody asking for Norwegian is
+# worse than making them type `any`.
+LIST_ANY_WORDS = (ANY_WORDS | OFF_WORDS) - frozenset({"no"})
 RESET_WORDS = frozenset({"default", "reset"})
 
 
@@ -235,8 +241,9 @@ def parse_value(item: Setting, raw: str) -> Optional[Value]:
     if item.textual:
         # "any" is the empty list: no language is privileged, so the block is
         # simply the most watched broadcasts whatever they speak. The off
-        # words land here too — with no language preferred, the filter is off.
-        if text in ANY_WORDS or text in OFF_WORDS:
+        # words land here too — with no language preferred, the filter is off —
+        # all but "no", which is Norwegian. See LIST_ANY_WORDS.
+        if text in LIST_ANY_WORDS:
             return ""
         # An on word is NOT a language, and it is not rejected here for
         # tidiness: two letters of the alphabet is all a language code has to

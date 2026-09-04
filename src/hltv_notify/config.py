@@ -255,23 +255,39 @@ class Config:
         A flag missing from here is its own language, lowercased: `RU` -> `ru`,
         `BR` -> `br`. So the table only has to carry the exceptions.
 
-        Whitespace is what separates one group from the next, so a space
-        written INSIDE one — `en: GB, US`, which is how a person naturally
-        writes it — used to split it into pieces that each parse to nothing
-        and leave the table empty. It is squeezed out around the separators
-        first. An empty table is not a visible failure either: nothing breaks,
-        English simply stops arriving under `AU` and `US` and the most watched
-        cast quietly drops out of the block. Hence the warning below.
+        Written `en:GB,US,WORLD ru:BY`, but nothing hangs on WHICH separator
+        stands where: the value is cut on spaces, commas and semicolons alike,
+        a token carrying a colon opens a new language, and every token after it
+        is one of that language's flags. Nothing else is a rule, and that is
+        the point — both shapes a person actually types come out the same. Two
+        earlier versions each got one of them wrong: splitting on whitespace
+        alone lost `en: GB, US` entirely (four pieces, none of them parseable),
+        and squeezing the whitespace out first read the comma in
+        `en:GB,US, ru:BY` as a separator INSIDE English and stored the flag
+        "ru:BY" — so `BY` never meant Russian.
+
+        An unreadable value is not a visible failure: the block still appears,
+        it just stops counting `AU` and `US` as English and drops the most
+        watched cast. Hence the warning below.
         """
         table: Dict[str, str] = {}
-        text = re.sub(r"\s*([:,;])\s*", r"\1", self.stream_language_aliases)
-        for group in text.replace(";", " ").split():
-            language, _, flags = group.partition(":")
-            language = language.strip().lower()
-            if not language or not flags:
+        language = ""
+        # Whitespace around the COLON is squeezed out first so `en : GB` still
+        # opens a language. It is safe to do there and only there: a colon
+        # always binds a language to what follows it, whereas doing the same
+        # around the comma is what merged two groups into one.
+        text = re.sub(r"\s*:\s*", ":", self.stream_language_aliases)
+        for token in re.split(r"[\s,;]+", text):
+            if not token:
                 continue
-            for flag in flags.replace(",", " ").split():
-                table[flag.strip().upper()] = language
+            if ":" in token:
+                language, _, flag = token.partition(":")
+                language = language.strip().lower()
+            else:
+                flag = token
+            flag = flag.strip().upper()
+            if language and flag:
+                table[flag] = language
         if not table and self.stream_language_aliases.strip():
             log.warning(
                 "STREAM_LANGUAGE_ALIASES=%r parsed to nothing — expected groups "

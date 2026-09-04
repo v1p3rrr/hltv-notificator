@@ -154,6 +154,16 @@ def test_a_space_still_separates_one_language_from_the_next():
         "GB": "en", "US": "en", "BY": "ru"}
 
 
+def test_a_second_language_may_be_appended_with_a_comma():
+    """Extending the shipped default by writing `, ru:BY` after it is the
+    obvious thing to do. Read as a separator inside English it stored the flag
+    "ru:BY" and BY never meant Russian — silently, and the warning below could
+    not catch it because the table was not empty."""
+    for written in ("en:GB,US, ru:BY", "en:GB,US,ru:BY", "en:GB, US ru:BY"):
+        assert aliases_from(written) == {"GB": "en", "US": "en", "BY": "ru"}
+    assert not any(":" in flag for flag in aliases_from("en:GB,US, ru:BY"))
+
+
 def test_a_spaced_table_keeps_the_australian_cast_in_the_block():
     """The consequence, which is why an empty table matters: without the alias
     AU is its own language, falls outside en/ru, and the cast on 155 viewers

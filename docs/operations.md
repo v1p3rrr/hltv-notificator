@@ -104,7 +104,7 @@ The values live in `.env`; the defaults are a balanced profile:
 | `STREAM_LINKS` | true | broadcast links under a multikill. A **default**: `/settings streams` |
 | `STREAM_LINKS_MAX` | 3 | how many to list; 0 is **all**. A **default**: `/settings streams_count` |
 | `STREAM_LANGUAGES` | `en,ru` | languages worth a tap. A **default**: `/settings streams_langs` |
-| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that stand for one language; an unlisted flag is its own. Groups are separated by a space (`en:GB,US ru:BY`); spaces around `:` and `,` are ignored. A value that parses to nothing is logged at WARNING, because an empty table breaks nothing visibly — it just stops English arriving under `AU` and `US` |
+| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that stand for one language; an unlisted flag is its own. The **colon** is what opens a new language; spaces, commas and semicolons all separate, so `en:GB,US ru:BY` and `en: GB, US, ru:BY` are the same. A value that parses to nothing is logged at WARNING, because an empty table breaks nothing visibly — it just stops English arriving under `AU` and `US` |
 | `DEGRADED_ALERT_SECONDS` | 300 | how long before reporting that the service has gone blind (max 600) |
 
 The ceiling of **1 request every 30 seconds** is hardcoded and cannot be raised
@@ -156,9 +156,13 @@ default` deletes the row rather than freezing today's value into it.
 
 `on` means "back to the service default" everywhere, `streams_langs` included —
 there is no on/off for a list, and the block's own switch is `streams`. The
-words are refused as values rather than stored: `on` and `no` look exactly like
-language codes, and a code no flag matches would leave the block listing every
+words are refused as values rather than stored: `on` looks exactly like a
+language code, and a code no flag matches would leave the block listing every
 broadcast in every language while the reply read like a confirmation.
+
+The exception is `no`, which stays **Norwegian**: HLTV flags a cast with
+`NO.gif`, so it is the one off word that is also real data. `any`, `all`,
+`off`, `none` and `false` all mean "no language preferred".
 
 **How this survives "one event, many recipients".** An event is born once (see
 [architecture.md](architecture.md)), so the thresholds cannot live in the state

@@ -204,13 +204,25 @@ is what says which words mean "back to the service default": `on` does for a
 list, and must NOT for a number, where it goes through the -1 signal that knows
 how to say "the default is itself off, so yours stays".
 
-**A config format separated by whitespace must survive the spaces people
-write.** `STREAM_LANGUAGE_ALIASES` split groups on whitespace, so the natural
-`en: GB, US` split into four pieces that each parsed to nothing and the table
-came back EMPTY — silently, and an empty alias table is invisible: the block
-still appears, it just stops counting `AU` and `US` as English and drops the
-155-viewer cast for the 8-viewer one. Squeeze whitespace out around the
-separators first, and log a WARNING when a non-empty value parses to nothing.
+**And check the vocabulary against the DATA before adding to it.** Sweeping the
+whole off list into the language setting made `no` mean "any language" — but
+`no` is Norwegian (`NO.gif` -> `no`), the one off word that collides, so
+somebody asking for Norwegian casts was answered with all of them.
+`LIST_ANY_WORDS` subtracts it, and that is the entire reason the constant
+exists rather than the expression being written inline.
+
+**A config format needs ONE rule about what separates, and it is not
+whitespace.** `STREAM_LANGUAGE_ALIASES` was got wrong twice in two commits.
+Splitting groups on whitespace lost `en: GB, US` completely — four pieces, none
+parseable, table EMPTY. Squeezing whitespace out around every separator first
+then read the comma in `en:GB,US, ru:BY` as belonging INSIDE English and stored
+a flag called "ru:BY", so `BY` never meant Russian. What works is to make the
+COLON the only thing that opens a group and let space, comma and semicolon all
+separate alike. Both failures were silent, and an alias table is invisible when
+wrong: the block still appears, it just stops counting `AU` and `US` as English
+and drops the 155-viewer cast for the 8-viewer one. Hence also the WARNING when
+a non-empty value parses to nothing — which the second bug slipped past,
+because a half-parsed table is not an empty one.
 
 **Only Twitch and Kick get stream links, and the host is checked, not the
 provider.** HLTV lists YouTube too, and there is no clip button there, so a
@@ -571,7 +583,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 570 tests
+python -m pytest                                    # 572 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
