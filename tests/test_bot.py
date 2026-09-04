@@ -636,6 +636,7 @@ def test_no_command_answers_with_something_telegram_cannot_parse(bot):
                  "/settings streams_count off", "/settings streams_count all",
                  "/settings streams_langs", "/settings streams_langs en, ru",
                  "/settings streams_langs nonsense!", "/settings streams_langs any",
+                 "/settings streams_langs on", "/settings streams_langs off",
                  "/mute", "/mute 12857", "/unmute", "/untrack",
                  "/track", "/pause", "/resume", "/whoami", "/nonsense"]:
         send(command_bot, text)
@@ -669,6 +670,22 @@ def test_a_language_list_may_be_typed_with_spaces(bot):
     send(command_bot, "/settings streams_langs en, ru")
     assert storage.text_setting(CHAT, "streams_langs", "") == "en,ru"
     assert "en, ru" in telegram.sent[-1][1]
+
+
+def test_on_puts_the_language_list_back_to_the_service_default(bot):
+    """Every other setting takes "on" as "back to the service default", and the
+    block's own off switch is a different setting, so there is nothing else it
+    could mean here. It used to be stored as the language "on" — which matches
+    no flag, so the filter silently stopped filtering while the reply said
+    "Stream languages: on"."""
+    command_bot, telegram, storage = bot
+    send(command_bot, "/settings streams_langs ru")
+    assert storage.text_setting(CHAT, "streams_langs", "!") == "ru"
+
+    send(command_bot, "/settings streams_langs on")
+    # The row is gone, so the environment's default applies again.
+    assert storage.text_setting(CHAT, "streams_langs", "!") == "!"
+    assert "default" in telegram.sent[-1][1]
 
 
 def test_a_language_button_toggles_one_code(bot):

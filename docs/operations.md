@@ -104,7 +104,7 @@ The values live in `.env`; the defaults are a balanced profile:
 | `STREAM_LINKS` | true | broadcast links under a multikill. A **default**: `/settings streams` |
 | `STREAM_LINKS_MAX` | 3 | how many to list; 0 is **all**. A **default**: `/settings streams_count` |
 | `STREAM_LANGUAGES` | `en,ru` | languages worth a tap. A **default**: `/settings streams_langs` |
-| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that stand for one language; an unlisted flag is its own |
+| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that stand for one language; an unlisted flag is its own. Groups are separated by a space (`en:GB,US ru:BY`); spaces around `:` and `,` are ignored. A value that parses to nothing is logged at WARNING, because an empty table breaks nothing visibly — it just stops English arriving under `AU` and `US` |
 | `DEGRADED_ALERT_SECONDS` | 300 | how long before reporting that the service has gone blind (max 600) |
 
 The ceiling of **1 request every 30 seconds** is hardcoded and cannot be raised
@@ -148,11 +148,17 @@ and with no card there is nothing to move.
 | `card` | the live score card during a map | `LIVE_MESSAGE` |
 | `streams` | the block of broadcast links under E9 | `STREAM_LINKS` |
 | `streams_count` | how many to list; `0` is **all**, not "none" | `STREAM_LINKS_MAX` |
-| `streams_langs` | languages worth a tap; `any` for no preference | `STREAM_LANGUAGES` |
+| `streams_langs` | languages worth a tap; `any` (or `off`) for no preference | `STREAM_LANGUAGES` |
 
 A row is written only when somebody changes something, so raising a default in
 `.env` still reaches everyone who never touched it, and `/settings <name>
 default` deletes the row rather than freezing today's value into it.
+
+`on` means "back to the service default" everywhere, `streams_langs` included —
+there is no on/off for a list, and the block's own switch is `streams`. The
+words are refused as values rather than stored: `on` and `no` look exactly like
+language codes, and a code no flag matches would leave the block listing every
+broadcast in every language while the reply read like a confirmation.
 
 **How this survives "one event, many recipients".** An event is born once (see
 [architecture.md](architecture.md)), so the thresholds cannot live in the state

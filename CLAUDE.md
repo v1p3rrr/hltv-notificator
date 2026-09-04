@@ -192,6 +192,26 @@ the setting does not report "off" while showing all the streams, and
 `parse_value`, which must REFUSE "off" where zero does not mean off — otherwise
 the word for "none" would store the value for "all".
 
+**An on/off word is a WORD, never data — and for a free-text setting nothing
+refuses it for you.** `/settings streams_langs on` stored the primary language
+"on": two letters of the alphabet is all a language code has to look like, so
+every shape check passed. No flag matches it, so `pick` found no primary stream
+and fell back to "every broadcast in every language" — the filter switched
+itself off while the reply read "Stream languages: on". The vocabulary lives in
+ONE place — `settings.ON_WORDS` / `OFF_WORDS` / `ANY_WORDS` — because a word
+that stops being recognised as a word is not rejected, it is stored. `is_reset`
+is what says which words mean "back to the service default": `on` does for a
+list, and must NOT for a number, where it goes through the -1 signal that knows
+how to say "the default is itself off, so yours stays".
+
+**A config format separated by whitespace must survive the spaces people
+write.** `STREAM_LANGUAGE_ALIASES` split groups on whitespace, so the natural
+`en: GB, US` split into four pieces that each parsed to nothing and the table
+came back EMPTY — silently, and an empty alias table is invisible: the block
+still appears, it just stops counting `AU` and `US` as English and drops the
+155-viewer cast for the 8-viewer one. Squeeze whitespace out around the
+separators first, and log a WARNING when a non-empty value parses to nothing.
+
 **Only Twitch and Kick get stream links, and the host is checked, not the
 provider.** HLTV lists YouTube too, and there is no clip button there, so a
 link is a dead end. `data-stream-provider` says what HLTV calls it;
@@ -551,7 +571,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 561 tests
+python -m pytest                                    # 570 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

@@ -371,6 +371,51 @@ def test_the_word_off_is_refused_where_zero_does_not_mean_off():
     assert settings.parse_value(settings.get("streams"), "off") == 0
 
 
+# ---------- the on/off vocabulary is a vocabulary, not data ----------
+
+def test_an_on_word_is_never_stored_as_a_language():
+    """Two letters of the alphabet is all a language code has to look like, so
+    "on" passes every shape check below. Stored as one it matches no flag, the
+    filter falls back to "every broadcast in every language", and the reply
+    reads like a confirmation that something was turned on."""
+    item = settings.get("streams_langs")
+    for word in ("on", "true", "yes"):
+        assert settings.parse_value(item, word) is None
+        assert settings.is_reset(item, word)
+
+
+def test_an_off_word_for_a_list_is_the_empty_list():
+    """With no language preferred the filter is simply off — which is a value,
+    not an absence. "no" and "false" used to be stored as language codes."""
+    item = settings.get("streams_langs")
+    for word in ("off", "no", "none", "false", "any", "all"):
+        assert settings.parse_value(item, word) == ""
+        assert not settings.is_reset(item, word)
+
+
+def test_a_number_still_takes_on_down_its_own_path():
+    """`is_reset` must not swallow "on" for a number: there it goes through the
+    -1 signal, which is what knows how to say "the default is itself off, so
+    yours stays" instead of quietly deleting it."""
+    item = settings.get("multikill")
+    assert not settings.is_reset(item, "on")
+    assert settings.parse_value(item, "on") == -1
+    assert settings.is_reset(item, "default")
+    assert settings.is_reset(settings.get("streams_langs"), "reset")
+
+
+def test_the_words_come_from_one_list():
+    """Same reasoning as menu.MUTABLE and bot.COMMANDS, one level down. A
+    second copy drifts, and it drifts silently: a word that stops being
+    recognised as a word is not refused, it is taken as data."""
+    card = settings.get("card")
+    for word in settings.ON_WORDS:
+        assert settings.parse_value(card, word) == 1
+    for word in settings.OFF_WORDS:
+        assert settings.parse_value(card, word) == 0
+    assert settings.ON_WORDS.isdisjoint(settings.OFF_WORDS)
+
+
 def test_there_is_exactly_one_type_tag():
     """`kind` replaced a `boolean` flag rather than joining it: two flags could
     both be true, and every consumer would have to decide which wins."""

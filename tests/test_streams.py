@@ -6,11 +6,14 @@ short list, most watched first, and no link in a language the reader cannot
 follow.
 """
 
+import logging
+
 import pytest
 from bs4 import BeautifulSoup
 
 from conftest import FIXTURES
 from hltv_notify import streams as st
+from hltv_notify.config import Config
 from hltv_notify.models import Event
 from hltv_notify.notify import format as fmt
 from hltv_notify.sources import match_page
@@ -124,6 +127,53 @@ def test_flag_emoji():
     assert st.flag_emoji("RU") == "🇷🇺"
     assert st.flag_emoji("WORLD") == "🌍"
     assert st.flag_emoji("") == "🌍"
+
+
+# ---------- where the alias table comes from ----------
+
+def aliases_from(raw):
+    return Config(stream_language_aliases=raw).flag_languages()
+
+
+def test_the_alias_table_survives_the_spaces_a_person_writes():
+    """Whitespace separates one GROUP from the next, so a space written inside
+    one split it into pieces that each parsed to nothing and the table came
+    back empty — for the form a person is most likely to type."""
+    packed = aliases_from("en:GB,US,WORLD,AU")
+    assert packed == {"GB": "en", "US": "en", "WORLD": "en", "AU": "en"}
+    for spaced in ("en: GB, US, WORLD, AU",
+                   "en : GB , US , WORLD , AU",
+                   "en:GB, US, WORLD, AU"):
+        assert aliases_from(spaced) == packed
+
+
+def test_a_space_still_separates_one_language_from_the_next():
+    assert aliases_from("en:GB,US ru:BY,KZ") == {
+        "GB": "en", "US": "en", "BY": "ru", "KZ": "ru"}
+    assert aliases_from("en: GB, US; ru: BY") == {
+        "GB": "en", "US": "en", "BY": "ru"}
+
+
+def test_a_spaced_table_keeps_the_australian_cast_in_the_block():
+    """The consequence, which is why an empty table matters: without the alias
+    AU is its own language, falls outside en/ru, and the cast on 155 viewers
+    loses to the one on 8 — the very case the field exists for."""
+    chosen = st.pick([one("AU", 155), one("RU", 8)], primary=("en", "ru"),
+                     limit=3, aliases=aliases_from("en: GB, US, WORLD, AU"))
+    assert [item["viewers"] for item in chosen] == [155, 8]
+
+
+def test_a_table_that_parses_to_nothing_says_so_in_the_log(caplog):
+    """An empty table breaks nothing visibly — the block still appears, just
+    with the wrong broadcasts in it — so it has to be said out loud."""
+    with caplog.at_level(logging.WARNING):
+        assert aliases_from("en GB US") == {}
+    assert "STREAM_LANGUAGE_ALIASES" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        # Nothing configured is not a mistake: every flag is its own language.
+        assert aliases_from("") == {}
+    assert caplog.text == ""
 
 
 # ---------- choosing ----------

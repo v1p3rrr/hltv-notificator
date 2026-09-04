@@ -801,7 +801,10 @@ class CommandBot:
                     f"or /settings {name} default")
 
         raw = parts[1].strip().lower()
-        if raw in {"default", "reset"}:
+        # Which words mean "back to the service default" is the registry's to
+        # say, not the bot's: for a list "on" is one of them, and there is no
+        # second copy of that rule to fall out of step.
+        if prefs.is_reset(item, raw):
             self.storage.clear_setting(chat_id, name)
             restored = prefs.default_for(self.config, name)
             return (f"<b>{fmt.escape(item.label)}</b> is back to the service "

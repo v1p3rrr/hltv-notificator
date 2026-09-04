@@ -40,6 +40,19 @@ LANGUAGES = "languages"
 
 Value = Union[int, str]
 
+# The on/off vocabulary, in one place because three consumers read it:
+# `parse_value`, `is_reset` and the refusals they produce. Written out twice it
+# drifts, and the way it drifts is silent — a word that stops being recognised
+# as a word is not rejected, it is taken as DATA. That is exactly how
+# `/settings streams_langs on` came to store the primary language "on", which
+# no flag can match, so the block stopped filtering instead of turning on.
+ON_WORDS = frozenset({"on", "true", "yes"})
+OFF_WORDS = frozenset({"off", "false", "no", "none"})
+# Only for a list: "any" is not "off", it is a value — every language is
+# welcome. It reads better than the empty string a person cannot type.
+ANY_WORDS = frozenset({"any", "all"})
+RESET_WORDS = frozenset({"default", "reset"})
+
 
 @dataclass(frozen=True)
 class Setting:
@@ -195,6 +208,19 @@ def defaults(config) -> Dict[str, Value]:
     return {item.name: default_for(config, item.name) for item in SETTINGS}
 
 
+def is_reset(item: Setting, raw: str) -> bool:
+    """Does this word mean "back to whatever the service default is"?
+
+    `default` and `reset` always do. For a LIST so does "on", and that is not
+    a courtesy: a number takes "on" to mean the same thing (the -1 below), a
+    boolean takes it as 1, and a list has nothing else it could mean — the
+    block's own off switch is a different setting. Left to `parse_value` it
+    would become the language "on".
+    """
+    text = (raw or "").strip().lower()
+    return text in RESET_WORDS or (item.textual and text in ON_WORDS)
+
+
 def parse_value(item: Setting, raw: str) -> Optional[Value]:
     """`"5"`, `"on"`, `"off"` -> a value. None means it could not be read.
 
@@ -208,15 +234,25 @@ def parse_value(item: Setting, raw: str) -> Optional[Value]:
 
     if item.textual:
         # "any" is the empty list: no language is privileged, so the block is
-        # simply the most watched broadcasts whatever they speak.
-        if text in {"any", "all", "off", "none"}:
+        # simply the most watched broadcasts whatever they speak. The off
+        # words land here too — with no language preferred, the filter is off.
+        if text in ANY_WORDS or text in OFF_WORDS:
             return ""
+        # An on word is NOT a language, and it is not rejected here for
+        # tidiness: two letters of the alphabet is all a language code has to
+        # be, so "on" and "no" would pass the check below and be stored as
+        # codes no flag can ever match — the filter would fall back to "every
+        # broadcast in every language" while the reply said "on". `is_reset`
+        # takes them as "back to the service default" before we get here; this
+        # is the guard for any other caller.
+        if text in ON_WORDS:
+            return None
         codes = parse_languages(text)
         if not codes or not all(code.isalpha() and 2 <= len(code) <= 8 for code in codes):
             return None
         return ",".join(codes)
 
-    if text in {"on", "true", "yes", "1"} and item.kind == BOOLEAN:
+    if (text in ON_WORDS or text == "1") and item.kind == BOOLEAN:
         return 1
     # The synonyms belong to the WORD, not to the number. For `streams_count`
     # zero means "all", and letting "off" through would store the value that
@@ -224,10 +260,10 @@ def parse_value(item: Setting, raw: str) -> Optional[Value]:
     # real off switch (`streams`) exists next to it.
     zero_words = {item.zero_word}
     if item.zero_word == "off":
-        zero_words |= {"false", "no", "none"}
+        zero_words |= OFF_WORDS
     if text in zero_words:
         return 0
-    if text in {"on", "true", "yes"}:
+    if text in ON_WORDS:
         # A non-boolean turned on means "back to the default", which the caller
         # supplies; -1 is the signal for it.
         return -1

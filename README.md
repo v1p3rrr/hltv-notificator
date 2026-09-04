@@ -149,7 +149,8 @@ two slots it costs more than it gives.
 ```
 /settings streams off         no links at all
 /settings streams_count 4     four instead of three; 0 lists every one of them
-/settings streams_langs en,ru which languages are worth a tap; "any" for no preference
+/settings streams_langs en,ru which languages are worth a tap; "any" for no
+                              preference, "default" or "on" to go back
 ```
 
 ### A few more examples
@@ -554,7 +555,7 @@ are most likely to touch:
 | `STREAM_LINKS` | `true` | broadcast links under a multikill — the **default** for `/settings streams` |
 | `STREAM_LINKS_MAX` | `3` | how many to list; `0` means **all** — the **default** for `/settings streams_count` |
 | `STREAM_LANGUAGES` | `en,ru` | languages worth a tap — the **default** for `/settings streams_langs` |
-| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that mean one language; an unlisted flag is its own |
+| `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that mean one language; an unlisted flag is its own. A space separates groups (`en:GB,US ru:BY`); spaces around `:` and `,` are ignored |
 | `TELEGRAM_WHITELIST_ONLY` | `true` | answer only the listed chats |
 | `MAX_TEAMS_PER_SUBSCRIBER` | `10` | how many teams one person may follow; `0` removes the limit |
 | `COMMAND_RATE_LIMIT` | `0` | commands one chat may send per minute; `0` is off |
