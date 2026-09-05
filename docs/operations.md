@@ -21,6 +21,7 @@
 | "The match has stalled" | only when there is no live feed; between maps the threshold is three times longer |
 | The live score message during a map | done, one per map, `/settings card` (default `LIVE_MESSAGE`); it is also the map's card and carries the map start, so it is not opened during the warmup, and it is moved back to the bottom of the chat after E11, E12 and E13 |
 | A multikill by a player of our team | done, at the Nth kill, `/settings multikill` (default `MULTIKILL_THRESHOLD`) |
+| E14 the daily digest | done, at times set with `/digest`, in the subscriber's own zone; a rolling 24 h window, and nothing is sent on a day with no matches |
 | Broadcast links under a multikill | done, a quoted block on E9, `/settings streams` (default `STREAM_LINKS`); read off the match page we already poll, Twitch and Kick only |
 
 ## Starting up
@@ -71,6 +72,7 @@ command the bot does not recognise.
 | `/mute <id> <types>` | mute event types for one team |
 | `/unmute <id>` | clear the mutes |
 | `/remind` | the list of reminders; `/remind 1h` adds, `/remind rm 15m` removes |
+| `/digest` | the digest times; `/digest 9:00` adds, `/digest rm 9:00` removes. Local time, from `/tz` |
 | `/tz` | your own timezone |
 | `/settings` | your own thresholds; `/settings comeback 12` changes one, `/settings comeback default` returns it to the environment's value |
 | `/pause` / `/resume` | the global quiet switch, on top of per-type muting |

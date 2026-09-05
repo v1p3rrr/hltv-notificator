@@ -637,6 +637,7 @@ def test_no_command_answers_with_something_telegram_cannot_parse(bot):
                  "/settings streams_langs", "/settings streams_langs en, ru",
                  "/settings streams_langs nonsense!", "/settings streams_langs any",
                  "/settings streams_langs on", "/settings streams_langs off",
+                 "/digest", "/digest 9:00", "/digest 25:00", "/digest rm 9:00",
                  "/mute", "/mute 12857", "/unmute", "/untrack",
                  "/track", "/pause", "/resume", "/whoami", "/nonsense"]:
         send(command_bot, text)
@@ -670,6 +671,70 @@ def test_a_language_list_may_be_typed_with_spaces(bot):
     send(command_bot, "/settings streams_langs en, ru")
     assert storage.text_setting(CHAT, "streams_langs", "") == "en,ru"
     assert "en, ru" in telegram.sent[-1][1]
+
+
+# ---------- the daily digest ----------
+
+def test_the_digest_times_round_trip_through_the_command(bot):
+    command_bot, telegram, storage = bot
+    send(command_bot, "/digest")
+    assert "off" in telegram.sent[-1][1]
+
+    send(command_bot, "/digest 9:00")
+    assert storage.digest_times(CHAT) == [540]
+    send(command_bot, "/digest 21.30")
+    assert storage.digest_times(CHAT) == [540, 21 * 60 + 30]
+
+    send(command_bot, "/digest rm 9:00")
+    assert storage.digest_times(CHAT) == [21 * 60 + 30]
+    assert "09:00" in telegram.sent[-1][1]
+
+
+def test_a_time_the_clock_does_not_have_is_refused(bot):
+    command_bot, telegram, storage = bot
+    send(command_bot, "/digest 25:00")
+    assert storage.digest_times(CHAT) == []
+    assert "between 0:00 and 23:59" in telegram.sent[-1][1]
+
+
+def test_the_digest_button_toggles_one_time(bot):
+    """The payload carries minutes from midnight as ONE number: callback_data
+    is split on the colon, so `d:9:30` would arrive as two arguments and the
+    minutes would be dropped."""
+    command_bot, telegram, storage = bot
+    press(command_bot, "d:570")
+    assert storage.digest_times(CHAT) == [570]
+    press(command_bot, "d:570")
+    assert storage.digest_times(CHAT) == []
+
+
+def test_a_time_typed_by_hand_is_still_on_the_screen(bot):
+    """Same reasoning as the language row: a screen whose job is to show what
+    is set must not hide a value because it is not one of the presets."""
+    from hltv_notify import menu
+    command_bot, _, storage = bot
+    send(command_bot, "/digest 7:30")
+    payloads = [button["callback_data"]
+                for row in menu.digest(storage.digest_times(CHAT))["inline_keyboard"]
+                for button in row]
+    assert "d:450" in payloads
+    assert all(len(one.encode("utf-8")) <= 64 for one in payloads)
+
+
+def test_next_groups_by_day_and_links_the_match(bot):
+    command_bot, telegram, storage = bot
+    storage.add_team(CHAT, 12857, "forze-reload", "FORZE Reload")
+    storage.upsert_match(
+        match_id=901, team_id=12857, opponent_id=13973, opponent_name="Color",
+        event_name="GLuck Qualifier", start_utc=utcnow() + timedelta(hours=3),
+        url="https://www.hltv.org/matches/901/x", snapshot={}, snapshot_hash="h")
+    storage.link_match_team(901, 12857)
+    send(command_bot, "/next")
+    reply = telegram.sent[-1][1]
+    assert "📅 <b>Upcoming</b>" in reply
+    assert "<b>Today</b>" in reply or "<b>Tomorrow</b>" in reply
+    assert '<a href="https://www.hltv.org/matches/901/x">' in reply
+    assert "FORZE Reload — Color" in reply
 
 
 def test_on_puts_the_language_list_back_to_the_service_default(bot):

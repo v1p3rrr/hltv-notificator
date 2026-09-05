@@ -17,6 +17,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from .config import HLTV_BASE, Config
+from . import digest
 from .notify import format as fmt
 from .sources import team_page
 from .notify.telegram import Telegram, TelegramError
@@ -82,7 +83,8 @@ MUTABLE_EVENTS = tuple(code for code, _ in menu.MUTABLE)
 # Commands that STORE something for the person sending them. Only these
 # create a subscriber: looking at /status or /next leaves no trace.
 WRITING_COMMANDS = frozenset({"/track", "/untrack", "/mute", "/unmute",
-                             "/remind", "/tz", "/pause", "/resume", "/settings"})
+                             "/remind", "/digest", "/tz", "/pause", "/resume",
+                             "/settings"})
 
 # One list of commands, in the order a person meets them. The /help text and
 # the hint list Telegram shows when you type "/" are both generated from it —
@@ -103,6 +105,8 @@ COMMANDS = (
     ("mute", "<id> <E5,E9>", "Mute event types for a team"),
     ("unmute", "<id>", "Clear all mutes for a team"),
     ("remind", "[15m|1h]", "Pre-match reminders; /remind rm 15m removes one"),
+    ("digest", "[9:00]",
+     "A daily list of the next 24 hours; /digest rm 9:00 removes one"),
     ("tz", "<Europe/Berlin>", "Your timezone"),
     ("settings", "[name] [value]",
      "Your alerts: multikill, comeback, half, overtime, card, streams"),
@@ -270,6 +274,8 @@ class CommandBot:
                 reply = self._unmute(chat_id, argument)
             elif command == "/remind":
                 reply = self._remind(chat_id, argument)
+            elif command == "/digest":
+                reply = self._digest(chat_id, argument)
             elif command == "/tz":
                 reply = self._timezone(chat_id, argument)
             elif command == "/settings":
@@ -479,6 +485,8 @@ class CommandBot:
             if section == "rem":
                 return (self._remind_list(chat_id),
                         menu.reminders(self.storage.reminders(chat_id)), "")
+            if section == "digest":
+                return self._digest_screen(chat_id, "")
             if section == "set":
                 return self._settings_screen(chat_id, "")
             return self._menu_text(chat_id), menu.main(
@@ -499,6 +507,22 @@ class CommandBot:
                 toast = "Added"
             return (self._remind_list(chat_id),
                     menu.reminders(self.storage.reminders(chat_id)), toast)
+
+        if kind == "d" and args:
+            # Minutes from midnight as ONE number: callback_data is split on
+            # the colon, so a written-out clock would arrive in two pieces.
+            try:
+                minute = int(args[0])
+            except ValueError:
+                return self._digest_screen(chat_id, "")
+            if not 0 <= minute < 24 * 60:
+                return self._digest_screen(chat_id, "")
+            if self.storage.remove_digest_time(chat_id, minute):
+                toast = "Removed"
+            else:
+                self.storage.add_digest_time(chat_id, minute)
+                toast = "Added"
+            return self._digest_screen(chat_id, toast)
 
         if kind == "s" and args:
             return self._settings_callback(chat_id, args)
@@ -973,19 +997,69 @@ class CommandBot:
         team_id = self.storage.canonical_team(match_id)
         return self.storage.team_name(team_id, self.config.team_name)
 
+    NEXT_SHOWN = 10
+
     def _next(self, chat_id: str) -> str:
+        """The schedule as the service sees it, grouped by the reader's day.
+
+        Rendered through `format.schedule_lines`, the same function the digest
+        uses: the two answer one question over different spans, and a person
+        comparing them should not find a match described two ways.
+        """
         rows = self._mine(chat_id, self.storage.upcoming_matches())
         if not rows:
-            return ("No upcoming matches. For this team that is normal — it can "
-                    "go weeks without playing.")
-        lines = ["<b>Upcoming matches</b>"]
-        for row in rows[:10]:
-            when = fmt.human_time(row["start_utc"], self._tz(chat_id))
-            lines.append(
-                f"{when} — {fmt.escape(row['opponent_name'])}\n"
-                f"    {fmt.escape(row['event_name'])}\n"
-                f"    {fmt.escape(row['url'])}")
+            return ("📅 <b>Nothing scheduled</b>\n"
+                    "For one team that is normal — it can go weeks without "
+                    "playing. /check reads the schedule again right now.")
+        shown = rows[:self.NEXT_SHOWN]
+        matches = digest.describe_matches(self.storage, self.config, chat_id, shown)
+        lines = [f"📅 <b>Upcoming</b> — {fmt.count(len(rows), 'match', 'matches')}", ""]
+        lines += fmt.schedule_lines(matches, self._tz(chat_id))
+        if len(rows) > len(shown):
+            lines += ["", f"…and {len(rows) - len(shown)} further ahead."]
         return "\n".join(lines)
+
+    # ---------- the daily digest ----------
+
+    def _digest(self, chat_id: str, argument: str) -> str:
+        """The times of day at which to send "what is on in the next 24 h"."""
+        parts = (argument or "").split()
+        if not parts:
+            return self._digest_list(chat_id)
+
+        removing = parts[0].lower() in ("rm", "del", "-", "remove", "delete")
+        raw = parts[1] if removing and len(parts) > 1 else parts[0]
+        minute = digest.parse_time(raw)
+        if minute is None:
+            return ("Usage: /digest 9:00 to add, /digest rm 9:00 to remove.\n"
+                    "A time of day between 0:00 and 23:59, in your timezone "
+                    f"({fmt.escape(self._tz(chat_id))}). Change it with /tz.")
+
+        if removing:
+            if not self.storage.remove_digest_time(chat_id, minute):
+                return f"There was no digest at {digest.clock(minute)}."
+            return (f"Removed the digest at {digest.clock(minute)}.\n\n"
+                    + self._digest_list(chat_id))
+        if not self.storage.add_digest_time(chat_id, minute):
+            return f"A digest at {digest.clock(minute)} is already set."
+        return (f"Will send you the day's matches at {digest.clock(minute)}.\n\n"
+                + self._digest_list(chat_id))
+
+    def _digest_screen(self, chat_id: str, toast: str):
+        return (self._digest_list(chat_id),
+                menu.digest(self.storage.digest_times(chat_id)), toast)
+
+    def _digest_list(self, chat_id: str) -> str:
+        values = self.storage.digest_times(chat_id)
+        zone = fmt.escape(self._tz(chat_id))
+        if not values:
+            return ("<b>Daily digest</b>: off\n"
+                    "A list of what is on in the next 24 hours, at the times "
+                    "you choose. Nothing is sent on a day with no matches.\n"
+                    "Add one: /digest 9:00")
+        listed = ", ".join(digest.clock(value) for value in values)
+        return (f"<b>Daily digest</b>: {listed} ({zone})\n"
+                "Only when there is something on in the next 24 hours.")
 
     async def _check(self) -> str:
         self.poller.request_poll()

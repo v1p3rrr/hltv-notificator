@@ -605,6 +605,51 @@ so English arrives under `GB`, `US`, `WORLD` and every anglophone country.
 only exceptions need writing. Measured on fixture 2397091: without `AU` in that
 table the block drops a cast on 155 viewers in favour of one on 8.
 
+## The daily digest (E14)
+
+A reminder answers "this match starts soon". The digest answers a different
+question — "is the day worth keeping free" — and it is asked at times the
+person picks, in their own zone.
+
+**The times are wall-clock, so they are stored as minutes from LOCAL midnight**
+(`digest_times.minute_of_day`) and resolved against `subscribers.timezone` on
+every tick. Storing the UTC equivalent would be simpler and wrong twice a year:
+nine in the morning has to stay nine in the morning across a daylight-saving
+jump.
+
+**The window is a rolling 24 hours from the moment it fires**, not the rest of
+the calendar day. At nine, a match at seven tomorrow is 22 hours away and worth
+knowing about; one at eleven tonight is not more urgent for sharing a date with
+today.
+
+**Nothing on means nothing sent.** This is the rule the feature stands on: a
+digest that arrives every morning to say "no matches" is one people mute, and a
+muted digest is worth nothing on the morning something is on.
+
+`Storage.matches_within` and not `upcoming_matches`: the latter asks whether
+the START is still ahead of us, and a match in its second map answers no —
+which is the wrong answer to "is there anything on". So the query excludes
+FINISHED and CANCELLED instead, and a match being played counts. That leniency
+needs a floor (`running_for_hours`), because FINISHED is only written when the
+page says so and a match nobody polled through the end keeps LIVE forever.
+
+**The event is targeted at one chat** (`only_chat`, the same mechanism as a
+reminder). Two people with different times, different zones and different teams
+share nothing, so there is nothing to gain from building it once — and because
+the reader is known while it is built, the line can be turned to face their
+team there rather than at render time.
+
+**The key is the local date and the slot**, nothing about the matches. The
+message asserts "this is what the next 24 hours hold as of 09:00", and that
+assertion does not stop being true when a match is added an hour later: a
+second digest for the same slot would be a duplicate, not an update. The date
+is the subscriber's own, which is why the chat prefix `record_event` adds
+matters here.
+
+A missed slot is caught up for an hour and then abandoned. A restart must not
+cost the morning digest; a container that was down all day must not deliver it
+at bedtime.
+
 ## The card follows the conversation down
 
 The card is the message a person watches during a map, and it is a fixed

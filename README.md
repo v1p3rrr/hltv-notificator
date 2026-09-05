@@ -76,6 +76,7 @@ switched off individually, per team, from the bot.
 | The match time changed | team page |
 | The match was cancelled or removed | team page |
 | A reminder, N minutes before the start | your own setting |
+| A daily list of what is on in the next 24 hours, at times you choose | your own setting |
 | **The match started** — with the map lineup and whose pick each map is | match page |
 | A map started | live feed |
 | A player of a followed team took 4+ kills in one round | live feed |
@@ -153,6 +154,40 @@ two slots it costs more than it gives.
                               preference, "default" or "on" to go back
 ```
 
+### The morning digest
+
+A reminder tells you a match is about to start. This tells you whether the day
+is worth keeping free — at the times you choose, in your own timezone:
+
+```
+/digest 9:00      a list every morning at nine
+/digest 12:00     and another at noon
+/digest           what is set
+/digest rm 9:00   drop the morning one
+```
+
+```
+📅 Coming up — 3 matches in the next 24 hours
+
+Today
+🔴 live · Vitality — Natus Vincere
+    ESL Pro League
+🕒 18:00 · Vitality — Fnatic
+    BLAST Premier
+
+Tomorrow
+🕒 07:00 · Vitality — G2
+    IEM Katowice
+```
+
+**On a day with nothing on, nothing is sent.** A digest that arrives every
+morning to say "no matches" is one you mute, and then it is worth nothing on
+the morning something *is* on.
+
+The window is a rolling **24 hours from the moment it fires**, not the rest of
+the calendar day: at nine in the morning, a match at seven tomorrow is worth
+knowing about. A match being played right now counts; a finished one does not.
+
 ### A few more examples
 
 ```
@@ -209,6 +244,7 @@ documentation, and in the text `/mute` command, so here is the whole list:
 | `E11` | map point |
 | `E12` | half time |
 | `E13` | a new overtime begins |
+| `E14` | the daily digest: what is on in the next 24 hours |
 
 (The table above is in the order things happen; this one is by number, because
 that is how you look a code up.)
@@ -343,6 +379,7 @@ docker compose up -d
 /track https://www.hltv.org/team/9565/vitality
 /tz Europe/Berlin
 /remind 15m
+/digest 9:00
 ```
 
 Publishing an image of your own, pinning a version, backups and CI are covered
@@ -413,6 +450,7 @@ Not everything has a button: a few commands carry a value that has to be typed
 | `/mute <id> <E5,E9>` | mute notification types for one team | yes |
 | `/unmute <id>` | clear that team's mutes | yes |
 | `/remind 15m` | remind 15 min before a match; `/remind rm 15m` removes it | partly — 10, 15, 30 min, 1 h and 2 h are buttons, any other interval is typed |
+| `/digest 9:00` | a daily list of the next 24 hours at 09:00 your time; `/digest rm 9:00` removes it | partly — 08:00, 09:00, 10:00, 12:00, 18:00 and 20:00 are buttons, any other time is typed |
 | `/tz Europe/Berlin` | your timezone | **no** |
 | `/settings` | your own thresholds — multikill, comeback, half, overtime, the live card, the stream links. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
 | `/pause`, `/resume` | go completely quiet / start receiving again | yes |

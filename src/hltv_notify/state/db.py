@@ -37,6 +37,17 @@ CREATE TABLE IF NOT EXISTS reminders (
     PRIMARY KEY (chat_id, minutes_before)
 );
 
+-- At which times of day to send the digest of what is coming. Minutes from
+-- LOCAL midnight, in the subscriber's own zone (`subscribers.timezone`) —
+-- 9:00 means nine o'clock where they are, so the number cannot be stored as
+-- UTC without going stale twice a year. The list is per subscriber, and an
+-- empty one is the off switch: there is nothing else to turn off.
+CREATE TABLE IF NOT EXISTS digest_times (
+    chat_id       TEXT NOT NULL,
+    minute_of_day INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, minute_of_day)
+);
+
 -- Teams are PER SUBSCRIBER: the same match can interest two people, and muting
 -- it for one must not mute it for the other.
 CREATE TABLE IF NOT EXISTS teams (
@@ -621,6 +632,27 @@ class Storage:
             "SELECT minutes_before FROM reminders WHERE chat_id = ? "
             "ORDER BY minutes_before DESC", (str(chat_id),))]
 
+    # ---------- the daily digest ----------
+
+    def add_digest_time(self, chat_id: str, minute_of_day: int) -> bool:
+        """False means that time was already set."""
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO digest_times (chat_id, minute_of_day) VALUES (?, ?)",
+            (str(chat_id), int(minute_of_day)))
+        return cur.rowcount > 0
+
+    def remove_digest_time(self, chat_id: str, minute_of_day: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM digest_times WHERE chat_id = ? AND minute_of_day = ?",
+            (str(chat_id), int(minute_of_day)))
+        return cur.rowcount > 0
+
+    def digest_times(self, chat_id: str) -> List[int]:
+        """Minutes from local midnight, earliest first."""
+        return [row["minute_of_day"] for row in self.conn.execute(
+            "SELECT minute_of_day FROM digest_times WHERE chat_id = ? "
+            "ORDER BY minute_of_day", (str(chat_id),))]
+
     def set_subscriber_enabled(self, chat_id: str, enabled: bool) -> bool:
         cur = self.conn.execute("UPDATE subscribers SET enabled = ? WHERE chat_id = ?",
                                 (1 if enabled else 0, str(chat_id)))
@@ -789,6 +821,38 @@ class Storage:
             "LEFT JOIN match_teams mt ON mt.match_id = m.match_id "
             "WHERE mt.team_id IS NULL")}
         return mine | unlinked
+
+    def matches_within(self, hours: float, now: Optional[datetime] = None,
+                       *, running_for_hours: float = 12.0) -> List[sqlite3.Row]:
+        """What is worth telling somebody about right now: matches starting
+        inside the window, plus the ones already being played.
+
+        Not `upcoming_matches` with a bound bolted on. That query asks "is the
+        start still ahead of us", and a match in its second map answers no —
+        which is the wrong answer for a digest whose whole question is "is
+        there anything on". Finished and cancelled ones are excluded, so a
+        match that is still running counts and one that ended does not.
+
+        `running_for_hours` is the floor under that leniency. The state only
+        becomes FINISHED when the page says so, and a match nobody polled
+        through the end — the service was down, the page went missing — keeps
+        LIVE forever. Without the floor that match would head every digest for
+        the rest of time.
+        """
+        now = now or utcnow()
+        return list(self.conn.execute(
+            "SELECT COALESCE(s.pending_start_utc, m.start_utc) AS start_utc, "
+            "       m.*, s.state AS state, m.start_utc AS confirmed_start_utc "
+            "FROM matches m "
+            "LEFT JOIN match_state s ON s.match_id = m.match_id "
+            "WHERE m.missing_since_utc IS NULL "
+            "  AND (s.state IS NULL OR s.state NOT IN ('FINISHED', 'CANCELLED')) "
+            "  AND COALESCE(s.pending_start_utc, m.start_utc) < ? "
+            "  AND COALESCE(s.pending_start_utc, m.start_utc) >= ? "
+            "ORDER BY COALESCE(s.pending_start_utc, m.start_utc)",
+            (iso(now + timedelta(hours=hours)),
+             iso(now - timedelta(hours=running_for_hours))),
+        ))
 
     def upcoming_matches(self, now: Optional[datetime] = None) -> List[sqlite3.Row]:
         """Matches still ahead of us, by the NEWEST time known.

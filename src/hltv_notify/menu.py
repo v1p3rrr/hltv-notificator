@@ -54,7 +54,8 @@ def main(paused: bool) -> Dict:
     return keyboard([
         [("📊 Status", "m:status"), ("🔴 Live now", "m:live")],
         [("📅 Upcoming", "m:next"), ("⭐ Teams", "m:teams")],
-        [("⏰ Reminders", "m:rem"), ("🎚 Settings", "m:set")],
+        [("⏰ Reminders", "m:rem"), ("🌅 Daily digest", "m:digest")],
+        [("🎚 Settings", "m:set")],
         [("🔔 Turn notifications on", "p:off")] if paused
         else [("🔕 Quiet", "p:on")],
     ])
@@ -87,6 +88,35 @@ def team(team_id: int, name: str, muted: List[str], enabled: bool) -> Dict:
     tail = [("▶️ Turn on", f"t:{team_id}:on")] if not enabled else \
            [("✖️ Stop tracking", f"t:{team_id}:rm")]
     return keyboard(toggles + [tail, back("m:teams")])
+
+
+# Times of day offered for the digest. Round hours a person plausibly wants to
+# be told about the day: anything else is reachable with `/digest 7:30`.
+DIGEST_PRESETS = (8 * 60, 9 * 60, 10 * 60, 12 * 60, 18 * 60, 20 * 60)
+
+
+def digest(active: List[int]) -> Dict:
+    """Times of day: tapping one adds or removes it.
+
+    Whatever the person has set joins the presets, the same reasoning as the
+    language row — a time typed with `/digest 7:30` must not be missing from
+    the screen whose job is to show what is set.
+
+    The payload carries MINUTES FROM MIDNIGHT as one number and not `d:9:30`:
+    `menu.parse` splits callback_data on the colon, so a written-out clock
+    would arrive as two arguments and the minutes would be dropped.
+    """
+    rows: List[List[tuple]] = []
+    row: List[tuple] = []
+    for minute in sorted(set(DIGEST_PRESETS) | set(active)):
+        mark = "✅" if minute in active else "➕"
+        row.append((f"{mark} {minute // 60:02d}:{minute % 60:02d}", f"d:{minute}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return keyboard(rows + [back()])
 
 
 def reminders(active: List[int]) -> Dict:

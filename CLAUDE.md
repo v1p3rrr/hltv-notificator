@@ -20,7 +20,7 @@ up what a message is about.
 | E1 new match | E2 reschedule | E3 cancellation | E4 match started |
 | E5 map started | E6 map finished | E7 match finished | E8 / E8R degraded / recovered |
 | E9 multikill | E10 reminder | E11 map point | E12 half time |
-| E13 new overtime | | | |
+| E13 new overtime | E14 daily digest | | |
 
 A general description is in [README.md](README.md). How it works and why is in
 [docs/architecture.md](docs/architecture.md). **Read it before making any
@@ -77,6 +77,7 @@ src/hltv_notify/
   match_poller.py      match-page polling, brings live workers up
   live_worker.py       the feed connection, reconnects, the supervisor
   streams.py           choosing which broadcasts go under a multikill
+  digest.py            the daily "what is on" at a chosen local time
   replay.py            replaying a recorded dump through the state machine
   bot.py               bot commands
   sources/
@@ -375,6 +376,22 @@ sent as new and send the history again. There is a test for it —
 `tests/test_migration.py` assembles a first-version database and opens it with
 the current code.
 
+**A wall-clock setting is stored in LOCAL time, and resolved per subscriber.**
+`digest_times.minute_of_day` counts from the subscriber's own midnight and is
+compared against `now.astimezone(their zone)`. Storing the UTC equivalent is
+simpler and wrong twice a year — nine in the morning has to stay nine in the
+morning across a daylight-saving jump — and it is wrong immediately for a
+second subscriber in another zone. The same reasoning puts the LOCAL date in
+E14's key: "today" is not the same day for everybody.
+
+**"Is there anything on" is not the question `upcoming_matches` answers.** It
+asks whether the START is still ahead of us, and a match in its second map says
+no. E14 needs `matches_within`, which excludes FINISHED and CANCELLED instead —
+and that leniency needs a floor, because FINISHED is only written when the page
+says so and a match nobody polled through the end keeps LIVE forever. Do not
+"simplify" the two queries into one: they are different questions that happen
+to select from the same table.
+
 **Recipients are computed in ONE place — `notify/audience.py`.** The pause
 check lives there too. The rule "check it in two places" has already failed
 here twice: `subscribers_tracking` knows nothing about the pause, and first the
@@ -593,7 +610,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 582 tests
+python -m pytest                                    # 623 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

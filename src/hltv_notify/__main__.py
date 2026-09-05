@@ -24,6 +24,7 @@ from .match_poller import MatchPoller
 from .notify.live_message import LiveMessenger
 from .notify.outbox import Notifier
 from .notify.telegram import API_BASE as TELEGRAM_API_BASE, Telegram
+from .digest import DigestScheduler
 from .reminders import ReminderScheduler
 from .scheduler import SchedulePoller
 from .watchdog import Watchdog
@@ -187,11 +188,13 @@ async def run() -> int:
 
     watchdog = Watchdog(storage, config)
     reminders = ReminderScheduler(storage, config)
+    digests = DigestScheduler(storage, config)
     # The queue is kept separate: on shutdown it must not be torn down along
     # with the rest, see below.
     outbox = asyncio.create_task(notifier.run(stop), name="outbox")
     tasks: List[asyncio.Task] = [
         asyncio.create_task(reminders.run(stop, notifier), name="reminders"),
+        asyncio.create_task(digests.run(stop, notifier), name="digest"),
         asyncio.create_task(poller.run(stop), name="schedule-poller"),
         asyncio.create_task(watchdog.run(stop, notifier), name="watchdog"),
         asyncio.create_task(matches.run(stop), name="match-poller"),

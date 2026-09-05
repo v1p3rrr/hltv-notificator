@@ -10,7 +10,7 @@ change them.
 from __future__ import annotations
 
 import html
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -181,6 +181,64 @@ def stream_block(streams, prefs: Optional[StreamPreference]) -> str:
     return "<blockquote>" + "\n".join(lines) + "</blockquote>"
 
 
+def day_label(when: datetime, today) -> str:
+    """`Today`, `Tomorrow`, or the weekday and date.
+
+    Both callers show a handful of matches in the reader's own zone, where
+    "Today" is the thing they actually want to know and a date they have to
+    compare against a calendar is not.
+    """
+    day = when.date()
+    if day == today:
+        return "Today"
+    if day == today + timedelta(days=1):
+        return "Tomorrow"
+    return f"{WEEKDAYS[when.weekday()]} {day.day} {MONTHS[day.month - 1]}"
+
+
+def schedule_lines(matches, tz_name: str, *, now=None) -> list:
+    """A list of matches as message lines, grouped by the reader's day.
+
+    Shared by the digest (E14) and `/next` on purpose. They answer the same
+    question over different spans, and two renderers for one answer is how the
+    two would come to disagree about what a match looks like.
+
+    Each match is a dict, not a database row: the digest's arrive through an
+    event payload, which is JSON.
+    """
+    # `now` may be an ISO string: it travels in an event payload, which is
+    # JSON. `to_local` reads both.
+    today = to_local(now or datetime.now(timezone.utc), tz_name).date()
+    lines: list = []
+    current = None
+    for one in matches:
+        when = to_local(one["start_utc"], tz_name)
+        label = day_label(when, today)
+        if label != current:
+            if lines:
+                lines.append("")
+            lines.append(f"<b>{label}</b>")
+            current = label
+        # A live match has a start time too, and it is in the past — showing it
+        # would read as "starts at 18:00" for something already on its second
+        # map.
+        head = "🔴 <b>live</b>" if one.get("live") else f"🕒 {when.hour:02d}:{when.minute:02d}"
+        title = f"{one.get('team_name') or '?'} — {one.get('opponent') or 'TBD'}"
+        lines.append(f"{head} · {_link(one.get('url') or '', title)}")
+        if one.get("event_name"):
+            # Indented rather than joined with a separator: on a phone the two
+            # together overflow the line and wrap into something worse.
+            lines.append(f"    <i>{_esc(one['event_name'])}</i>")
+    return lines
+
+
+def count(number: int, one: str, many: str) -> str:
+    """Both forms spelled out. English does not make "matches" out of "match"
+    by adding an s, and a header reading "3 matchs" is the kind of thing nobody
+    reports and everybody notices."""
+    return f"{number} {one}" if number == 1 else f"{number} {many}"
+
+
 def render(event: Event, *, team_name: str, tz_name: str,
            for_team_id: Optional[int] = None,
            comeback_threshold: Optional[int] = None,
@@ -234,6 +292,19 @@ def render(event: Event, *, team_name: str, tz_name: str,
             f"🕒 {when}",
             _link(url, "Match page"),
         ])
+
+    if event.type == "E14":
+        matches = payload.get("matches") or []
+        hours = payload.get("hours") or 24
+        return "\n".join(
+            [f"📅 <b>Coming up</b> — "
+             f"{count(len(matches), 'match', 'matches')} in the next {hours} hours",
+             ""]
+            # Anchored to when the digest was BUILT, not to when it is
+            # rendered. The queue wakes every five seconds and retries for
+            # longer than that, and a 23:50 digest delivered after midnight
+            # would relabel every "Today" in it as "yesterday's date".
+            + schedule_lines(matches, tz_name, now=payload.get("now_utc")))
 
     if event.type == "E4":
         best_of = payload.get("best_of")

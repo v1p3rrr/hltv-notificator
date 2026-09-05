@@ -363,3 +363,33 @@ The live feed can come up before the match page has been parsed once — after a
 restart mid-match, for instance. The multikill then arrives without the block
 rather than waiting for it. The next poll fills the list in, and every later
 multikill on that match has it.
+
+## The digest can be an hour late, and then not arrive at all
+
+A slot is caught up for `CATCH_UP_MINUTES` (an hour) and abandoned after that.
+A restart at 09:20 still sends the nine o'clock digest; a host that was down
+until the evening sends nothing for that morning. The alternative — deliver it
+whenever the service comes back — means a "what is on today" arriving at
+bedtime, which is worse than silence.
+
+## Twice a year a digest can fire an hour off
+
+The slot is resolved by replacing the hour and minute on the subscriber's local
+`now`. On the two days a year when a daylight-saving jump makes that wall-clock
+time nonexistent or ambiguous, `ZoneInfo` resolves it by its own fold rules and
+the digest may go out an hour early or late. It is not corrected: the honest
+fix is a full local-calendar scheduler, and one hour twice a year does not pay
+for it.
+
+## The digest sees what the last poll saw
+
+It is built from the database, not from a fresh request — the 1-request-per-30-
+seconds ceiling is process-wide, and a digest that queued behind it would delay
+itself for no gain. A match added to HLTV's schedule minutes before the digest
+fires appears in the next one. `/check` forces a schedule read.
+
+## A match that started before the service did is not in the digest
+
+`matches_within` looks back `running_for_hours` (12 h) for matches still marked
+as being played. A longer outage than that, and a match that began during it is
+neither upcoming nor known to be live, so it is left out.
