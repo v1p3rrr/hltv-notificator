@@ -21,7 +21,7 @@
 | "The match has stalled" | only when there is no live feed; between maps the threshold is three times longer |
 | The live score message during a map | done, one per map, `/settings card` (default `LIVE_MESSAGE`); it is also the map's card and carries the map start, so it is not opened during the warmup, and it is moved back to the bottom of the chat after E11, E12 and E13 |
 | A multikill by a player of our team | done, at the Nth kill, `/settings multikill` (default `MULTIKILL_THRESHOLD`) |
-| E14 the daily digest | done, at times set with `/digest`, in the subscriber's own zone; a rolling 24 h window, and nothing is sent on a day with no matches |
+| E14 the daily digest | done, at times set with `/digest`, in the subscriber's own zone; matches STARTING within a rolling 24 h, so neither the running match nor a finished one, and nothing at all on a day with none |
 | Broadcast links under a multikill | done, a quoted block on E9, `/settings streams` (default `STREAM_LINKS`); read off the match page we already poll, Twitch and Kick only |
 
 ## Starting up

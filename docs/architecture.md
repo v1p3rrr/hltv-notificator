@@ -626,12 +626,15 @@ today.
 digest that arrives every morning to say "no matches" is one people mute, and a
 muted digest is worth nothing on the morning something is on.
 
-`Storage.matches_within` and not `upcoming_matches`: the latter asks whether
-the START is still ahead of us, and a match in its second map answers no —
-which is the wrong answer to "is there anything on". So the query excludes
-FINISHED and CANCELLED instead, and a match being played counts. That leniency
-needs a floor (`running_for_hours`), because FINISHED is only written when the
-page says so and a match nobody polled through the end keeps LIVE forever.
+**A match being played is left out.** It is the one thing the owner cannot have
+missed: it was announced when it started, and its live card is at the bottom of
+the chat being edited round by round. `/live` is the command for that question.
+
+`Storage.matches_within` and not `upcoming_matches` all the same, for a smaller
+reason that is easy to miss: the latter judges by the time alone, so a match
+already cancelled but still dated tomorrow is "upcoming". A digest listing it is
+worse than one that is a few hours short, so the state filter is part of the
+query.
 
 **The event is targeted at one chat** (`only_chat`, the same mechanism as a
 reminder). Two people with different times, different zones and different teams

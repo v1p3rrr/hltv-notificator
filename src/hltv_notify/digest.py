@@ -18,6 +18,10 @@ The window is a rolling 24 hours from the moment it fires, not "the rest of
 the calendar day". At nine in the morning a match at seven tomorrow is worth
 knowing about, and one at eleven tonight is not more urgent for being on the
 same date.
+
+A match already being played is left out. It is the one thing the owner cannot
+have missed: it was announced when it started, and its live card is sitting at
+the bottom of the chat being edited round by round.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from .config import Config
-from .models import Event, MatchState
+from .models import Event
 from .state.db import Storage, iso, utcnow
 
 log = logging.getLogger(__name__)
@@ -45,10 +49,6 @@ WINDOW_HOURS = 24
 # morning is noise, not news. An hour covers a restart and stops well short of
 # the next slot people usually pick.
 CATCH_UP_MINUTES = 60
-
-# What the page calls a match that is being played. Not TERMINAL's complement:
-# SCHEDULED and IMMINENT are ahead of us, and only these three mean "on air".
-PLAYING = (MatchState.LIVE, MatchState.MAP_LIVE, MatchState.MAP_BREAK)
 
 
 def parse_time(text: str) -> Optional[int]:
@@ -94,13 +94,21 @@ def describe_matches(storage: Storage, config: Config, chat_id: str,
     mine = {row["team_id"] for row in storage.teams(chat_id)}
     found: List[Dict] = []
     for row in rows:
-        team_id, opponent_id = row["team_id"], row["opponent_id"]
+        # `canonical_team`, NOT `row["team_id"]`. That column is NULL for every
+        # match that entered the database outside the schedule path, and for
+        # rows written before it existed; `team_name(None, ...)` then falls back
+        # to the config's team, so the line would name the FIRST SEED's team for
+        # somebody else's match. `canonical_team` is also what every machine
+        # here works from — reading the column directly is the mistake that
+        # left its COALESCE guard protecting a value nobody consulted.
+        canonical = storage.canonical_team(row["match_id"])
+        team_id, opponent_id = canonical, row["opponent_id"]
         opponent = row["opponent_name"]
         if team_id not in mine and opponent_id in mine:
             # The match is stored from the other team's point of view: the
             # perspective is chosen once, by whoever saw the match first.
-            team_id, opponent_id = opponent_id, team_id
-            opponent = storage.team_name(row["team_id"], config.team_name)
+            team_id, opponent_id = opponent_id, canonical
+            opponent = storage.team_name(canonical, config.team_name)
         found.append({
             "match_id": row["match_id"],
             "team_name": storage.team_name(team_id, config.team_name),
@@ -110,7 +118,6 @@ def describe_matches(storage: Storage, config: Config, chat_id: str,
             "event_name": row["event_name"],
             "start_utc": row["start_utc"],
             "url": row["url"],
-            "live": row["state"] in PLAYING,
         })
     return found
 

@@ -388,8 +388,10 @@ seconds ceiling is process-wide, and a digest that queued behind it would delay
 itself for no gain. A match added to HLTV's schedule minutes before the digest
 fires appears in the next one. `/check` forces a schedule read.
 
-## A match that started before the service did is not in the digest
+## The digest never mentions the match being played right now
 
-`matches_within` looks back `running_for_hours` (12 h) for matches still marked
-as being played. A longer outage than that, and a match that began during it is
-neither upcoming nor known to be live, so it is left out.
+Deliberate: it lists what is STARTING in the next 24 hours. The running match
+was announced when it started and its live card is at the bottom of the chat,
+so repeating it every morning adds nothing. `/live` answers that question. The
+cost is that somebody scrolling back to a digest sent hours ago cannot use it
+as a picture of the whole day.

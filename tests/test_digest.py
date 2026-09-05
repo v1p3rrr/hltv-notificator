@@ -148,14 +148,11 @@ def test_beyond_twenty_four_hours_is_not(store, config):
     assert due(store, config) == []
 
 
-def test_a_match_being_played_counts(store, config):
-    """"Is there anything on" is answered yes by a match in its second map.
-    `upcoming_matches` would say no — its question is whether the START is
-    still ahead, which is not this question."""
+def test_a_match_being_played_is_left_out(store, config):
+    """It is the one thing the owner cannot have missed: it was announced when
+    it started, and its live card is at the bottom of the chat."""
     add_match(store, 1, NOW - timedelta(hours=1), state=MatchState.MAP_LIVE)
-    events = due(store, config)
-    assert len(events) == 1
-    assert events[0].payload["matches"][0]["live"] is True
+    assert due(store, config) == []
 
 
 def test_a_finished_match_does_not(store, config):
@@ -168,11 +165,15 @@ def test_a_cancelled_match_does_not(store, config):
     assert due(store, config) == []
 
 
-def test_a_state_stuck_at_live_does_not_head_every_digest_forever(store, config):
-    """FINISHED is only written when the page says so, and a match nobody
-    polled through the end keeps LIVE. Without the floor it would lead the
-    digest for the rest of time."""
-    add_match(store, 1, NOW - timedelta(days=3), state=MatchState.LIVE)
+def test_a_match_cancelled_but_still_dated_tomorrow_is_left_out(store, config):
+    """The reason this is not `upcoming_matches` bounded at 24 h: that query
+    judges by the time alone, and a cancelled match keeps its date."""
+    add_match(store, 1, NOW + timedelta(hours=5), state=MatchState.CANCELLED)
+    assert due(store, config) == []
+
+
+def test_a_match_that_has_already_started_is_left_out_whatever_its_state(store, config):
+    add_match(store, 1, NOW - timedelta(minutes=5))
     assert due(store, config) == []
 
 
@@ -194,7 +195,10 @@ def test_the_reader_s_team_leads_the_line(store, config):
     store.add_subscriber(OTHER)
     store.add_team(OTHER, 9999, "spirit", "Team Spirit")
     add_match(store, 1, NOW + timedelta(hours=5), team_id=9999,
-              opponent_id=4608, opponent="Fnatic", link=4608)
+              opponent_id=4608, opponent="Fnatic", link=9999)
+    # Both sides are linked, which is what the schedule path always produces:
+    # `canonical_team` refuses a perspective that is not among the players.
+    store.link_match_team(1, 4608)
     one = due(store, config)[0].payload["matches"][0]
     assert one["team_name"] == "Fnatic"
     assert one["opponent"] == "Team Spirit"
@@ -220,8 +224,7 @@ def test_clock_is_the_inverse():
 # ---------- how it reads ----------
 
 def test_the_message_groups_by_the_reader_s_day(store, config):
-    add_match(store, 1, NOW - timedelta(hours=1), state=MatchState.LIVE,
-              opponent="Natus Vincere")
+    add_match(store, 1, NOW + timedelta(hours=2), opponent="Natus Vincere")
     add_match(store, 2, NOW + timedelta(hours=9), opponent="Fnatic",
               opponent_id=4608, event="BLAST Premier")
     add_match(store, 3, NOW + timedelta(hours=22), opponent="G2",
@@ -231,10 +234,7 @@ def test_the_message_groups_by_the_reader_s_day(store, config):
 
     assert "3 matches in the next 24 hours" in body
     assert "<b>Today</b>" in body and "<b>Tomorrow</b>" in body
-    # A live match has a start time too, and it is in the past — printing it
-    # would read as "starts at 08:00" for something already being played.
-    assert "🔴 <b>live</b>" in body
-    assert "🕒 18:00" in body and "🕒 07:00" in body
+    assert "🕒 11:00" in body and "🕒 18:00" in body and "🕒 07:00" in body
     assert "FORZE Reload — Natus Vincere" in body
     assert "https://www.hltv.org/matches/2/x" in body
 
@@ -261,3 +261,19 @@ def test_a_tournament_name_cannot_smuggle_markup_into_the_message(store, config)
     body = fmt.render(due(store, config)[0], team_name="FORZE Reload",
                       tz_name=MOSCOW)
     assert "&lt;b&gt;ESL&lt;/b&gt; &amp; co" in body
+
+
+def test_the_team_comes_from_the_canonical_perspective_not_the_column(store, config):
+    """`matches.team_id` is NULL for anything that entered outside the schedule
+    path, and `team_name(None, ...)` falls back to the CONFIG's team — so the
+    line would name the first seed for somebody else's match. Every machine
+    here reads `canonical_team()` instead, and so must this."""
+    store.upsert_match(
+        match_id=1, opponent_id=13973, opponent_name="Color",
+        event_name="ESL Pro League", start_utc=NOW + timedelta(hours=5),
+        url="https://www.hltv.org/matches/1/x", snapshot={}, snapshot_hash="h")
+    store.link_match_team(1, TEAM_ID)
+    assert store.get_match(1)["team_id"] is None      # the column really is empty
+    one = due(store, config)[0].payload["matches"][0]
+    assert one["team_id"] == TEAM_ID
+    assert one["team_name"] == "FORZE Reload"

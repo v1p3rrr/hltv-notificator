@@ -822,22 +822,18 @@ class Storage:
             "WHERE mt.team_id IS NULL")}
         return mine | unlinked
 
-    def matches_within(self, hours: float, now: Optional[datetime] = None,
-                       *, running_for_hours: float = 12.0) -> List[sqlite3.Row]:
-        """What is worth telling somebody about right now: matches starting
-        inside the window, plus the ones already being played.
+    def matches_within(self, hours: float,
+                       now: Optional[datetime] = None) -> List[sqlite3.Row]:
+        """Matches STARTING inside the window: the digest's question.
 
-        Not `upcoming_matches` with a bound bolted on. That query asks "is the
-        start still ahead of us", and a match in its second map answers no —
-        which is the wrong answer for a digest whose whole question is "is
-        there anything on". Finished and cancelled ones are excluded, so a
-        match that is still running counts and one that ended does not.
+        Not `upcoming_matches` with a bound bolted on, for one reason that is
+        easy to miss — that query judges by the time alone, so a match already
+        cancelled but still dated tomorrow is "upcoming". A digest listing it
+        would be worse than a digest that is a few hours short.
 
-        `running_for_hours` is the floor under that leniency. The state only
-        becomes FINISHED when the page says so, and a match nobody polled
-        through the end — the service was down, the page went missing — keeps
-        LIVE forever. Without the floor that match would head every digest for
-        the rest of time.
+        A match being played is deliberately NOT here. It is the one thing the
+        owner already knows about: it was announced when it started, and the
+        live card is sitting at the bottom of the chat.
         """
         now = now or utcnow()
         return list(self.conn.execute(
@@ -847,11 +843,10 @@ class Storage:
             "LEFT JOIN match_state s ON s.match_id = m.match_id "
             "WHERE m.missing_since_utc IS NULL "
             "  AND (s.state IS NULL OR s.state NOT IN ('FINISHED', 'CANCELLED')) "
-            "  AND COALESCE(s.pending_start_utc, m.start_utc) < ? "
             "  AND COALESCE(s.pending_start_utc, m.start_utc) >= ? "
+            "  AND COALESCE(s.pending_start_utc, m.start_utc) < ? "
             "ORDER BY COALESCE(s.pending_start_utc, m.start_utc)",
-            (iso(now + timedelta(hours=hours)),
-             iso(now - timedelta(hours=running_for_hours))),
+            (iso(now), iso(now + timedelta(hours=hours))),
         ))
 
     def upcoming_matches(self, now: Optional[datetime] = None) -> List[sqlite3.Row]:

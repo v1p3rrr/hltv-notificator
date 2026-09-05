@@ -219,12 +219,9 @@ def schedule_lines(matches, tz_name: str, *, now=None) -> list:
                 lines.append("")
             lines.append(f"<b>{label}</b>")
             current = label
-        # A live match has a start time too, and it is in the past — showing it
-        # would read as "starts at 18:00" for something already on its second
-        # map.
-        head = "🔴 <b>live</b>" if one.get("live") else f"🕒 {when.hour:02d}:{when.minute:02d}"
         title = f"{one.get('team_name') or '?'} — {one.get('opponent') or 'TBD'}"
-        lines.append(f"{head} · {_link(one.get('url') or '', title)}")
+        lines.append(f"🕒 {when.hour:02d}:{when.minute:02d} · "
+                     f"{_link(one.get('url') or '', title)}")
         if one.get("event_name"):
             # Indented rather than joined with a separator: on a phone the two
             # together overflow the line and wrap into something worse.

@@ -170,7 +170,7 @@ is worth keeping free — at the times you choose, in your own timezone:
 📅 Coming up — 3 matches in the next 24 hours
 
 Today
-🔴 live · Vitality — Natus Vincere
+🕒 14:00 · Vitality — Natus Vincere
     ESL Pro League
 🕒 18:00 · Vitality — Fnatic
     BLAST Premier
@@ -186,7 +186,12 @@ the morning something *is* on.
 
 The window is a rolling **24 hours from the moment it fires**, not the rest of
 the calendar day: at nine in the morning, a match at seven tomorrow is worth
-knowing about. A match being played right now counts; a finished one does not.
+knowing about.
+
+A match **already being played** is left out, and so is a finished one. The
+running match is the one thing you cannot have missed — it was announced when
+it started, and its live card is sitting at the bottom of the chat. `/live`
+answers that question.
 
 ### A few more examples
 

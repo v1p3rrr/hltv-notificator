@@ -384,13 +384,21 @@ morning across a daylight-saving jump — and it is wrong immediately for a
 second subscriber in another zone. The same reasoning puts the LOCAL date in
 E14's key: "today" is not the same day for everybody.
 
-**"Is there anything on" is not the question `upcoming_matches` answers.** It
-asks whether the START is still ahead of us, and a match in its second map says
-no. E14 needs `matches_within`, which excludes FINISHED and CANCELLED instead —
-and that leniency needs a floor, because FINISHED is only written when the page
-says so and a match nobody polled through the end keeps LIVE forever. Do not
-"simplify" the two queries into one: they are different questions that happen
-to select from the same table.
+**`upcoming_matches` judges by the TIME alone, so it is not a schedule.** A
+match already cancelled keeps its date, and that query still calls it upcoming —
+which is right for the polling cadence it was written for and wrong for
+anything a person reads. E14 uses `matches_within`, which is the same window
+plus the state filter. Do not "simplify" the two into one: they are different
+questions that happen to select from the same table.
+
+**Read `canonical_team()`, never `matches.team_id`.** The column is NULL for
+everything that entered outside the schedule path, and `team_name(None, ...)`
+falls back to the CONFIG's team — so a line built from the column names the
+first seed's team for somebody else's match. `canonical_team` also refuses a
+perspective that is not among the match's linked teams, which the column cannot
+do. This is the same mistake that once left the COALESCE guard in
+`upsert_match` protecting a value nobody consulted, and `digest.describe_matches`
+repeated it.
 
 **Recipients are computed in ONE place — `notify/audience.py`.** The pause
 check lives there too. The rule "check it in two places" has already failed
@@ -610,7 +618,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 623 tests
+python -m pytest                                    # 625 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
