@@ -372,6 +372,12 @@ until the evening sends nothing for that morning. The alternative — deliver it
 whenever the service comes back — means a "what is on today" arriving at
 bedtime, which is worse than silence.
 
+**Local midnight cuts the hour short.** The slot is resolved against the
+subscriber's date, so a 23:30 digest is not caught up at 00:05 — by then
+"today" is the next day and the slot has moved with it. A late-evening digest
+is the one least worth delivering late, so this is left as it is rather than
+carrying yesterday's slot forward.
+
 ## Twice a year a digest can fire an hour off
 
 The slot is resolved by replacing the hour and minute on the subscriber's local

@@ -15,6 +15,7 @@ import pytest
 from hltv_notify import digest as dg
 from hltv_notify.models import MatchState
 from hltv_notify.notify import format as fmt
+from hltv_notify.notify.outbox import Notifier
 
 CHAT = "555"
 OTHER = "777"
@@ -202,6 +203,50 @@ def test_the_reader_s_team_leads_the_line(store, config):
     one = due(store, config)[0].payload["matches"][0]
     assert one["team_name"] == "Fnatic"
     assert one["opponent"] == "Team Spirit"
+
+
+# ---------- through the queue, not just out of the scheduler ----------
+
+def test_the_digest_reaches_the_chat_it_was_built_for_and_no_other(store, config):
+    """The seam the unit tests miss. E14 carries `match_id=None`, so
+    `_recipients` takes the SERVICE audience — everyone listening — and narrows
+    it by `only_chat`. Get that wrong and the digest either reaches nobody or
+    reaches everybody; both look fine from inside the scheduler."""
+    store.add_subscriber(OTHER)
+    store.add_team(OTHER, TEAM_ID, "forze-reload", "FORZE Reload")
+    add_match(store, 1, NOW + timedelta(hours=5))
+
+    notifier = Notifier(store, config, telegram=None)
+    assert notifier.enqueue(due(store, config)[0]) is True
+    queued = [(row["chat_id"], row["event_type"]) for row in store.due_outbox(10)]
+    assert queued == [(CHAT, "E14")]
+
+
+def test_the_same_slot_is_not_queued_twice(store, config):
+    """`due` keeps offering the slot for the whole catch-up hour — 120 ticks at
+    30 seconds — and the journal is what makes that harmless."""
+    add_match(store, 1, NOW + timedelta(hours=5))
+    notifier = Notifier(store, config, telegram=None)
+    event = due(store, config)[0]
+    assert notifier.enqueue(event) is True
+    assert notifier.enqueue(event) is False
+    assert len(store.due_outbox(10)) == 1
+
+
+def test_the_pause_silences_it_without_spending_the_key(store, config):
+    """A pause means silence, not accumulation — but it must not burn the
+    journal key either, or resuming inside the hour would leave the person with
+    nothing where the digest should have been."""
+    add_match(store, 1, NOW + timedelta(hours=5))
+    notifier = Notifier(store, config, telegram=None)
+    event = due(store, config)[0]
+
+    store.set_subscriber_paused(CHAT, True)
+    assert notifier.enqueue(event) is False
+    assert store.due_outbox(10) == []
+
+    store.set_subscriber_paused(CHAT, False)
+    assert notifier.enqueue(event) is True
 
 
 # ---------- reading the time a person typed ----------
