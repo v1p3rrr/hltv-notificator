@@ -306,3 +306,75 @@ def test_returning_a_chat_to_the_whitelist_restores_it(tmp_path):
     storage.add_subscriber(FRIEND)          # added back — add_subscriber re-enables
     assert sorted(storage.subscriber_ids()) == [ILYA, FRIEND]
     storage.close()
+
+
+# ---------------------------------------------------------------- clutches (E15)
+
+def _e15(*, against=3, kills=1, team=None):
+    return Event(type="E15",
+                 idempotency_key=f"E15:700:map:1:round:5:sid:{against}:{kills}",
+                 match_id=MATCH,
+                 payload={"team_id": team or MOUZ, "team_name": "MOUZ",
+                          "opponent": "FORZE Reload", "nick": "Spinx",
+                          "kills": kills, "clutch_against": against,
+                          "map_name": "Nuke", "round": 5,
+                          "score_team": 5, "score_opponent": 3, "url": "u"})
+
+
+def test_a_clutch_reaches_only_that_players_team(store, config):
+    """Addressed exactly like a multikill — it is the same kind of thing."""
+    store.add_team(ILYA, MOUZ, "mouz", "MOUZ")
+    store.add_team(FRIEND, FORZE, "forze-reload", "FORZE Reload")
+    store.link_match_team(MATCH, MOUZ)
+    store.link_match_team(MATCH, FORZE)
+
+    Notifier(store, config, telegram=None).enqueue(_e15())
+    assert set(bodies(store)) == {ILYA}
+
+
+def test_a_clutch_below_the_readers_bar_is_withheld(store, config):
+    store.add_team(ILYA, MOUZ, "mouz", "MOUZ")
+    store.link_match_team(MATCH, MOUZ)
+    store.set_setting(ILYA, "clutch", 4)
+    store.set_setting(ILYA, "multikill", 5)
+
+    assert Notifier(store, config, telegram=None).enqueue(_e15(against=3, kills=1)) is False
+    assert store.pending_count() == 0
+
+
+def test_a_clutch_with_clutches_off_still_carries_its_multikill(store, config):
+    """The round was typed E15 because a clutch happened in it. A reader who
+    only wants multikills must not lose the 4k that happened in the same round
+    just because the message it rides in changed type."""
+    store.add_team(ILYA, MOUZ, "mouz", "MOUZ")
+    store.link_match_team(MATCH, MOUZ)
+    store.set_setting(ILYA, "clutch", 0)         # clutches off
+    store.set_setting(ILYA, "multikill", 4)
+
+    Notifier(store, config, telegram=None).enqueue(_e15(against=2, kills=4))
+    assert set(bodies(store)) == {ILYA}
+
+
+def test_both_bars_off_means_silence(store, config):
+    store.add_team(ILYA, MOUZ, "mouz", "MOUZ")
+    store.link_match_team(MATCH, MOUZ)
+    store.set_setting(ILYA, "clutch", 0)
+    store.set_setting(ILYA, "multikill", 0)
+
+    assert Notifier(store, config, telegram=None).enqueue(_e15(against=5, kills=5)) is False
+
+
+def test_a_clutch_can_be_muted_without_muting_multikills(store, config):
+    """Two entries in the mute list, two different moments."""
+    store.add_team(ILYA, MOUZ, "mouz", "MOUZ")
+    store.link_match_team(MATCH, MOUZ)
+    store.set_team_mutes(ILYA, MOUZ, ["E15"])
+
+    assert Notifier(store, config, telegram=None).enqueue(_e15()) is False
+    event = Event(type="E9", idempotency_key="E9:700:map:1:round:6:sid", match_id=MATCH,
+                  payload={"team_id": MOUZ, "team_name": "MOUZ", "opponent": "FORZE Reload",
+                           "nick": "Spinx", "kills": 4, "clutch_against": 0,
+                           "map_name": "Nuke", "round": 6,
+                           "score_team": 5, "score_opponent": 3, "url": "u"})
+    Notifier(store, config, telegram=None).enqueue(event)
+    assert set(bodies(store)) == {ILYA}

@@ -44,12 +44,13 @@ def entry_for(team_id, *, start=None, match_id=MATCH):
         finished=False)
 
 
-def frame(*, alpha_score=0, beta_score=0, rnd=1, alpha_kills=(), beta_kills=()):
+def frame(*, alpha_score=0, beta_score=0, rnd=1, alpha_kills=(), beta_kills=(),
+          state="started"):
     def players(kills):
         return tuple(PlayerLine(steam_id=nick, nick=nick, kills=value)
                      for nick, value in kills)
     return LiveFrame(
-        map_name="de_mirage", current_round=rnd, round_state="started", live=True,
+        map_name="de_mirage", current_round=rnd, round_state=state, live=True,
         ct_team_id=ALPHA, ct_team_name="MOUZ", ct_score=alpha_score,
         t_team_id=BETA, t_team_name="FORZE Reload", t_score=beta_score,
         regulation=12, overtime=3,
@@ -124,7 +125,7 @@ def test_multikill_of_the_second_team_is_shown_from_its_own_side(both, config):
 
     live = LiveMachine(both, config)
     live.apply(MATCH, frame(rnd=9, alpha_score=7, beta_score=4, beta_kills=[("Kaide", 2)]))
-    events = live.apply(MATCH, frame(rnd=9, alpha_score=7, beta_score=4,
+    events = live.apply(MATCH, frame(rnd=9, alpha_score=7, beta_score=4, state="ended",
                                      beta_kills=[("Kaide", 6)]))
     e9 = next(e for e in events if e.type == "E9")
     assert e9.payload["team_id"] == BETA
@@ -185,7 +186,7 @@ def test_multikill_alerts_come_from_both_tracked_teams(both, config):
 
     live = LiveMachine(both, config)
     live.apply(MATCH, frame(rnd=5, alpha_kills=[("Spinx", 10)], beta_kills=[("Kaide", 8)]))
-    events = live.apply(MATCH, frame(rnd=5, alpha_kills=[("Spinx", 14)],
+    events = live.apply(MATCH, frame(rnd=5, state="ended", alpha_kills=[("Spinx", 14)],
                                      beta_kills=[("Kaide", 12)]))
 
     nicks = sorted(e.payload["nick"] for e in events if e.type == "E9")
@@ -202,7 +203,7 @@ def test_multikill_keys_do_not_collide_between_teams(both, config):
     live = LiveMachine(both, config)
     n = Notifier(both, config, telegram=None)
     live.apply(MATCH, frame(rnd=5, alpha_kills=[("Spinx", 10)], beta_kills=[("Kaide", 8)]))
-    for event in live.apply(MATCH, frame(rnd=5, alpha_kills=[("Spinx", 14)],
+    for event in live.apply(MATCH, frame(rnd=5, state="ended", alpha_kills=[("Spinx", 14)],
                                          beta_kills=[("Kaide", 12)])):
         n.enqueue(event)
 

@@ -26,12 +26,19 @@ log = logging.getLogger(__name__)
 # chat. Only milestones of the map the card is about: they are rare, and the
 # card is what the reader is watching when they arrive.
 #
-# E9 (multikill) is deliberately absent — there are several a map, and a card
-# that deletes and re-posts itself after each would spend the rate budget
-# jumping around. Everything else is either about a different match, where
-# moving this card would be noise, or already lives in the card itself (E5) or
-# ends it (E6).
+# E9 (multikill) and E15 (clutch) are deliberately absent — there are several a
+# map, and a card that deletes and re-posts itself after each would spend the
+# rate budget jumping around. Everything else is either about a different match,
+# where moving this card would be noise, or already lives in the card itself
+# (E5) or ends it (E6).
 BURYING = frozenset({"E11", "E12", "E13"})
+
+# Events about ONE player of one team, rather than about the match. They go to
+# the people following that player's team and nobody else, and they are the two
+# that carry a per-round kill count. One frozenset because the two questions —
+# who it is addressed to, and whose bar it has to clear — must not drift apart
+# by one type.
+PLAYER_EVENTS = frozenset({"E9", "E15"})
 
 # Telegram's two limits are different in kind and are answered in two
 # different places. Roughly one message per second into ONE chat is this
@@ -158,6 +165,18 @@ class Notifier:
         if event.type == "E9":
             wanted = self._threshold(chat_id, "multikill")
             return wanted > 0 and int(event.payload.get("kills") or 0) >= wanted
+        if event.type == "E15":
+            # Either bar, because a clutched round takes the message over: the
+            # kills that happened in it are reported inside E15 and nowhere
+            # else. Checking the clutch bar alone would lose a 4k outright for
+            # a reader who has clutches off and multikills on — the round would
+            # simply have been typed out of their reach.
+            against = int(event.payload.get("clutch_against") or 0)
+            clutch = self._threshold(chat_id, "clutch")
+            if clutch > 0 and against >= clutch:
+                return True
+            multikill = self._threshold(chat_id, "multikill")
+            return multikill > 0 and int(event.payload.get("kills") or 0) >= multikill
         if event.type == "E12":
             return self._threshold(chat_id, "half") > 0
         if event.type == "E13":
@@ -181,8 +200,8 @@ class Notifier:
         else:
             teams = self.storage.match_team_ids(event.match_id)
             player_team = event.payload.get("team_id")
-            if event.type == "E9" and player_team:
-                # A multikill is addressed to those following THIS player's team.
+            if event.type in PLAYER_EVENTS and player_team:
+                # A highlight is addressed to those following THIS player's team.
                 teams = [player_team]
             rows = audience.match_audience(self.storage, self.config,
                                            event.match_id, teams=teams)

@@ -20,7 +20,7 @@ up what a message is about.
 | E1 new match | E2 reschedule | E3 cancellation | E4 match started |
 | E5 map started | E6 map finished | E7 match finished | E8 / E8R degraded / recovered |
 | E9 multikill | E10 reminder | E11 map point | E12 half time |
-| E13 new overtime | E14 daily digest | | |
+| E13 new overtime | E14 daily digest | E15 clutch | |
 
 A general description is in [README.md](README.md). How it works and why is in
 [docs/architecture.md](docs/architecture.md). **Read it before making any
@@ -88,8 +88,8 @@ src/hltv_notify/
     db.py              SQLite, schema, migrations
     machine.py         E1-E3 from the schedule
     match_machine.py   E4, E6, E7, E8 from the match page
-    live_machine.py    E5, E6, E9 from the live feed
-    multikill.py       the kill increment per round
+    live_machine.py    E5, E6, E9, E15 from the live feed
+    highlights.py      what a round produced: a multikill, a clutch, both
   notify/
     audience.py        who a notification goes to (the only pause check)
     format.py          message rendering
@@ -234,6 +234,53 @@ direction: an unclaimed flag is still its own language, so dropping is right
 where guessing is wrong everywhere it is read.
 `tests/test_streams.py` now asserts every shape at once, working and broken,
 so a fourth version cannot trade one for another.
+
+**A round is resolved ONCE, and only from what was seen inside it.** Two
+separate rules, both learned the hard way. The first: a clutch is only a clutch
+when the round is WON, so it cannot be known mid-round — which is why the
+multikill no longer leaves at the Nth kill but waits for the round to be decided
+FOR THAT PLAYER (he dies, or the round ends). Measured cost: median 0 s, worst
+32 s. The second: the delta must be built from the peak observed WHILE the round
+was current, never from "baseline now minus baseline then" — **the feed skips
+rounds**, the forze recording jumps from round 2 to round 8, and the naive
+difference reported a ten-kill round for four players at once. `RoundTracker`
+keeps `_peak` per frame for exactly this.
+
+**A dead player is reported at once — unless he was ever the last one alive.**
+His kills are final either way, so holding him back only delays the alert. But a
+clutch can be CREDITED after he dies (the bomb he planted goes off), and sending
+a bare multikill there produces exactly the split message the round-resolution
+rewrite exists to prevent. `_settled` is that one exception, and it is the
+difference between "he cannot gain anything" and "nothing can be added to him".
+
+**Sizing a clutch: HLTV says WHETHER, we count AGAINST HOW MANY.**
+`advancedStats.oneOnXWins` is the verdict — it also covers a round won on the
+bomb or the clock, which no reading of alive counts can tell from a round that
+ran out. The number of opponents is ours, and it has two traps. It must be
+counted ONLY during `currentRoundState == "started"`: at half time the CT and
+TERRORIST arrays swap during `ended` and the alive counts pass through (1, 1),
+a forged 1v1. And when HLTV credits a clutch we never saw, it is DROPPED, not
+guessed — the bar is expressed entirely in N, so an invented "1v1" understates
+a 1v4 and is read as a fact. Same doctrine as the alias parser: drop what
+cannot be read.
+
+**`advancedStats` is not always in the frame.** Absent from 1176 of 21126
+player entries in the map-boundary recording, all in the warmup of a fresh map.
+A bare index raises inside the frame loop, which is the one place an exception
+costs the whole feed. `(item.get("advancedStats") or {}).get(...)`.
+
+**The two highlight bars are INDEPENDENT, and the early return needs both.**
+`_highlight_events` returned early on `multikill <= 0`; with clutches added that
+would switch everybody's clutches off the moment one person turned multikills
+off. They measure different things — kills against opponents — and a 1v3 can be
+won with a single kill, so tying them together only produces refusals. The
+service stops watching rounds when BOTH are off.
+
+**A clutched round is typed E15, so the queue must ask TWO questions.** The
+kills that happened in it are reported inside E15 and nowhere else, so
+`_wants` checking only the clutch bar would lose a 4k outright for a reader who
+has clutches off and multikills on. Either bar lets it through, and the message
+names both facts regardless of which one did.
 
 **Only Twitch and Kick get stream links, and the host is checked, not the
 provider.** HLTV lists YouTube too, and there is no clip button there, so a
@@ -618,7 +665,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 628 tests
+python -m pytest                                    # 672 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

@@ -149,6 +149,14 @@ class Config:
     # alert on a multikill by a player of OUR team, so a highlight can be clipped
     multikill_alerts: bool = field(default_factory=lambda: _bool("MULTIKILL_ALERTS", True))
     multikill_threshold: int = field(default_factory=lambda: _int("MULTIKILL_THRESHOLD", 4))
+    # And on a clutch — a round won as the last player of the team alive. A
+    # separate bar because it answers a different question: the number here is
+    # how many OPPONENTS were left, not how many kills it took. A 1v3 is worth
+    # watching whether it was taken with three kills or with one and a defuse.
+    clutch_alerts: bool = field(default_factory=lambda: _bool("CLUTCH_ALERTS", True))
+    # Three by default, measured: across both feed recordings not one round
+    # reaches it, so the default is quiet rather than merely plausible.
+    clutch_threshold: int = field(default_factory=lambda: _int("CLUTCH_THRESHOLD", 3))
 
     # Alert on the half, and on every new overtime. Two separate switches:
     # a half is routine and happens on every map, an overtime does not happen

@@ -20,7 +20,8 @@
 | E8 degradation (the source is silent, the match has stalled) | done |
 | "The match has stalled" | only when there is no live feed; between maps the threshold is three times longer |
 | The live score message during a map | done, one per map, `/settings card` (default `LIVE_MESSAGE`); it is also the map's card and carries the map start, so it is not opened during the warmup, and it is moved back to the bottom of the chat after E11, E12 and E13 |
-| A multikill by a player of our team | done, at the Nth kill, `/settings multikill` (default `MULTIKILL_THRESHOLD`) |
+| A multikill by a player of our team | done, `/settings multikill` (default `MULTIKILL_THRESHOLD`); reported when the round is decided FOR THAT PLAYER — the moment he dies, or the end of the round |
+| E15 a clutch by a player of our team | done, `/settings clutch` (default `CLUTCH_THRESHOLD`); the bar counts OPPONENTS, and a round that is also a multikill says both in one message |
 | E14 the daily digest | done, at times set with `/digest`, in the subscriber's own zone; matches STARTING within a rolling 24 h, so neither the running match nor a finished one, and nothing at all on a day with none |
 | Broadcast links under a multikill | done, a quoted block on E9, `/settings streams` (default `STREAM_LINKS`); read off the match page we already poll, Twitch and Kick only |
 
@@ -103,6 +104,8 @@ The values live in `.env`; the defaults are a balanced profile:
 | `LIVE_EDIT_BUDGET` | 10 | card edits a second in total; the per-person interval stretches beyond that |
 | `COMMAND_RATE_LIMIT` | 0 | commands per chat per minute, 0 is off; meant for the open mode |
 | `COMEBACK_ROUNDS` | 9 | the swing that counts as a comeback; 0 removes the line. A **default**: `/settings comeback` overrides it per person |
+| `CLUTCH_ALERTS` | true | alert on a round won as the last player alive. A **default**: `/settings clutch` |
+| `CLUTCH_THRESHOLD` | 3 | how many opponents counts as one; 0 off. A **default**: `/settings clutch` |
 | `STREAM_LINKS` | true | broadcast links under a multikill. A **default**: `/settings streams` |
 | `STREAM_LINKS_MAX` | 3 | how many to list; 0 is **all**. A **default**: `/settings streams_count` |
 | `STREAM_LANGUAGES` | `en,ru` | languages worth a tap. A **default**: `/settings streams_langs` |
@@ -133,7 +136,7 @@ score it had; the next ordinary redraw edits the new message as usual.
 
 | Moves the card | Does not |
 |---|---|
-| E11 (map point) | E9 (multikill) — several a map, the card would jump about |
+| E11 (map point) | E9 (multikill) and E15 (clutch) — several a map, the card would jump about |
 | E12 (half) and E13 (each new overtime) | anything about a different match |
 | | E5 and E6 — one lives in the card, the other ends it |
 
@@ -152,6 +155,7 @@ and with no card there is nothing to move.
 | Name | What it is | Default from |
 |---|---|---|
 | `multikill` | kills in a round worth an alert; `0` off | `MULTIKILL_THRESHOLD`, `MULTIKILL_ALERTS` |
+| `clutch` | opponents beaten alone worth an alert; `0` off | `CLUTCH_THRESHOLD`, `CLUTCH_ALERTS` |
 | `comeback` | swing in the score difference worth a line on E6; `0` off | `COMEBACK_ROUNDS` |
 | `half` | a message when the sides swap | `HALF_ALERTS` (default `PHASE_ALERTS`) |
 | `overtime` | a message at the start of every overtime | `OVERTIME_ALERTS` (default `PHASE_ALERTS`) |
@@ -188,10 +192,20 @@ Instead:
   an event but a line inside E6, and the message is already being written per
   reader.
 
+E15 is the one place the queue asks **two** questions. A round that produced a
+clutch is typed E15 even when it also produced a 4k, so a reader whose clutch
+bar is off would lose that 4k outright if only the clutch bar were consulted.
+`_wants` therefore lets it through on either bar, and the message names both
+facts regardless of which one let it in.
+
 Two consequences worth knowing:
 
 * a threshold changed in the middle of a map takes effect on the **next** map:
   the tracker is built when the map starts;
+* `multikill` and `clutch` are independent — either may be off while the other
+  is on. They are deliberately not tied together: one counts kills, the other
+  counts opponents, and a 1v3 can be won with a single kill. The service only
+  stops watching a match's rounds when **both** are off for everybody;
 * one person setting `multikill 3` makes the service track 3k rounds for
   everybody. That is work, not messages — nobody else receives them.
 

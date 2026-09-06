@@ -216,6 +216,12 @@ LEGACY_OVERTIME_KEY_RE = re.compile(
 LEGACY_REMINDER_KEY_RE = re.compile(
     r"^(?P<prefix>[^|]*\|)?E10:(?P<match>\d+):remind:(?P<minutes>\d+)$")
 
+# The multikill key before the round was resolved once, at its end. It carried
+# the kill count, because a round could report twice — at the bar and again at
+# an ace. Now it cannot: E9:<match>:map:<n>:round:<r>:<steam>.
+LEGACY_MULTIKILL_KEY_RE = re.compile(
+    r"^(?P<prefix>[^|]*\|)?E9:(?P<rest>\d+:map:\d+:round:\d+:.+):(?P<kills>\d+)$")
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -311,8 +317,47 @@ class Storage:
 
         self._migrate_reminder_keys()
         self._migrate_overtime_keys()
+        self._migrate_multikill_keys()
         self._migrate_phase_setting()
         self._migrate_overtime_mutes()
+
+    def _migrate_multikill_keys(self) -> int:
+        """Take the kill count out of the multikill keys already in the journal.
+
+        E9's key used to end in the number of kills, because a round could
+        report twice — once at the bar and once more at an ace. The round is
+        resolved once now, so the count is gone from the key; without rewriting
+        what is already there, the first run after the upgrade would find no
+        match for the new shape and send a highlight it has already sent.
+
+        Its OWN flag in `meta`, not a shared one: a database that already ran
+        the earlier migrations would otherwise never get this one.
+        """
+        if self.get_meta("e9_keys_without_kills"):
+            return 0
+        rewritten = 0
+        for table in ("sent_events", "outbox"):
+            rows = list(self.conn.execute(
+                f"SELECT rowid AS row_id, idempotency_key FROM {table} "
+                "WHERE idempotency_key LIKE '%E9:%:round:%'"))
+            for row in rows:
+                found = LEGACY_MULTIKILL_KEY_RE.match(row["idempotency_key"])
+                if not found:
+                    continue
+                new_key = f"{found.group('prefix') or ''}E9:{found.group('rest')}"
+                # OR IGNORE because idempotency_key is unique: a round that
+                # reported at the bar AND at an ace has two old rows collapsing
+                # onto one new key, and either of them standing is enough to
+                # keep the message from going out again.
+                self.conn.execute(
+                    f"UPDATE OR IGNORE {table} SET idempotency_key = ? WHERE rowid = ?",
+                    (new_key, row["row_id"]))
+                rewritten += 1
+        self.set_meta("e9_keys_without_kills", iso(utcnow()))
+        if rewritten:
+            log.info("multikill keys stripped of their kill count: %d record(s)",
+                     rewritten)
+        return rewritten
 
     def _migrate_overtime_keys(self) -> int:
         """The overtime alert moved from E12 to E13 when it became its own type.

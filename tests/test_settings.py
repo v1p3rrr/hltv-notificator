@@ -271,18 +271,18 @@ def test_the_buttons_offer_every_setting_in_the_registry(config):
 # ---------- what a setting may be given ----------
 
 def test_a_threshold_the_service_would_ignore_is_refused(config):
-    """MultikillTracker floors its threshold at 2.
+    """RoundTracker floors its multikill bar at 2.
 
     Accepting 1 stored a number the alerts never use and reported it back as
     if it were in force — and the refusal message even suggested it.
     """
-    from hltv_notify.state.multikill import MultikillTracker
+    from hltv_notify.state.highlights import RoundTracker
 
     item = settings.get("multikill")
     assert settings.parse_value(item, "1") is None
     assert settings.parse_value(item, "2") == 2
     assert settings.parse_value(item, "off") == 0        # zero still means off
-    assert item.smallest_on == MultikillTracker(1).threshold
+    assert item.smallest_on == RoundTracker(multikill=1).multikill
     assert settings.range_hint(item) == "off, or 2-5"
 
 
@@ -465,3 +465,30 @@ def test_every_setting_reaches_the_buttons(config):
                 for row in screen["inline_keyboard"] for button in row]
     for item in settings.SETTINGS:
         assert any(one.startswith(f"s:{item.name}") for one in payloads), item.name
+
+
+def test_a_unit_reads_correctly_at_one(config):
+    """`clutch` can be set to 1, and "1 opponents" was on the screen.
+
+    `streams_count` had been saying "1 links" since it was added — the bug was
+    only invisible because `multikill` floors at 2 and nothing else could
+    reach one with a plural unit.
+    """
+    assert settings.get("clutch").describe(1) == "1 opponent"
+    assert settings.get("clutch").describe(3) == "3 opponents"
+    assert settings.get("streams_count").describe(1) == "1 link"
+    assert settings.get("streams_count").describe(3) == "3 links"
+    # A unit that already reads at one needs no second form, and must not gain
+    # a stray one: a field nothing reads is a trap.
+    assert settings.get("comeback").describe(1) == "1 round swing"
+
+
+def test_every_reachable_number_reads_as_a_sentence(config):
+    """Whatever a person can set, the reply has to be readable English."""
+    for item in settings.SETTINGS:
+        if item.textual or item.kind == settings.BOOLEAN:
+            continue
+        for value in range(item.smallest_on, item.maximum + 1):
+            said = item.describe(value)
+            assert not said.endswith("s") or value != 1, (item.name, said)
+            assert said.split()[0] == str(value)

@@ -413,10 +413,27 @@ def render(event: Event, *, team_name: str, tz_name: str,
         lines.append(_link(url, "Match page"))
         return "\n".join(lines)
 
-    if event.type == "E9":
+    if event.type in ("E9", "E15"):
         kills = payload.get("kills", 0)
-        icon = "🔥" if kills < 5 else "💥"
-        headline = "ACE" if kills >= 5 else f"{kills}k round"
+        against = payload.get("clutch_against") or 0
+        icon = "💥" if kills >= 5 else ("🧊" if against else "🔥")
+        # Both facts, always, when the round produced both. That is the whole
+        # reason the round is resolved once at its end instead of the multikill
+        # leaving the moment it lands: "4 kills" and "and he won it 1v3" belong
+        # in one message. A kill count below THIS reader's multikill bar is
+        # still printed — it is a true thing about a round they are already
+        # being told about, and trimming it would make the message say less
+        # than it knows.
+        said = []
+        if kills >= 5:
+            said.append("ACE")
+        elif kills >= 2:
+            # "round" only when the kills stand alone; beside a clutch it reads
+            # as a second thing that happened rather than the same one.
+            said.append(f"{kills}k" if against else f"{kills}k round")
+        if against:
+            said.append(f"clutch 1v{against}")
+        headline = ", ".join(said) or f"{kills}k round"
         lines = [
             f"{icon} <b>{_esc(payload.get('nick'))} — {headline}</b>",
             f"{_esc(payload.get('map_name'))}, round {payload.get('round')} · "

@@ -77,10 +77,12 @@ E5:<match>:map:<n>:started:<map>
 E6:<match>:map:<n>:result:<ours>-<theirs>
 E7:<match>:finished:<maps_ours>-<maps_theirs>
 E8:<subsystem>:<reason>:<utc_hour>
-E9:<match>:map:<n>:round:<r>:<steam_id>:<kills>
+E9:<match>:map:<n>:round:<r>:<steam_id>
 E10:<match>:<start_utc>:remind:<minutes>
 E11:<match>:map:<n>:point:<us|them>:<target_score>
-E12:<match>:map:<n>:half | E12:<match>:map:<n>:overtime:<k>
+E12:<match>:map:<n>:half | E13:<match>:map:<n>:overtime:<k>
+E14:<local_date>:<minute_of_day>
+E15:<match>:map:<n>:round:<r>:<steam_id>
 ```
 
 A key must depend **only on the content** — and on all of it. Let the time the
@@ -212,19 +214,84 @@ halves. It remains the source of truth for the cases arithmetic does not cover
 There will be no duplicate with two sources: the event for a map is born once,
 whoever brings it first (a guard on the recorded maps plus the unique key).
 
-## Multikills (E9)
+## Round highlights: multikills (E9) and clutches (E15)
 
-Computed from the **increment in kills in scoreboard frames** between the start
-of a round and the current moment, not from `Kill` events. The reason is the
-same as everywhere: the log is replayed on connect. A side benefit is the alert
-at the Nth kill rather than at the end of the round.
+Both are computed from **increments in scoreboard frames**, not from `Kill`
+events. The reason is the same as everywhere: the log is replayed on connect.
+Every player in a frame carries the kills *and* the clutches accumulated over
+the map, so both are read the same way — remember them when the round begins,
+watch the increment.
 
-Kills in a frame are accumulated **over the map**, so the baseline is reset on
-every round; without that every subsequent round would look like a multikill.
-The warmup is ignored — that is deathmatch.
+Kills are accumulated **over the map**, so the baseline is reset on every
+round; without that every subsequent round would look like a multikill. The
+warmup is ignored — that is deathmatch. `advancedStats.oneOnXWins` behaves
+identically and gets the same treatment.
 
-Errors lean the safe way: after a reconnect mid-round the baseline is taken
-afresh, so a multikill can be **missed but never invented**.
+### One round, one message
+
+A clutch is only a clutch once the round is **won**, so it cannot be known
+before the round is over. A multikill used to be reported the instant the Nth
+kill landed. Those two cannot both hold while a round that produced both is to
+be described in one message — and describing it in two is noise about one
+moment.
+
+So a round is resolved **once**, when it is decided for that player:
+
+* **he dies** — his kills are final and there is nothing left to wait for. This
+  is the ordinary case and it costs no delay at all;
+* **the round ends** — for whoever was still alive, and for anyone who was at
+  some point the last of his team alive. That exception matters: a clutch can
+  be credited *after* the clutcher dies, when the bomb he planted goes off;
+* **the round is left behind** without either — a missed `ended`, a reconnect
+  across the boundary. The next round arriving is the last moment it can be
+  told.
+
+Measured across both recordings, waiting for the round to end costs a median of
+**0 seconds** and at worst **32** — the last kill of a multikill is usually the
+kill that ends the round. It also removed a real annoyance: with a bar of four,
+an ace used to arrive as two messages ("4k round", then "ACE"), and now arrives
+as one that says ACE.
+
+### A round is credited only with what was seen during it
+
+Not with the difference between its baseline and whatever frame arrives next.
+**The feed skips rounds** — the forze recording jumps straight from round 2 to
+round 8 — and a naive difference across that gap reported a ten-kill round for
+four players at once. The peak is therefore tracked frame by frame while the
+round is the current one, and a frame belonging to another round cannot
+contribute to it.
+
+### Sizing a clutch
+
+Whether one was **won** is HLTV's verdict, taken from `oneOnXWins`: it also
+covers the round taken on the bomb or the clock, which no reading of the alive
+counts can distinguish from a round that simply ran out. How many it was
+**against** is ours, because the feed never says — we count the live opponents
+while a player is his team's only survivor, and keep the largest.
+
+Two things that both produce silent nonsense if got wrong:
+
+* the count is taken **only while `currentRoundState == "started"`**. At half
+  time the `CT` and `TERRORIST` arrays swap under us during `ended` and the
+  alive counts pass through `(1, 1)` — a forged 1v1;
+* if HLTV credits a clutch and we never saw the standoff, it is **dropped**,
+  not guessed at. The bar is expressed entirely in N, so an invented "1v1"
+  would understate a 1v4 and be read as a fact.
+
+### Which type, and why not one
+
+A clutched round is **E15** and carries its kill count inside; a round with
+kills alone stays **E9**. One message, one type — which is what keeps E9's mute
+entry and threshold meaning exactly what they meant before, and gives the
+clutch its own. Muting one must not silence the other.
+
+The two bars are independent by design. They measure different things — kills
+against opponents — and a 1v3 can be won with a single kill, so tying them
+together would only produce refusals. The service stops watching rounds when
+**both** are off for everybody, never when one is.
+
+Errors lean the safe way: after a reconnect mid-round the baselines are taken
+afresh, so a highlight can be **missed but never invented**.
 
 ## When a match starts (E4)
 
@@ -698,8 +765,8 @@ through `_recipients` like every other delivery path: the pause and
 `/settings card off` are decided in one place, and a row left over from before
 someone switched the card off is not re-sent to them.
 
-Which types move it is a short list, `outbox.BURYING`: E11 and E12. E9 is
-deliberately absent — there are several multikills a map, and a card that
+Which types move it is a short list, `outbox.BURYING`: E11, E12 and E13. E9
+and E15 are deliberately absent — there are several a map, and a card that
 deletes and re-posts itself after each would spend the budget jumping around.
 Events about other matches are absent for the same reason in reverse: moving
 this card for them would be noise, and with two matches live in one chat only
@@ -910,7 +977,7 @@ Who gets what:
 | Event | Recipients |
 |---|---|
 | about a match (E1-E7) | subscribers following any participant |
-| a multikill (E9) | those following **that player's** team |
+| a multikill (E9) or a clutch (E15) | those following **that player's** team |
 | service (E8, E8R) | all enabled subscribers |
 
 **Turning the score around.** The event is oriented on the match's canonical

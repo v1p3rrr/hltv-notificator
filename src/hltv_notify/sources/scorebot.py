@@ -68,11 +68,24 @@ class FeedIdle(FeedUnavailable):
 
 @dataclass(frozen=True)
 class PlayerLine:
-    """A player in a scoreboard frame. `kills` are accumulated FOR THE MAP."""
+    """A player in a scoreboard frame.
+
+    `kills` and `clutches` are both accumulated FOR THE MAP, which is what lets
+    a round's worth of either be read as an increment against a baseline taken
+    when the round began. `alive` is the only one that describes this instant.
+    """
 
     steam_id: str
     nick: str
     kills: int
+    # Defaulted because a frame is not obliged to carry them, and because every
+    # test that builds a player by hand cares about the kills alone.
+    alive: bool = True
+    # HLTV's own count of rounds this player won as the last one alive
+    # (`advancedStats.oneOnXWins`). Whether a clutch was WON is its verdict and
+    # not ours: it also covers the round taken on the bomb or the clock, which
+    # no reading of the alive counts can tell from a round simply running out.
+    clutches: int = 0
 
 
 @dataclass(frozen=True)
@@ -101,6 +114,20 @@ class LiveFrame:
             return self.ct_players
         if self.t_team_id == team_id:
             return self.t_players
+        return ()
+
+    def their_players(self, team_id: int) -> Tuple["PlayerLine", ...]:
+        """The opposing roster, from our team's id.
+
+        How many of these are alive is the N in a 1vN, so it is tied to
+        ctTeamId/tTeamId for the same reason `our_score` is: the sides swap at
+        the break, and a clutch read off the side would name the wrong number
+        for the whole second half.
+        """
+        if self.ct_team_id == team_id:
+            return self.t_players
+        if self.t_team_id == team_id:
+            return self.ct_players
         return ()
 
     def our_score(self, team_id: int) -> Tuple[Optional[int], Optional[int]]:
@@ -140,8 +167,17 @@ def _players(raw) -> Tuple[PlayerLine, ...]:
         steam_id = str(item.get("steamId") or item.get("dbId") or nick)
         if not nick:
             continue
+        # `advancedStats` is NOT always there: measured absent in 1176 of the
+        # 21126 player entries of the map-boundary recording, all of them in the
+        # warmup of a fresh map. Indexing it straight would raise inside the
+        # frame loop, which is the one place an exception costs the whole feed.
+        advanced = item.get("advancedStats")
+        if not isinstance(advanced, dict):
+            advanced = {}
         lines.append(PlayerLine(steam_id=steam_id, nick=nick,
-                                kills=int(item.get("score") or 0)))
+                                kills=int(item.get("score") or 0),
+                                alive=bool(item.get("alive", True)),
+                                clutches=int(advanced.get("oneOnXWins") or 0)))
     return tuple(lines)
 
 

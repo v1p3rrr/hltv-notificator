@@ -12,7 +12,7 @@ import pytest
 
 from conftest import FIXTURES, TEAM_ID
 from hltv_notify.sources import match_page
-from hltv_notify.sources.scorebot import LiveFrame
+from hltv_notify.sources.scorebot import LiveFrame, PlayerLine
 from hltv_notify.state.db import Storage, utcnow
 from hltv_notify.state.live_machine import LiveMachine
 from hltv_notify.state.match_machine import MatchMachine
@@ -35,12 +35,18 @@ def page(name: str):
     return match_page.parse((FIXTURES / name).read_text(encoding="utf-8"), MATCH_ID)
 
 
-def frame(map_name, *, ours=0, theirs=0, rnd=1, state="started", live=True):
+def frame(map_name, *, ours=0, theirs=0, rnd=1, state="started", live=True,
+          us=(), them=()):
     return LiveFrame(
         map_name=map_name, current_round=rnd, round_state=state, live=live,
         ct_team_id=TEAM_ID, ct_team_name="FORZE Reload", ct_score=ours,
         t_team_id=FOE_ID, t_team_name="Color", t_score=theirs,
-        regulation=12, overtime=3)
+        regulation=12, overtime=3, ct_players=tuple(us), t_players=tuple(them))
+
+
+def man(nick, kills, *, alive=True, clutches=0):
+    return PlayerLine(steam_id=nick, nick=nick, kills=kills,
+                      alive=alive, clutches=clutches)
 
 
 # ----------------------------------------------------------------------
@@ -265,3 +271,36 @@ def test_the_start_message_waits_for_the_first_round(match, config):
                            match_id=MATCH_ID, body="x", chat_id="1")
     again = page_machine.apply(page("match-2397053-live.html"), now, feed_connected=True)
     assert "E4" not in [e.type for e in again]
+
+
+def test_a_clutch_that_wins_the_map_is_reported_beside_the_map_result(match, config):
+    """The round's highlight is resolved in the SAME apply() that ends the map.
+
+    It has to come out ahead of the map result and it must not be swallowed:
+    once the map is recorded, `apply` returns early on every later frame, so
+    this is the only pass in which the clutch can be told at all.
+    """
+    live = LiveMachine(match, config)
+    us = [man("Kaide", 10), man("mate", 4)]
+    live.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=11, rnd=24, us=us,
+                               them=[man("a", 5), man("b", 5), man("c", 5)]))
+    # Kaide is left alone against three
+    live.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=11, rnd=24,
+                               us=[man("Kaide", 10), man("mate", 4, alive=False)],
+                               them=[man("a", 5), man("b", 5), man("c", 5)]))
+    events = live.apply(MATCH_ID, frame(
+        "de_mirage", ours=13, theirs=11, rnd=24, state="ended",
+        us=[man("Kaide", 13, clutches=1), man("mate", 4, alive=False)],
+        them=[man("a", 5, alive=False), man("b", 5, alive=False),
+              man("c", 5, alive=False)]))
+
+    types = [e.type for e in events]
+    assert types.index("E15") < types.index("E6")
+    clutch = next(e for e in events if e.type == "E15")
+    assert clutch.payload["clutch_against"] == 3
+    assert clutch.payload["kills"] == 3
+    assert clutch.payload["nick"] == "Kaide"
+
+    # And the map really is over, so nothing further is produced.
+    assert live.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=11, rnd=24,
+                                      state="ended", us=us)) == []

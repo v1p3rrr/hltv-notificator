@@ -401,3 +401,39 @@ was announced when it started and its live card is at the bottom of the chat,
 so repeating it every morning adds nothing. `/live` answers that question. The
 cost is that somebody scrolling back to a digest sent hours ago cannot use it
 as a picture of the whole day.
+
+## Only our own players' clutches are reported
+
+E15 (клатч), like E9 (мультикилл), is built for players of **tracked** teams
+only. An opponent taking a 1v4 against us is arguably the more memorable moment
+of the two, and it is not reported. The alert exists to clip *our* highlight,
+and the audience rule — a highlight goes to those following that player's team
+— has nowhere to send the other kind.
+
+## A clutch whose standoff was never seen is dropped
+
+HLTV's `oneOnXWins` says a round was won alone; how many it was against is
+counted here, from the live players in the frames. If those frames were lost —
+a reconnect in the middle of the round — the number is unknown, and the whole
+message is dropped rather than sent with a made-up one. The threshold is
+expressed entirely in that number, and an invented "1v1" would both understate
+a 1v4 and be read as a fact.
+
+## A feed outage across a round end loses that round's highlight
+
+The round is resolved when it ends, or when the next one starts, whichever the
+service is connected for. If the feed drops during the last kill of a 4k and
+comes back in the following round, that round is never resolved and no message
+goes out. This is the same trade the multikill counter has always made — a
+highlight may be **missed, never invented** — and it is the reason the baseline
+is retaken after a reconnect rather than carried across it.
+
+## The multikill no longer arrives at the instant of the Nth kill
+
+It waits until the round is decided for that player: the moment he dies, or the
+end of the round. Measured across both recordings that is a median of 0 seconds
+and at worst 32. The delay buys the combined "4k, clutch 1v3" message and the
+end of the "4k round" / "ACE" double ping, and against a two-hour clip window
+on Twitch it costs nothing that matters. If a highlight ever has to arrive
+faster than this, the thing to change is the resolution rule, not the polling
+rate.

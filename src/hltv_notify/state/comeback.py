@@ -19,7 +19,7 @@ would be announced as "a comeback from 0:1": the swing is twelve and there was
 never a hole to climb out of. Half the swing is the smallest hole worth the
 word, so it is derived rather than being a second setting.
 
-The tracker holds one map and lives in memory, like MultikillTracker. It
+The tracker holds one map and lives in memory, like RoundTracker. It
 survives feed reconnects, which are frequent; a restart in the middle of a map
 loses the earlier rounds, and then a comeback comes out understated or missing
 — but never invented.

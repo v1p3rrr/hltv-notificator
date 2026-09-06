@@ -26,7 +26,7 @@ from ..scoring import map_completed, rounds_to_win, series_decided
 from ..sources.scorebot import ROUND_WARMUP, LiveFrame, PlayerLine
 from .comeback import ComebackTracker
 from .db import Storage
-from .multikill import MultikillTracker
+from .highlights import RoundTracker
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class LiveMachine:
         # each other, a 4k by a player of either is its own highlight, and one
         # must not be muted for the sake of the other. They live in the
         # worker's memory and survive reconnects inside it.
-        self._multikill: Dict[int, MultikillTracker] = {}
+        self._highlights: Dict[int, RoundTracker] = {}
         # Score milestones already announced — map points, halves, the start
         # of an overtime. The journal would swallow the repeats anyway (the key
         # is the same one), but a score stands for a whole round, i.e. some
@@ -93,10 +93,12 @@ class LiveMachine:
             self._comeback[map_name] = ComebackTracker(self._threshold("comeback"))
         return self._comeback[map_name]
 
-    def _tracker(self, team_id: int) -> MultikillTracker:
-        if team_id not in self._multikill:
-            self._multikill[team_id] = MultikillTracker(self._threshold("multikill"))
-        return self._multikill[team_id]
+    def _tracker(self, team_id: int) -> RoundTracker:
+        if team_id not in self._highlights:
+            self._highlights[team_id] = RoundTracker(
+                multikill=self._threshold("multikill"),
+                clutch=self._threshold("clutch"))
+        return self._highlights[team_id]
 
     # ------------------------------------------------------------------
 
@@ -143,7 +145,7 @@ class LiveMachine:
         started = self._released_start_event(match_id, frame)
         if started is not None:
             events.append(started)
-        events.extend(self._multikill_events(match_id, frame, map_number, map_name))
+        events.extend(self._highlight_events(match_id, frame, map_number, map_name))
         if self._is_new_map(previous_map, map_name, frame):
             events.append(self._event_e5(match_id, frame, map_number, map_name, len(recorded)))
 
@@ -226,12 +228,14 @@ class LiveMachine:
             "url": row["url"] if row else "",
         }
 
-    def _multikill_events(self, match_id: int, frame: LiveFrame, map_number: int,
+    def _highlight_events(self, match_id: int, frame: LiveFrame, map_number: int,
                           map_name: str) -> List[Event]:
-        """A multikill by a player of OUR team — so a highlight can be clipped."""
-        if self._threshold("multikill") <= 0:
-            # Nobody is waiting for one. Not the same as a threshold of four
-            # that no round reaches: this skips the work entirely.
+        """A multikill or a clutch by a player of OUR team, so it can be clipped."""
+        if self._threshold("multikill") <= 0 and self._threshold("clutch") <= 0:
+            # Nobody is waiting for either. Not the same as a bar no round
+            # reaches: this skips the work entirely. BOTH have to be off — one
+            # person turning multikills off must not take everybody's clutches
+            # with them, which a single-bar check here would do.
             return []
         # Every tracked participant of the match, not only the canonical team:
         # if tracked teams play each other, a 4k by a player of either is its
@@ -240,12 +244,12 @@ class LiveMachine:
         tracked = self.storage.match_team_ids(match_id) or [canonical]
         events: List[Event] = []
         for tracked_team in tracked:
-            events.extend(self._multikill_for_team(
+            events.extend(self._highlights_for_team(
                 match_id, frame, map_number, map_name, tracked_team))
         return events
 
-    def _multikill_for_team(self, match_id: int, frame: LiveFrame, map_number: int,
-                            map_name: str, tracked_team: int) -> List[Event]:
+    def _highlights_for_team(self, match_id: int, frame: LiveFrame, map_number: int,
+                             map_name: str, tracked_team: int) -> List[Event]:
         """The event is built entirely from the PLAYER'S TEAM's point of view.
 
         This is easy to get wrong: take the canonical team's context and swap
@@ -262,9 +266,9 @@ class LiveMachine:
             return []
         taken = self._tracker(tracked_team).observe(
             map_name, frame.current_round, frame.round_state,
-            frame.our_players(tracked_team))
+            frame.our_players(tracked_team), frame.their_players(tracked_team))
         events: List[Event] = []
-        # Read once for the whole frame, not per player: two multikills in one
+        # Read once for the whole frame, not per player: two highlights in one
         # round is rare but it happens, and the list is the same for both.
         #
         # The WHOLE list goes into the payload, unpicked. Which of them a
@@ -272,18 +276,32 @@ class LiveMachine:
         # is born once for everybody — so the choosing belongs at render time,
         # exactly like the comeback line's threshold.
         streams = self.storage.match_streams(match_id) if taken else []
-        for player, kills in taken:
-            log.info("match %s: %s took %d kills in round %d on %s",
-                     match_id, player.nick, kills, frame.current_round, map_name)
+        for found in taken:
+            player = found.player
+            # A clutch takes the message over rather than adding one to it: the
+            # round produced ONE moment, and the kills ride along inside E15.
+            # Keeping E9's meaning intact is what lets the two be muted and
+            # thresholded apart from each other.
+            event_type = "E15" if found.clutch_against else "E9"
+            log.info("match %s: %s took %d kills%s in round %d on %s",
+                     match_id, player.nick, found.kills,
+                     f" and a 1v{found.clutch_against} clutch" if found.clutch_against else "",
+                     frame.current_round, map_name)
             events.append(Event(
-                type="E9",
-                idempotency_key=(f"E9:{match_id}:map:{map_number}"
-                                 f":round:{frame.current_round}:{player.steam_id}:{kills}"),
+                type=event_type,
+                # No kill count in the key. The round is reported once, so the
+                # count adds nothing to identity — and it used to take some
+                # away: a reconnect mid-round retakes the baseline, and the
+                # smaller count that follows would have been a new key and a
+                # second message about the same round.
+                idempotency_key=(f"{event_type}:{match_id}:map:{map_number}"
+                                 f":round:{frame.current_round}:{player.steam_id}"),
                 match_id=match_id,
                 payload={
                     **self._context(match_id, frame, tracked_team),
                     "nick": player.nick,
-                    "kills": kills,
+                    "kills": found.kills,
+                    "clutch_against": found.clutch_against,
                     "map_number": map_number,
                     "map_name": map_name,
                     "round": frame.current_round,

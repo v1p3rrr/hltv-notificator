@@ -84,6 +84,12 @@ class Setting:
     smallest_on: int = 1
     presets: Tuple[int, ...] = ()
     unit: str = ""
+    # The same unit at one. Empty means the plural reads correctly there too
+    # ("1 round swing"), which is why this is not simply always required.
+    # `clutch` made it necessary — its smallest value is 1, so "1 opponents"
+    # was on the screen — and `streams_count` turned out to have been saying
+    # "1 links" since it was added.
+    unit_one: str = ""
     # How zero reads, and the word a person types for it. Almost always "off",
     # but `streams_count` uses zero for "every one of them" — and a setting
     # that reports "off" while showing all the streams would be describing
@@ -111,7 +117,8 @@ class Setting:
             return "on" if number else "off"
         if number <= 0:
             return self.zero_word
-        return f"{number} {self.unit}".strip()
+        unit = self.unit_one if number == 1 and self.unit_one else self.unit
+        return f"{number} {unit}".strip()
 
     def describe_short(self, value: Value) -> str:
         """The same, for a button, where the unit does not fit."""
@@ -131,9 +138,21 @@ SETTINGS: Tuple[Setting, ...] = (
         # silently overrides a number is exactly the kind of pair that leaves
         # someone staring at a threshold of 4 wondering why nothing arrives.
         default=lambda c: c.multikill_threshold if c.multikill_alerts else 0,
-        # smallest_on is 2 and not 1 because MultikillTracker raises its own
+        # smallest_on is 2 and not 1 because RoundTracker raises its own
         # floor to 2: a "1" here would be a threshold the alerts never use.
-        maximum=5, smallest_on=2, presets=(0, 3, 4, 5), unit="kills",
+        maximum=5, smallest_on=2, presets=(0, 3, 4, 5), unit="kills", unit_one="kill",
+    ),
+    Setting(
+        name="clutch",
+        label="Clutch",
+        summary="Alert when a player wins a round alone against this many; 0 turns it off",
+        default=lambda c: c.clutch_threshold if c.clutch_alerts else 0,
+        # smallest_on is 1, unlike multikill: a 1v1 is a real clutch and
+        # nothing in the code raises a floor above it. The unit is opponents,
+        # not kills — the two bars measure different things and are deliberately
+        # not tied to each other, because the message names both facts and so
+        # cannot report one while hiding the other.
+        maximum=5, presets=(0, 2, 3, 4), unit="opponents", unit_one="opponent",
     ),
     Setting(
         name="comeback",
@@ -182,7 +201,8 @@ SETTINGS: Tuple[Setting, ...] = (
         label="How many streams",
         summary="How many broadcasts to list; 0 lists every one of them",
         default=lambda c: c.stream_links_max,
-        maximum=6, presets=(0, 2, 3, 4), unit="links", zero_word="all",
+        maximum=6, presets=(0, 2, 3, 4), unit="links", unit_one="link",
+        zero_word="all",
     ),
     Setting(
         name="streams_langs",

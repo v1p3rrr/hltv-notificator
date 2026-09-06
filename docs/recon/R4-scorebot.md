@@ -122,8 +122,41 @@ The fields:
 | `regulationHalfLength` / `overtimeHalfLength` | 12 / 3 |
 | `ctMatchHistory` / `terroristMatchHistory` | `{firstHalf:[…], secondHalf:[…]}` |
 | `roundTimeRemainingMS` | time left in the round |
-| `CT` / `TERRORIST` | arrays of 5 players (nick, K/D/A, hp, money, ADR…) |
+| `CT` / `TERRORIST` | arrays of 5 players — see below |
+| `bombPlanted`, `frozen`, `lastKilledSide` | not used by the service |
 | `matchFacts`, `ctTeamFacts`, `tTeamFacts` | empty in every observation |
+
+A player element, with the three fields the highlights are built from:
+
+```json
+{ "steamId": "1:0:429765397", "nick": "Kaide", "score": 0, "deaths": 0,
+  "assists": 0, "alive": true, "hp": 100, "money": 150,
+  "advancedStats": { "oneOnXWins": 0, "multiKillRounds": 0, "kast": 1, … } }
+```
+
+* **`score` is kills, accumulated over the MAP** — not the round;
+* **`alive`** is the only field describing this instant. Present in 100 % of
+  the 39 456 player entries across both recordings;
+* **`advancedStats.oneOnXWins`** is HLTV's own count of rounds won as the last
+  player alive, also accumulated over the map. It does **not** say against how
+  many — that has to be counted from the alive counts — but it does cover a
+  round taken on the bomb or the clock, which the alive counts cannot.
+
+Two measured traps:
+
+* **`advancedStats` is not always there.** Absent from 1 176 of the 21 126
+  player entries in `scorebot-2396936-map-boundary`, all of them in the warmup
+  of a fresh map. Indexing it directly raises inside the frame loop.
+* **The arrays swap at half time, during `ended`.** For a few frames the alive
+  counts pass through `(1, 1)` while the sides change hands, which reads
+  exactly like a 1v1 standoff. Anything counting live players must look only
+  at `currentRoundState == "started"`.
+
+And one measured surprise about the recordings themselves: **the feed skips
+rounds.** `scorebot-2397053-forze` jumps straight from round 2 to round 8, with
+kills advancing by ten across the gap. Any per-round difference has to be built
+from what was observed *inside* that round, never from a baseline subtracted
+from a later frame.
 
 A round-history element:
 

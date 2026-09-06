@@ -441,3 +441,76 @@ def test_a_settings_table_without_text_value_gains_it(tmp_path):
     assert storage.text_setting("555", "streams_langs", "en,ru") == "ru"
     assert storage.setting("555", "multikill", 4) == 3
     storage.close()
+
+
+def test_multikill_keys_lose_the_kill_count(tmp_path):
+    """E9's key used to end in the number of kills.
+
+    A round could report twice back then — once at the bar, once more at an
+    ace — so the count was part of its identity. The round is resolved once
+    now and the count is gone from the key; without rewriting what is already
+    in the journal, the first run after the upgrade would find no match and
+    send a highlight it has already sent.
+    """
+    from hltv_notify.state.db import Storage
+
+    path = tmp_path / "old.db"
+    storage = Storage(path)
+    for key in ("555|E9:900:map:1:round:15:1:0:429765397:4",
+                "555|E9:900:map:1:round:15:1:0:429765397:5",   # the same round, at the ace
+                "555|E9:900:map:2:round:3:76561198000000000:4"):
+        storage.conn.execute(
+            "INSERT INTO sent_events (idempotency_key, event_type, match_id, created_utc) "
+            "VALUES (?, 'E9', 900, '2026-08-01T00:00:00+00:00')", (key,))
+    storage.conn.execute("DELETE FROM meta WHERE key = 'e9_keys_without_kills'")
+    storage.close()
+
+    storage = Storage(path)
+    keys = {row["idempotency_key"] for row in
+            storage.conn.execute("SELECT idempotency_key FROM sent_events")}
+    # The bar and the ace of one round collapse onto one key; either standing
+    # is enough to keep the message from going out again. The steam id itself
+    # contains colons, so the rewrite must take only the LAST field.
+    assert "555|E9:900:map:1:round:15:1:0:429765397" in keys
+    assert "555|E9:900:map:2:round:3:76561198000000000" in keys
+    storage.close()
+
+
+def test_the_multikill_key_rewrite_runs_once(tmp_path):
+    from hltv_notify.state.db import Storage
+
+    path = tmp_path / "old.db"
+    storage = Storage(path)
+    storage.conn.execute(
+        "INSERT INTO sent_events (idempotency_key, event_type, match_id, created_utc) "
+        "VALUES ('E9:900:map:1:round:15:sid:4', 'E9', 900, '2026-08-01T00:00:00+00:00')")
+    storage.conn.execute("DELETE FROM meta WHERE key = 'e9_keys_without_kills'")
+    storage.close()
+
+    Storage(path).close()
+    storage = Storage(path)
+    assert storage._migrate_multikill_keys() == 0
+    assert [row["idempotency_key"] for row in
+            storage.conn.execute("SELECT idempotency_key FROM sent_events")] == \
+        ["E9:900:map:1:round:15:sid"]
+    storage.close()
+
+
+def test_a_clutch_key_is_left_alone(tmp_path):
+    """E15 is a new type, so nothing in an old journal can be one of its keys
+    and there is nothing to migrate. The E9 rewrite must not touch it either."""
+    from hltv_notify.state.db import Storage
+
+    path = tmp_path / "old.db"
+    storage = Storage(path)
+    storage.conn.execute(
+        "INSERT INTO sent_events (idempotency_key, event_type, match_id, created_utc) "
+        "VALUES ('555|E15:900:map:1:round:15:sid', 'E15', 900, '2026-08-01T00:00:00+00:00')")
+    storage.conn.execute("DELETE FROM meta WHERE key = 'e9_keys_without_kills'")
+    storage.close()
+
+    storage = Storage(path)
+    assert [row["idempotency_key"] for row in
+            storage.conn.execute("SELECT idempotency_key FROM sent_events")] == \
+        ["555|E15:900:map:1:round:15:sid"]
+    storage.close()

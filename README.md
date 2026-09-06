@@ -111,11 +111,11 @@ the score. So when a milestone of the same map arrives — a map point, or half
 time, and each new overtime — the card is deleted and sent again below it,
 and goes on updating there.
 
-Only those two move it. A multikill does not: there are several a map, and the
-card would spend the match jumping around. Neither does anything about a
-different match.
+Only those two move it. A multikill or a clutch does not: there are several a
+map, and the card would spend the match jumping around. Neither does anything
+about a different match.
 
-### A multikill comes with somewhere to watch it
+### A highlight comes with somewhere to watch it
 
 A 4k is worth clipping, and a clip has to be made while it is still on the
 stream. So the message carries the broadcasts, most watched first:
@@ -137,6 +137,38 @@ The list is read off the match page the service already polls, so it costs no
 extra requests — and it is refreshed on every poll, because a caster on a
 hundred viewers when the match began can be behind three others on a thousand
 an hour later.
+
+### A clutch, and why it shares the message
+
+A clutch is a round won as the last player of the team alive, and the bar for
+it counts **opponents**, not kills: a 1v3 is worth watching whether it took
+three kills or one and a defuse. It is its own alert (`E15`), with its own
+threshold and its own entry in the mute list.
+
+But the two overlap. A player who trades early and then wins a 1v2 has done
+both things in one round, and two messages in a row about one moment is noise.
+So a round is resolved **once**, and the message names everything that
+happened in it:
+
+```
+🧊 donk — 4k, clutch 1v3
+Mirage, round 12 · score 7:5
+Natus Vincere — FaZe
+Watch the match
+```
+
+That is why a multikill no longer arrives at the instant of the Nth kill: a
+clutch is only a clutch once the round is won, so the message waits for the
+round to be decided **for that player** — which is the moment he dies, or the
+end of the round, whichever comes first. Measured against two recorded
+matches, that is a median of 0 seconds and at worst about half a minute,
+because the last kill of a multikill is usually the kill that ends the round.
+
+One thing this fixed along the way: with a bar of four, an ace used to arrive
+as two messages ("4k round", then "ACE"). Now it is one, and it says ACE.
+
+The two bars are independent. Either can be off while the other is on, and a
+round that clears only one of them still says what else happened in it.
 
 **Language comes before popularity, up to a point.** A link you cannot follow
 is worse than no link, so a broadcast outside your languages appears only when
@@ -226,6 +258,12 @@ Mirage, round 14 · score 8:6
 Vitality — Spirit
 ```
 
+```
+🧊 ZywOo — 3k, clutch 1v2
+Mirage, round 14 · score 8:6
+Vitality — Spirit
+```
+
 Times are shown in your own timezone (`/tz`); everything is stored in UTC.
 
 ### Event codes
@@ -250,6 +288,7 @@ documentation, and in the text `/mute` command, so here is the whole list:
 | `E12` | half time |
 | `E13` | a new overtime begins |
 | `E14` | the daily digest: what is on in the next 24 hours |
+| `E15` | a clutch: a round won as the last player alive |
 
 (The table above is in the order things happen; this one is by number, because
 that is how you look a code up.)
@@ -457,7 +496,7 @@ Not everything has a button: a few commands carry a value that has to be typed
 | `/remind 15m` | remind 15 min before a match; `/remind rm 15m` removes it | partly — 10, 15, 30 min, 1 h and 2 h are buttons, any other interval is typed |
 | `/digest 9:00` | a daily list of the next 24 hours at 09:00 your time; `/digest rm 9:00` removes it | partly — 08:00, 09:00, 10:00, 12:00, 18:00 and 20:00 are buttons, any other time is typed |
 | `/tz Europe/Berlin` | your timezone | **no** |
-| `/settings` | your own thresholds — multikill, comeback, half, overtime, the live card, the stream links. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
+| `/settings` | your own thresholds — multikill, clutch, comeback, half, overtime, the live card, the stream links. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
 | `/pause`, `/resume` | go completely quiet / start receiving again | yes |
 | `/check` | read the schedule now instead of waiting for the next cycle, which is up to 30 min when nothing is due | **no** |
 | `/whoami` | your numeric `chat_id` — the value that goes into `TELEGRAM_CHAT_ID` | **no** |
@@ -477,6 +516,7 @@ in `.env`:
 ```
 /settings                     what you have now
 /settings multikill 3         alert from three kills instead of four
+/settings clutch 2            alert from a 1v2 upwards
 /settings comeback 12         only really big swings get the line on a map
 /settings half on             a message when the sides swap
 /settings overtime on         a message at the start of every overtime
@@ -523,7 +563,7 @@ The service also says so in the log once the count outgrows the ceiling.
 
 If two teams you follow play **each other**, it stays one match: one
 notification per subscriber, with the score turned around to face whichever
-team that person follows. Multikills are the exception — a 4k belongs to the
+team that person follows. Highlights are the exception — a 4k or a clutch belongs to the
 player's own team and goes to the people following that team.
 
 ---
@@ -591,6 +631,8 @@ are most likely to touch:
 | `REMINDERS` | `15` | default pre-match reminders for a new subscriber, in minutes |
 | `MULTIKILL_ALERTS` | `true` | alert on a big round by one of your players |
 | `MULTIKILL_THRESHOLD` | `4` | how many kills counts as one — the **default** for `/settings multikill` |
+| `CLUTCH_ALERTS` | `true` | alert on a round won as the last player alive |
+| `CLUTCH_THRESHOLD` | `3` | how many opponents counts as one — the **default** for `/settings clutch` |
 | `PHASE_ALERTS` | `false` | the umbrella default for both of the next two |
 | `HALF_ALERTS` | = `PHASE_ALERTS` | alert at half time — the **default** for `/settings half` |
 | `OVERTIME_ALERTS` | = `PHASE_ALERTS` | alert at each new overtime — the **default** for `/settings overtime` |

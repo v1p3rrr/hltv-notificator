@@ -388,9 +388,9 @@ def test_the_multikill_event_carries_the_streams(storage, config):
     storage.set_map_lineup(match, ["Mirage"])
     storage.set_match_streams(match, [one("RU", 51, name="GLuck")])
 
-    def at(kills):
+    def at(kills, state="started"):
         return LiveFrame(
-            map_name="de_mirage", current_round=4, round_state="started", live=True,
+            map_name="de_mirage", current_round=4, round_state=state, live=True,
             ct_team_id=team, ct_team_name="us", ct_score=2,
             t_team_id=foe, t_team_name="them", t_score=1,
             regulation=12, overtime=3,
@@ -398,7 +398,7 @@ def test_the_multikill_event_carries_the_streams(storage, config):
 
     machine = LiveMachine(storage, config)
     machine.apply(match, at(0))                      # the round's baseline
-    events = machine.apply(match, at(4))
+    events = machine.apply(match, at(4, "ended"))     # resolved when it ends
     e9 = next(event for event in events if event.type == "E9")
     assert [item["name"] for item in e9.payload["streams"]] == ["GLuck"]
 
@@ -415,9 +415,9 @@ def test_a_multikill_on_a_match_with_no_streams_carries_an_empty_list(storage, c
                          snapshot={}, snapshot_hash="x", team_id=team)
     storage.set_map_lineup(match, ["Mirage"])
 
-    def at(kills):
+    def at(kills, state="started"):
         return LiveFrame(
-            map_name="de_mirage", current_round=4, round_state="started", live=True,
+            map_name="de_mirage", current_round=4, round_state=state, live=True,
             ct_team_id=team, ct_team_name="us", ct_score=2,
             t_team_id=foe, t_team_name="them", t_score=1,
             regulation=12, overtime=3,
@@ -425,7 +425,7 @@ def test_a_multikill_on_a_match_with_no_streams_carries_an_empty_list(storage, c
 
     machine = LiveMachine(storage, config)
     machine.apply(match, at(0))
-    e9 = next(e for e in machine.apply(match, at(4)) if e.type == "E9")
+    e9 = next(e for e in machine.apply(match, at(4, "ended")) if e.type == "E9")
     assert e9.payload["streams"] == []
     text = fmt.render(e9, team_name="FORZE", tz_name="UTC", stream_prefs=prefs())
     assert "blockquote" not in text
