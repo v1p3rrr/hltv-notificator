@@ -255,6 +255,14 @@ pointing the reader at a map the moment did not happen on. `Highlight` carries
 `map_name`, `round_number` and the SCORE of its own round for this reason; the
 score is in there because "round 12 · score 7:5" is a claim about round 12.
 
+**"Unset" cannot be spelled with truthiness on a round number.** `Highlight`
+briefly defaulted `round_number`, and the caller then needed a fallback —
+`found.round_number or frame.current_round`. Dead on every real path, because
+`_flush` always fills it in, except on the one value it must not touch: round
+**0** is falsy, so a genuine round 0 was relabelled with the frame's round. The
+fix is to have no default at all — required fields, ahead of the defaulted
+ones, so there is nothing to fall back from.
+
 **The highlight tracker is keyed by team AND MAP.** Keyed by team alone it was
 built on the first frame of the MATCH and kept those bars to the end of it, so
 `/settings clutch 2` typed during a match did nothing for the rest of it —
@@ -693,7 +701,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 681 tests
+python -m pytest                                    # 682 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

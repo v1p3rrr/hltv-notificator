@@ -516,7 +516,7 @@ def test_a_clutch_key_is_left_alone(tmp_path):
     storage.close()
 
 
-def test_the_multikill_rewrite_cannot_eat_its_own_output(tmp_path):
+def test_the_multikill_rewrite_cannot_eat_its_own_output():
     """A steam id contains colons (`1:0:429765397`).
 
     With an unbounded count the legacy pattern matched an ALREADY migrated key,

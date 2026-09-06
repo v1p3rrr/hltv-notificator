@@ -357,3 +357,17 @@ def test_a_highlight_without_a_score_says_so_rather_than_guessing():
     t.observe(MAP, 12, "started", players(ropz=10))
     found = t.observe(MAP, 12, "ended", players(ropz=13))
     assert found[0].score_team is None and found[0].score_opponent is None
+
+
+def test_round_zero_is_reported_as_round_zero():
+    """`Highlight` requires its round rather than defaulting it.
+
+    Given a default, the caller needs a way to spell "unset", and on an int
+    that is truthiness — which round 0 satisfies. The fallback would then fire
+    on the one value it must not touch and relabel it with the frame's round.
+    """
+    t = tracker(threshold=3)
+    t.observe(MAP, 0, "", players(ropz=0))
+    t.observe(MAP, 0, "", players(ropz=3))
+    found = t.observe(MAP, 1, "freezePeriod", players(ropz=3))
+    assert [h.round_number for h in found] == [0]

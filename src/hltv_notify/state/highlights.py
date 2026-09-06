@@ -61,9 +61,14 @@ class Highlight:
 
     player: PlayerLine
     kills: int
+    # Required, and deliberately ahead of the defaulted fields. Given a default
+    # the caller would need a fallback for "unset", and the only way to spell
+    # that on an int is truthiness — which round **0** satisfies, so the one
+    # input the fallback could act on is a real round number it would then
+    # throw away. `_flush` always knows both; there is nothing to default.
+    map_name: str
+    round_number: int
     clutch_against: int = 0
-    map_name: str = ""
-    round_number: int = 0
     score_team: Optional[int] = None
     score_opponent: Optional[int] = None
 

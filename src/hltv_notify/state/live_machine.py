@@ -23,7 +23,7 @@ from .. import settings
 from ..config import Config
 from ..models import Event, MatchState
 from ..scoring import map_completed, rounds_to_win, series_decided
-from ..sources.scorebot import ROUND_WARMUP, LiveFrame, PlayerLine
+from ..sources.scorebot import ROUND_WARMUP, LiveFrame
 from .comeback import ComebackTracker
 from .db import Storage
 from .highlights import RoundTracker
@@ -296,9 +296,11 @@ class LiveMachine:
             # The ROUND the highlight belongs to, never the frame's. A round
             # whose `ended` was lost is reported when the next one arrives, and
             # taking the round off the frame named the wrong one in both the
-            # message and the key. The map is the tracker's own by
-            # construction — there is one per map — so `map_number` fits it.
-            round_number = found.round_number or frame.current_round
+            # message and the key. Read straight off the highlight, with no
+            # fallback: `Highlight` requires it, and a fallback keyed on
+            # truthiness would fire on the one value it must not touch, round 0.
+            # The map is the tracker's own by construction — there is one per
+            # map — so `map_number` fits it.
             # A clutch takes the message over rather than adding one to it: the
             # round produced ONE moment, and the kills ride along inside E15.
             # Keeping E9's meaning intact is what lets the two be muted and
@@ -307,7 +309,7 @@ class LiveMachine:
             log.info("match %s: %s took %d kills%s in round %d on %s",
                      match_id, player.nick, found.kills,
                      f" and a 1v{found.clutch_against} clutch" if found.clutch_against else "",
-                     round_number, found.map_name or map_name)
+                     found.round_number, found.map_name)
             events.append(Event(
                 type=event_type,
                 # No kill count in the key. The round is reported once, so the
@@ -316,7 +318,7 @@ class LiveMachine:
                 # smaller count that follows would have been a new key and a
                 # second message about the same round.
                 idempotency_key=(f"{event_type}:{match_id}:map:{map_number}"
-                                 f":round:{round_number}:{player.steam_id}"),
+                                 f":round:{found.round_number}:{player.steam_id}"),
                 match_id=match_id,
                 payload={
                     **self._context(match_id, frame, tracked_team),
@@ -324,8 +326,8 @@ class LiveMachine:
                     "kills": found.kills,
                     "clutch_against": found.clutch_against,
                     "map_number": map_number,
-                    "map_name": found.map_name or map_name,
-                    "round": round_number,
+                    "map_name": found.map_name,
+                    "round": found.round_number,
                     # The score the round was played at, not the score now:
                     # they differ by a round whenever the report is late.
                     "score_team": found.score_team if found.score_team is not None else ours,
