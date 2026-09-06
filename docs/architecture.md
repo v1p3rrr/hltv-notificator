@@ -244,7 +244,16 @@ So a round is resolved **once**, when it is decided for that player:
   be credited *after* the clutcher dies, when the bomb he planted goes off;
 * **the round is left behind** without either — a missed `ended`, a reconnect
   across the boundary. The next round arriving is the last moment it can be
-  told.
+  told, and the report then carries **its own** round and score rather than the
+  frame's: stamping it with the frame that triggered the flush named the next
+  round in the message and in the key alike.
+
+The tracker is per team **and per map**, like the comeback tracker. That is
+what re-reads the bars when a map starts — keyed by team alone it kept the
+bars it was built with for the whole match, so a threshold changed during a
+match never took effect. It also means a round left unreported on a finished
+map is dropped rather than dragged onto the next one, which is the right way
+round: missed, never invented.
 
 Measured across both recordings, waiting for the round to end costs a median of
 **0 seconds** and at worst **32** — the last kill of a multikill is usually the

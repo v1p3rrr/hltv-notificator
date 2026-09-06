@@ -304,3 +304,64 @@ def test_a_clutch_that_wins_the_map_is_reported_beside_the_map_result(match, con
     # And the map really is over, so nothing further is produced.
     assert live.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=11, rnd=24,
                                       state="ended", us=us)) == []
+
+
+def test_a_highlight_whose_round_end_was_missed_names_its_own_round(match, config):
+    """The `ended` frames of round 12 are lost — a long poll that timed out —
+    and the next frame seen belongs to round 13.
+
+    Both the message and the idempotency key have to say round 12, and the
+    score has to be the one round 12 was played at.
+    """
+    live = LiveMachine(match, config)
+    live.apply(MATCH_ID, frame("de_mirage", ours=7, theirs=5, rnd=12,
+                               us=[man("Kaide", 10)], them=[man("a", 3)]))
+    live.apply(MATCH_ID, frame("de_mirage", ours=7, theirs=5, rnd=12,
+                               us=[man("Kaide", 14)], them=[man("a", 3)]))
+    events = live.apply(MATCH_ID, frame("de_mirage", ours=8, theirs=5, rnd=13,
+                                        state="freezePeriod",
+                                        us=[man("Kaide", 14)], them=[man("a", 3)]))
+    highlight = next(e for e in events if e.type == "E9")
+    assert highlight.payload["round"] == 12
+    assert highlight.payload["map_name"] == "Mirage"
+    assert ":round:12:" in highlight.idempotency_key
+    assert (highlight.payload["score_team"],
+            highlight.payload["score_opponent"]) == (7, 5)
+
+
+def test_a_highlight_is_never_attributed_to_the_next_map(match, config):
+    """A 4k late on Mirage, then the feed drops and comes back on Nuke.
+
+    It used to be announced as "Nuke, round 2" — pointing the reader at a map
+    the moment did not happen on. A tracker per map drops it instead: missed,
+    never invented.
+    """
+    live = LiveMachine(match, config)
+    live.apply(MATCH_ID, frame("de_mirage", ours=11, theirs=9, rnd=20,
+                               us=[man("Kaide", 10)], them=[man("a", 3)]))
+    live.apply(MATCH_ID, frame("de_mirage", ours=11, theirs=9, rnd=20,
+                               us=[man("Kaide", 14)], them=[man("a", 3)]))
+    events = live.apply(MATCH_ID, frame("de_nuke", rnd=2, us=[man("Kaide", 0)],
+                                        them=[man("a", 0)]))
+    assert [e for e in events if e.type in ("E9", "E15")] == []
+
+
+def test_a_bar_raised_mid_match_is_honoured_on_the_next_map(match, config):
+    """The tracker used to be built once per MATCH and keep its bars to the end
+    of it, so a setting changed during a match did nothing at all — while the
+    machine re-read that same setting on every frame and looked like it had."""
+    match.add_subscriber("555")
+    match.add_team("555", TEAM_ID, "forze-reload", "FORZE Reload")
+    match.link_match_team(MATCH_ID, TEAM_ID)
+    match.set_setting("555", "multikill", 5)
+
+    live = LiveMachine(match, config)
+    live.apply(MATCH_ID, frame("de_mirage", rnd=5, us=[man("Kaide", 10)],
+                               them=[man("a", 3)]))
+    match.set_setting("555", "multikill", 3)          # lowered mid-match
+
+    live.apply(MATCH_ID, frame("de_nuke", rnd=1, us=[man("Kaide", 0)],
+                               them=[man("a", 0)]))
+    events = live.apply(MATCH_ID, frame("de_nuke", rnd=1, state="ended",
+                                        us=[man("Kaide", 3)], them=[man("a", 0)]))
+    assert [e.type for e in events if e.type == "E9"] == ["E9"]

@@ -219,8 +219,16 @@ LEGACY_REMINDER_KEY_RE = re.compile(
 # The multikill key before the round was resolved once, at its end. It carried
 # the kill count, because a round could report twice — at the bar and again at
 # an ace. Now it cannot: E9:<match>:map:<n>:round:<r>:<steam>.
+#
+# The count is ONE digit, and that is not cosmetic. A steam id contains colons
+# (`1:0:429765397`), so with `\d+` the pattern matched its own OUTPUT — the
+# already-migrated key `…:round:15:1:0:429765397` parsed as id `1:0` plus a
+# count of `429765397` and would have been truncated on a second run. Its two
+# siblings cannot match their own output at all; this one leans on the `meta`
+# flag, so it is written to survive that flag going missing. A real round
+# cannot exceed five kills, so a single digit loses nothing.
 LEGACY_MULTIKILL_KEY_RE = re.compile(
-    r"^(?P<prefix>[^|]*\|)?E9:(?P<rest>\d+:map:\d+:round:\d+:.+):(?P<kills>\d+)$")
+    r"^(?P<prefix>[^|]*\|)?E9:(?P<rest>\d+:map:\d+:round:\d+:.+):(?P<kills>\d)$")
 
 
 def utcnow() -> datetime:

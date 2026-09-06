@@ -39,7 +39,6 @@ from ..sources.scorebot import PlayerLine
 
 log = logging.getLogger(__name__)
 
-ACE = 5
 WARMUP = "warmup"
 STARTED = "started"
 ENDED = "ended"
@@ -51,15 +50,22 @@ class Highlight:
 
     `clutch_against` is 0 when there was no clutch — see `_clutch_for` for why
     a clutch we could not size is reported as none at all.
+
+    It carries **the round it belongs to**, and that is not decoration. A round
+    whose `ended` was never seen is reported when the NEXT one arrives, so the
+    frame handing it over describes a different round — and building the
+    message from that frame stamped the wrong round on both the text and the
+    idempotency key. The score is here for the same reason: "round 12 · score
+    7:5" has to be the score round 12 was played at.
     """
 
     player: PlayerLine
     kills: int
     clutch_against: int = 0
-
-    @property
-    def is_ace(self) -> bool:
-        return self.kills >= ACE
+    map_name: str = ""
+    round_number: int = 0
+    score_team: Optional[int] = None
+    score_opponent: Optional[int] = None
 
 
 class RoundTracker:
@@ -86,6 +92,9 @@ class RoundTracker:
         # The largest number of opponents a player faced while being the last of
         # their team alive. Written only during `started` — see observe.
         self._situation: Dict[str, int] = {}
+        # The map score as this round was played, so a highlight reported after
+        # the round has turned over does not quote the next round's score.
+        self._score: Optional[Tuple[int, int]] = None
         # Who has already been reported for the round in hand. Per PLAYER and
         # not per round, because a player who dies is reported the moment he
         # does — see `_settled`. Every flush consults it, so nobody is reported
@@ -96,11 +105,16 @@ class RoundTracker:
 
     def observe(self, map_name: str, round_number: int, round_state: str,
                 players: Iterable[PlayerLine],
-                opponents: Iterable[PlayerLine] = ()) -> List[Highlight]:
+                opponents: Iterable[PlayerLine] = (),
+                score: Optional[Tuple[int, int]] = None) -> List[Highlight]:
         """Feed one frame in; get the round's highlights when it is over.
 
         Returns an empty list on almost every call — a round is reported once,
         and a frame arrives several times a second.
+
+        `score` is this team's side of the map score at the moment of the
+        frame. It is remembered per round so a highlight reported late still
+        quotes the score its own round was played at.
         """
         players = list(players)
         opponents = list(opponents)
@@ -113,16 +127,16 @@ class RoundTracker:
             # skipped, because it reports what was seen during that round and
             # this frame belongs to another one.
             leaving = self._flush(self._seen)
-            self._start(key, players)
+            self._start(key, players, score)
             return leaving
 
         # During warmup the kills come from deathmatch and have nothing to do
         # with the round.
         if round_state == WARMUP:
-            self._start(key, players)
+            self._start(key, players, score)
             return []
 
-        self._track(players)
+        self._track(players, score)
 
         if round_state == STARTED:
             # Only while the round is actually being played. At half time the
@@ -141,7 +155,8 @@ class RoundTracker:
 
     # ------------------------------------------------------------------
 
-    def _start(self, key: Tuple[str, int], players: List[PlayerLine]) -> None:
+    def _start(self, key: Tuple[str, int], players: List[PlayerLine],
+               score: Optional[Tuple[int, int]] = None) -> None:
         self._key = key
         self._kills = {p.steam_id: p.kills for p in players}
         self._clutches = {p.steam_id: p.clutches for p in players}
@@ -150,9 +165,13 @@ class RoundTracker:
         self._won = set()
         self._situation = {}
         self._reported = set()
+        self._score = score
 
-    def _track(self, players: List[PlayerLine]) -> None:
+    def _track(self, players: List[PlayerLine],
+               score: Optional[Tuple[int, int]] = None) -> None:
         """Fold this frame into what the current round has produced so far."""
+        if score is not None:
+            self._score = score
         for player in players:
             if player.steam_id not in self._kills:
                 # Somebody who turned up mid-round: a substitution, or a
@@ -217,8 +236,13 @@ class RoundTracker:
             if not self._worth_reporting(kills, against):
                 continue
             self._reported.add(steam_id)
+            score = self._score or (None, None)
             found.append(Highlight(player=player, kills=kills,
-                                   clutch_against=against))
+                                   clutch_against=against,
+                                   map_name=self._key[0],
+                                   round_number=self._key[1],
+                                   score_team=score[0],
+                                   score_opponent=score[1]))
         return found
 
     def _clutch_for(self, steam_id: str, player: PlayerLine) -> int:

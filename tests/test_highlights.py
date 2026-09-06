@@ -313,3 +313,47 @@ def test_leaving_a_round_behind_does_not_report_it_twice():
     t.observe(MAP, 5, "started", players(ropz=10))
     assert len(t.observe(MAP, 5, "ended", players(ropz=13))) == 1
     assert t.observe(MAP, 6, "freezePeriod", players(ropz=13)) == []
+
+
+# --------------------------------------------------------------------------
+# A highlight carries its OWN round, not the frame's.
+
+def test_a_late_report_names_the_round_it_belongs_to():
+    """The round whose `ended` was lost is reported when the next one starts.
+
+    Taking the round off the frame that triggers the flush named the NEXT one
+    — in the message and in the idempotency key alike.
+    """
+    t = tracker(threshold=3)
+    t.observe(MAP, 12, "started", players(ropz=10), score=(7, 5))
+    t.observe(MAP, 12, "started", players(ropz=13), score=(7, 5))
+    found = t.observe(MAP, 13, "freezePeriod", players(ropz=13), score=(8, 5))
+    assert len(found) == 1
+    assert found[0].round_number == 12
+    assert found[0].map_name == MAP
+    # ...and the score round 12 was played at, not the one after it.
+    assert (found[0].score_team, found[0].score_opponent) == (7, 5)
+
+
+def test_a_report_at_the_end_of_its_own_round_is_stamped_with_it():
+    t = tracker(threshold=3)
+    t.observe(MAP, 12, "started", players(ropz=10), score=(7, 5))
+    found = t.observe(MAP, 12, "ended", players(ropz=13), score=(8, 5))
+    assert (found[0].round_number, found[0].map_name) == (12, MAP)
+    assert (found[0].score_team, found[0].score_opponent) == (8, 5)
+
+
+def test_a_death_report_carries_the_round_it_happened_in():
+    t = tracker(threshold=3)
+    t.observe(MAP, 12, "started", players(ropz=10), score=(7, 5))
+    found = t.observe(MAP, 12, "started", [line("ropz", 13, alive=False)], score=(7, 5))
+    assert (found[0].round_number, found[0].score_team) == (12, 7)
+
+
+def test_a_highlight_without_a_score_says_so_rather_than_guessing():
+    """Nothing calls `observe` without a score today, but a None must travel as
+    None so the caller can fall back rather than print a zero."""
+    t = tracker(threshold=3)
+    t.observe(MAP, 12, "started", players(ropz=10))
+    found = t.observe(MAP, 12, "ended", players(ropz=13))
+    assert found[0].score_team is None and found[0].score_opponent is None

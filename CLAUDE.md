@@ -246,6 +246,25 @@ rounds**, the forze recording jumps from round 2 to round 8, and the naive
 difference reported a ten-kill round for four players at once. `RoundTracker`
 keeps `_peak` per frame for exactly this.
 
+**A late report must carry its OWN round, never the frame's.** A round whose
+`ended` was lost is reported when the NEXT round arrives, so the frame handing
+it over describes a different round — and building the message from that frame
+stamped the wrong round on the text AND on the idempotency key. Across a map
+boundary it was worse: a 4k on Mirage round 20 was announced as "Nuke, round 2",
+pointing the reader at a map the moment did not happen on. `Highlight` carries
+`map_name`, `round_number` and the SCORE of its own round for this reason; the
+score is in there because "round 12 · score 7:5" is a claim about round 12.
+
+**The highlight tracker is keyed by team AND MAP.** Keyed by team alone it was
+built on the first frame of the MATCH and kept those bars to the end of it, so
+`/settings clutch 2` typed during a match did nothing for the rest of it —
+while `_highlight_events` re-read the same setting on every frame and so looked
+like it had taken effect. `_comeback` was already keyed per map; these must be
+too, and that is also what makes "a threshold changed mid-map takes effect on
+the next map" true rather than merely written down. The cost is that a round
+left unreported on a finished map is dropped rather than dragged onto the next
+one — missed, never invented, which is the right direction.
+
 **A dead player is reported at once — unless he was ever the last one alive.**
 His kills are final either way, so holding him back only delays the alert. But a
 clutch can be CREDITED after he dies (the bomb he planted goes off), and sending
@@ -336,6 +355,15 @@ resolved inside their factories, from the environment. A `phase_alerts` field
 nothing reads is a trap: `Config(phase_alerts=True)` looks like it turns both
 on and does nothing at all — which is exactly how two tests were silently
 wrong.
+
+**A key-rewriting migration must not match its OWN output.** The E9 rewrite
+strips the kill count, and a steam id contains colons (`1:0:429765397`) — so
+with an unbounded `\d+` the pattern parsed an already-migrated key as id `1:0`
+plus a count of `429765397` and would have truncated it, resending everything.
+The other two rewrites cannot match their own output by construction; this one
+would lean entirely on its `meta` flag, so the count is pinned to ONE digit (a
+round cannot exceed five kills). Write the pattern so a second run is a no-op
+even without the flag.
 
 **Changing a key format needs a migration in the same commit.** The journal
 is keyed by the old format, so without one the first run after the upgrade sees
@@ -665,7 +693,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 672 tests
+python -m pytest                                    # 681 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

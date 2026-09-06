@@ -514,3 +514,44 @@ def test_a_clutch_key_is_left_alone(tmp_path):
             storage.conn.execute("SELECT idempotency_key FROM sent_events")] == \
         ["555|E15:900:map:1:round:15:sid"]
     storage.close()
+
+
+def test_the_multikill_rewrite_cannot_eat_its_own_output(tmp_path):
+    """A steam id contains colons (`1:0:429765397`).
+
+    With an unbounded count the legacy pattern matched an ALREADY migrated key,
+    reading the last id segment as the kill count and truncating it — so a
+    second run would have broken the journal and resent everything. The two
+    sibling migrations cannot match their own output at all; this one leans on
+    the `meta` flag, so it is written to survive that flag going missing.
+    """
+    from hltv_notify.state.db import LEGACY_MULTIKILL_KEY_RE as pattern
+
+    assert pattern.match("555|E9:900:map:1:round:15:1:0:429765397:4")   # old
+    assert not pattern.match("555|E9:900:map:1:round:15:1:0:429765397")  # new
+    assert not pattern.match("E9:900:map:2:round:3:76561198000000000")   # new
+    assert not pattern.match("555|E15:900:map:1:round:15:1:0:429765397")  # not ours
+
+
+def test_running_the_multikill_rewrite_twice_changes_nothing(tmp_path):
+    """Belt and braces for the flag: even forced, it is now a no-op the second
+    time round."""
+    from hltv_notify.state.db import Storage
+
+    path = tmp_path / "old.db"
+    storage = Storage(path)
+    storage.conn.execute(
+        "INSERT INTO sent_events (idempotency_key, event_type, match_id, created_utc) "
+        "VALUES ('555|E9:900:map:1:round:15:1:0:429765397:4', 'E9', 900, "
+        "'2026-08-01T00:00:00+00:00')")
+    storage.conn.execute("DELETE FROM meta WHERE key = 'e9_keys_without_kills'")
+    assert storage._migrate_multikill_keys() == 1
+    after = [row["idempotency_key"] for row in
+             storage.conn.execute("SELECT idempotency_key FROM sent_events")]
+    assert after == ["555|E9:900:map:1:round:15:1:0:429765397"]
+
+    storage.conn.execute("DELETE FROM meta WHERE key = 'e9_keys_without_kills'")
+    assert storage._migrate_multikill_keys() == 0
+    assert [row["idempotency_key"] for row in
+            storage.conn.execute("SELECT idempotency_key FROM sent_events")] == after
+    storage.close()

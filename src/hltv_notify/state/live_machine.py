@@ -52,11 +52,19 @@ class LiveMachine:
     def __init__(self, storage: Storage, config: Config):
         self.storage = storage
         self.config = config
-        # A tracker per EVERY tracked team in the match: if tracked teams play
-        # each other, a 4k by a player of either is its own highlight, and one
-        # must not be muted for the sake of the other. They live in the
-        # worker's memory and survive reconnects inside it.
-        self._highlights: Dict[int, RoundTracker] = {}
+        # A tracker per tracked team PER MAP: if tracked teams play each other,
+        # a 4k by a player of either is its own highlight, and one must not be
+        # muted for the sake of the other. They live in the worker's memory and
+        # survive reconnects inside it.
+        #
+        # Keyed by the map as well as the team, exactly like `_comeback` below,
+        # and for a reason worth keeping: the bars are read when the tracker is
+        # built. Keyed by team alone it was built on the first frame of the
+        # MATCH and kept those bars to the end of it, so `/settings clutch 2`
+        # typed during a match did nothing for the rest of it — while
+        # `_highlight_events` re-read the same setting on every frame and so
+        # looked like it had taken effect.
+        self._highlights: Dict[Tuple[int, str], RoundTracker] = {}
         # Score milestones already announced — map points, halves, the start
         # of an overtime. The journal would swallow the repeats anyway (the key
         # is the same one), but a score stands for a whole round, i.e. some
@@ -93,12 +101,18 @@ class LiveMachine:
             self._comeback[map_name] = ComebackTracker(self._threshold("comeback"))
         return self._comeback[map_name]
 
-    def _tracker(self, team_id: int) -> RoundTracker:
-        if team_id not in self._highlights:
-            self._highlights[team_id] = RoundTracker(
+    def _tracker(self, team_id: int, map_name: str) -> RoundTracker:
+        """One tracker per team per map: a new map re-reads the bars.
+
+        Which is what makes "a threshold changed mid-map takes effect on the
+        next map" true rather than merely documented.
+        """
+        key = (team_id, map_name)
+        if key not in self._highlights:
+            self._highlights[key] = RoundTracker(
                 multikill=self._threshold("multikill"),
                 clutch=self._threshold("clutch"))
-        return self._highlights[team_id]
+        return self._highlights[key]
 
     # ------------------------------------------------------------------
 
@@ -264,9 +278,10 @@ class LiveMachine:
             # before the feed filled the ids in. Its players' kills will not be
             # there either.
             return []
-        taken = self._tracker(tracked_team).observe(
+        taken = self._tracker(tracked_team, map_name).observe(
             map_name, frame.current_round, frame.round_state,
-            frame.our_players(tracked_team), frame.their_players(tracked_team))
+            frame.our_players(tracked_team), frame.their_players(tracked_team),
+            score=(ours, theirs))
         events: List[Event] = []
         # Read once for the whole frame, not per player: two highlights in one
         # round is rare but it happens, and the list is the same for both.
@@ -278,6 +293,12 @@ class LiveMachine:
         streams = self.storage.match_streams(match_id) if taken else []
         for found in taken:
             player = found.player
+            # The ROUND the highlight belongs to, never the frame's. A round
+            # whose `ended` was lost is reported when the next one arrives, and
+            # taking the round off the frame named the wrong one in both the
+            # message and the key. The map is the tracker's own by
+            # construction — there is one per map — so `map_number` fits it.
+            round_number = found.round_number or frame.current_round
             # A clutch takes the message over rather than adding one to it: the
             # round produced ONE moment, and the kills ride along inside E15.
             # Keeping E9's meaning intact is what lets the two be muted and
@@ -286,7 +307,7 @@ class LiveMachine:
             log.info("match %s: %s took %d kills%s in round %d on %s",
                      match_id, player.nick, found.kills,
                      f" and a 1v{found.clutch_against} clutch" if found.clutch_against else "",
-                     frame.current_round, map_name)
+                     round_number, found.map_name or map_name)
             events.append(Event(
                 type=event_type,
                 # No kill count in the key. The round is reported once, so the
@@ -295,7 +316,7 @@ class LiveMachine:
                 # smaller count that follows would have been a new key and a
                 # second message about the same round.
                 idempotency_key=(f"{event_type}:{match_id}:map:{map_number}"
-                                 f":round:{frame.current_round}:{player.steam_id}"),
+                                 f":round:{round_number}:{player.steam_id}"),
                 match_id=match_id,
                 payload={
                     **self._context(match_id, frame, tracked_team),
@@ -303,10 +324,13 @@ class LiveMachine:
                     "kills": found.kills,
                     "clutch_against": found.clutch_against,
                     "map_number": map_number,
-                    "map_name": map_name,
-                    "round": frame.current_round,
-                    "score_team": ours,
-                    "score_opponent": theirs,
+                    "map_name": found.map_name or map_name,
+                    "round": round_number,
+                    # The score the round was played at, not the score now:
+                    # they differ by a round whenever the report is late.
+                    "score_team": found.score_team if found.score_team is not None else ours,
+                    "score_opponent": (found.score_opponent
+                                       if found.score_opponent is not None else theirs),
                     "streams": streams,
                 },
             ))

@@ -437,3 +437,12 @@ end of the "4k round" / "ACE" double ping, and against a two-hour clip window
 on Twitch it costs nothing that matters. If a highlight ever has to arrive
 faster than this, the thing to change is the resolution rule, not the polling
 rate.
+
+## A highlight on a map that ends before it is reported is dropped
+
+The round is resolved when it ends, or when the next round of the SAME map
+arrives. Each map has its own tracker, so if the feed drops during the last
+kill of a 4k and comes back on the following map, that round is never resolved
+and no message goes out. The alternative — carrying it across the boundary —
+was tried and was worse: it announced the highlight against the new map's name
+and round number, pointing the reader at a map the moment did not happen on.
