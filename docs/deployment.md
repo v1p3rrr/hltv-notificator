@@ -226,6 +226,15 @@ docker run --rm -v trivycache:/root/.cache/trivy aquasec/trivy image --ignore-un
 of things a rebuild would actually change. An empty result is the goal, and a
 non-empty one means the published image is behind — rebuild it.
 
+**And a rebuild has to actually run `apt-get upgrade`.** CI used to build
+with a layer cache, and the upgrade layer — the one that closes those
+findings — was reused for as long as the `Dockerfile` stayed the same. The
+day Debian shipped a `perl-base` fix, the scan failed a build whose
+`Dockerfile` already applied it, because the layer it scanned was weeks
+old. The image job builds with `no-cache` now (the whole build is ten
+seconds). The same applies to a local build: `docker compose build
+--no-cache` when the scan says something fixable is left.
+
 ## Rolling back
 
 ```bash

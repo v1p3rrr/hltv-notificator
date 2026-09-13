@@ -702,6 +702,14 @@ Debian patch at all: the three CRITICALs are `perl-base`, pulled in by `dpkg`
 and never executed here. Judge the image by `--ignore-unfixed`; the raw total
 is noise and chasing it invites a base-image swap that fixes nothing.
 
+**A cached `apt-get upgrade` layer is as old as the last Dockerfile change.**
+The CI build ran with a GHA layer cache, so the upgrade layer — the one thing
+that closes the CVEs a scanner can act on — was reused for weeks while Debian
+moved on. The day Debian shipped a perl-base fix, Trivy failed the build for
+a fix the Dockerfile already applies. The image job builds with `no-cache`
+now; it costs ten seconds. If a cache ever comes back, the apt layer must be
+outside it.
+
 **Non-ASCII logs bring the handler down on Windows.** The console is cp1252.
 `setup_logging` forces the streams to UTF-8; in scripts use
 `PYTHONIOENCODING=utf-8`.

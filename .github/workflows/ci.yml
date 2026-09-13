@@ -102,16 +102,22 @@ jobs:
 
       # There is no login and no secret in this job — and all the code that
       # runs during the build (pip, RUN from the Dockerfile) runs right here.
+      #
+      # No layer cache, on purpose. The `apt-get upgrade` layer is what closes
+      # the CVEs the scanner can do something about, and a cached copy of it
+      # is exactly as old as the last time the Dockerfile changed: Debian
+      # shipped a perl-base fix, the cached layer still had the old one, and
+      # the scan below failed the build for a fix the Dockerfile already
+      # applies. The whole build takes ten seconds; the cache bought nothing.
       - name: Build into an archive
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           push: false
+          no-cache: true
           outputs: type=docker,dest=${{ runner.temp }}/image.tar
           tags: hltv-notificator:ci
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           # The docker exporter cannot do provenance attestations; what the
           # image was built by is attested by the cosign signature in the
           # publish job.
