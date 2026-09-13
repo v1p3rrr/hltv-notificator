@@ -169,7 +169,16 @@ class LiveFrame:
         thirteen rounds decided (9:4). Where the score came from HLTV does not
         say; what matters is that a frame that breaks this is not evidence
         about this map, and everything that reads frames must ignore it whole.
+
+        With no round number at all (absent, or 0 — every recorded frame says
+        at least 1) there is nothing to judge by, and the frame passes: the
+        guard refuses only what it can prove. Reading a missing counter as
+        round 0 would discard every frame of every map the moment HLTV
+        dropped the field, which is a different failure from the one this
+        exists for.
         """
+        if self.current_round <= 0:
+            return True
         return self.ct_score + self.t_score <= self.current_round
 
 

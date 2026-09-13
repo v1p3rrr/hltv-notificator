@@ -617,6 +617,15 @@ fixed is the total instead (`LIVE_EDIT_BUDGET`, ten a second): a hundred people
 still get the configured ten seconds, three hundred get thirty. A card that
 updates more slowly is honest; one stuck on a five-minute-old score is not.
 
+**A frame the throttle skips is drawn at the trailing edge, not dropped.** The
+feed can fall silent right after the frame that mattered — half time, a
+pause, the last round before a break — and a skipped frame with no successor
+left the card showing the previous round for as long as the silence lasted.
+So the throttle records how long it asked the skipped frame to wait, and
+`_draw` sleeps that out and draws it, unless a newer frame arrives first (it
+simply takes the slot) or `_settle` says stop — the sleep is an event wait,
+so the final edit and shutdown never sit through it.
+
 ## Thresholds that differ per person
 
 `MULTIKILL_THRESHOLD` and `COMEBACK_ROUNDS` are matters of taste — a four-kill

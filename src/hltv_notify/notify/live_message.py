@@ -55,6 +55,12 @@ class LiveMessenger:
         # drawing it. See `submit`.
         self._pending: Dict[int, dict] = {}
         self._drawing: Dict[int, asyncio.Task] = {}
+        # How long the throttle asked the last skipped redraw to wait, per
+        # match, and the event that cuts that wait short. See `_draw`: a
+        # skipped frame is redrawn at the trailing edge rather than dropped,
+        # because the feed can fall silent right after it.
+        self._held: Dict[int, float] = {}
+        self._nudge: Dict[int, asyncio.Event] = {}
         # The newest snapshot SEEN per match, drawn or not. The feed path never
         # reads it; it exists for `absorb`, which runs from the queue's task
         # and needs the score as of now, not as of the last edit that got
@@ -163,10 +169,14 @@ class LiveMessenger:
         the card would leave the message posted and its id unsaved, and the
         next start would open a second card for the same map. The pending
         snapshot is dropped first, so the draw stops after the round it is
-        already in.
+        already in — and a draw sleeping out the throttle is woken and told
+        to stop, so nobody waits ten seconds for a redraw that will not run.
         """
         self._pending.pop(match_id, None)
         task = self._drawing.pop(match_id, None)
+        nudge = self._nudge.get(match_id)
+        if nudge is not None:
+            nudge.set()
         if task is not None and not task.done():
             try:
                 await task
@@ -180,11 +190,31 @@ class LiveMessenger:
             snapshot = self._pending.pop(match_id, None)
             if snapshot is None:
                 return
+            self._held.pop(match_id, None)
             try:
                 await self.update(match_id, snapshot)
             except Exception:  # noqa: BLE001 - the card must not kill the feed
                 log.exception("live message for match %s could not be redrawn",
                               match_id)
+            held = self._held.pop(match_id, None)
+            if held is None or match_id in self._pending:
+                # Drawn, or a newer frame is already waiting: no trailing edge.
+                continue
+            # The throttle skipped this frame. Dropping it was wrong: the feed
+            # can fall silent right after it — half time, a pause, the last
+            # round before a break — and the card would then show the previous
+            # round for as long as the silence lasts. So the frame is held and
+            # drawn once the interval has passed, unless something newer
+            # arrives first (it simply takes the slot) or `_settle` says stop.
+            nudge = self._nudge[match_id] = asyncio.Event()
+            try:
+                await asyncio.wait_for(nudge.wait(), held)
+                return              # settled: the final edit takes over
+            except asyncio.TimeoutError:
+                pass
+            finally:
+                self._nudge.pop(match_id, None)
+            self._pending.setdefault(match_id, snapshot)
 
     async def close(self) -> None:
         """Let what is being drawn finish, briefly, and then drop it.
@@ -200,6 +230,8 @@ class LiveMessenger:
         timer behind us. A stale score frame that does not make it is no loss.
         """
         self._pending.clear()
+        for nudge in list(self._nudge.values()):
+            nudge.set()             # a draw sleeping out the throttle stops now
         tasks = [task for task in self._drawing.values() if not task.done()]
         self._drawing.clear()
         if not tasks:
@@ -263,6 +295,10 @@ class LiveMessenger:
                 return None
             if row is not None and row["telegram_message_id"] is not None:
                 if not await self._drop(chat_id, row):
+                    # `_settle` dropped whatever the feed had waiting; the
+                    # rebuild that would have drawn it is not happening, so
+                    # the frame goes back to the ordinary path.
+                    self.submit(match_id, snapshot)
                     return None
             text = fmt.render_live(fmt.orient(snapshot, for_team_id),
                                    team_name=self.config.team_name,
@@ -280,6 +316,7 @@ class LiveMessenger:
                 log.warning("the live card of match %s could not be rebuilt for "
                             "%s: %s", match_id, chat_id, exc)
                 self._last_edit.pop(key, None)
+                self.submit(match_id, snapshot)
                 return None
             self._last_edit[key] = time.monotonic()
             self.storage.save_live_message(
@@ -384,8 +421,12 @@ class LiveMessenger:
             # the machine's boot, so on a freshly started host zero looks like
             # a very recent edit and the redraw would be skipped.
             last = self._last_edit.get(key)
-            if last is not None and time.monotonic() - last < (
-                    self._interval(0) if interval is None else interval):
+            wait = self._interval(0) if interval is None else interval
+            if last is not None and time.monotonic() - last < wait:
+                # Skipped, but not forgotten: `_draw` redraws the frame once
+                # the interval is out, in case no newer one comes.
+                remaining = wait - (time.monotonic() - last)
+                self._held[match_id] = max(self._held.get(match_id, 0.0), remaining)
                 return True
 
         # Everything that decides which message this card IS, and then writes
@@ -405,12 +446,15 @@ class LiveMessenger:
                                    team_name=self.config.team_name,
                                    announces_start=announces_start,
                                    banner=(row["banner"] or "") if row is not None else "")
-            if row is not None and row["last_text"] == text and not finalize:
+            message_id = row["telegram_message_id"] if row is not None else None
+            if (message_id is not None and row["last_text"] == text
+                    and not finalize):
                 # The score has not changed — an edit with the same text only
-                # spends the rate limit.
+                # spends the rate limit. Only when there IS a message: after a
+                # delete whose re-send failed the row still holds the old text
+                # with no id, and "unchanged" would then mean "never re-created".
                 self._last_edit[key] = time.monotonic()
                 return True
-            message_id = row["telegram_message_id"] if row is not None else None
 
             if self.config.dry_run or self.telegram is None:
                 reason = "DRY_RUN" if self.config.dry_run else "Telegram not configured"

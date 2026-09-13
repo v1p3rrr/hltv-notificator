@@ -371,8 +371,12 @@ def test_a_failed_send_after_the_delete_leaves_no_ghost_id(tmp_path):
     storage = fresh_storage(tmp_path)
 
     class Broken(FakeTelegram):
+        """The one send right after the delete fails; everything else works."""
+        failed = False
+
         async def send_message(self, chat_id, text, reply_markup=None):
-            if self.deleted:
+            if self.deleted and not self.failed:
+                self.failed = True
                 raise TelegramError("Telegram 500", retry_after=None)
             return await super().send_message(chat_id, text)
 
@@ -380,22 +384,24 @@ def test_a_failed_send_after_the_delete_leaves_no_ghost_id(tmp_path):
     config = live_config()
     messenger = LiveMessenger(storage, config, telegram)
     notifier = Notifier(storage, config, telegram, live_messenger=messenger)
-    asyncio.run(messenger.update(MATCH_ID, snapshot()))
-    notifier.enqueue(half_time())
-    drain(notifier)
+    async def scenario():
+        await messenger.update(MATCH_ID, snapshot())
+        notifier.enqueue(half_time())
+        await notifier._drain()
+        row = storage.live_message(CHAT, MATCH_ID, 1)
+        assert row["banner"] is None
+        assert storage.pending_count() == 0     # went plain, right after
+        assert "sides swap" in telegram.sent[-1]
+        # The frame is handed back, and the redraw is not held back by the
+        # throttle: there is no card left to edit, and a chat with the
+        # milestone but no score under it is worse than one extra call.
+        await asyncio.sleep(0.05)
 
+    asyncio.run(scenario())
     row = storage.live_message(CHAT, MATCH_ID, 1)
-    assert row["telegram_message_id"] is None
+    assert row["telegram_message_id"] == telegram.sent_ids[-1]
     assert row["banner"] is None
-    assert storage.pending_count() == 1     # the queue will try again
-
-    # And the next redraw is not held back by the throttle: there is no card
-    # left to edit, and a chat with the milestone but no score under it is
-    # worse than one extra call.
-    assert (CHAT, MATCH_ID, 1) not in messenger._last_edit
-    telegram.deleted.clear()                 # the fake sends again
-    asyncio.run(messenger.update(MATCH_ID, snapshot(score=(7, 6), rnd=14)))
-    assert storage.live_message(CHAT, MATCH_ID, 1)["telegram_message_id"] == telegram.sent_ids[-1]
+    assert "<b>6:6</b>" in telegram.sent[-1]     # a fresh card, below the milestone
     storage.close()
 
 
@@ -617,4 +623,29 @@ def test_the_machine_puts_streams_on_a_map_point_and_an_overtime_only(tmp_path, 
     assert by_type["E12"].payload["streams"] == []
     assert by_type["E11"].payload["streams"] == [stream()]
     assert by_type["E13"].payload["streams"] == [stream()]
+    storage.close()
+
+
+def test_a_refused_rebuild_hands_the_frame_back(tmp_path, monkeypatch):
+    """`absorb` settles the draw in flight, which drops the frame it was about
+    to draw. If the rebuild then does not happen, that frame must not be lost
+    with it — at half time it is the last one for a minute."""
+    from hltv_notify.notify import live_message
+    monkeypatch.setattr(live_message, "HARD_MIN_EDIT_SECONDS", 0.05)
+    storage = fresh_storage(tmp_path)
+    telegram = FakeTelegram(fail_delete=True)
+    config = live_config()
+    messenger = LiveMessenger(storage, config, telegram)
+    notifier = Notifier(storage, config, telegram, live_messenger=messenger)
+
+    async def scenario():
+        await messenger.update(MATCH_ID, snapshot(score=(6, 5), rnd=12))
+        messenger.submit(MATCH_ID, snapshot(score=(6, 6), rnd=12, state="ended"))
+        notifier.enqueue(half_time())
+        await notifier._drain()                       # delete refused → plain
+        assert "sides swap" in telegram.sent[-1]
+        await asyncio.sleep(0.2)                      # the held frame is drawn
+
+    asyncio.run(scenario())
+    assert telegram.edited and "<b>6:6</b>" in telegram.edited[-1][1]
     storage.close()

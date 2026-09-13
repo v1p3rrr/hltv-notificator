@@ -431,6 +431,16 @@ banner is COALESCEd the same way — a redraw passes None and keeps it — and i
 written only WITH a successful send, so a failed rebuild leaves neither a
 ghost id nor a banner the chat never saw.
 
+**A throttled frame is held, not dropped.** `_update_one` returning True on
+the throttle used to be the end of that snapshot; when the feed then went
+quiet (half time, a pause) the card sat a round behind until the next frame.
+`_draw` now sleeps out the remaining interval and draws it — through an
+Event, so `_settle` and `close` can cut the sleep short; never a bare sleep,
+or the final edit waits ten seconds. And the "same text" shortcut applies
+only when the row HAS a message id: after a delete whose re-send failed the
+row keeps the old text with no id, and "unchanged" then meant "never
+re-created".
+
 **A frame whose score the round cannot hold is discarded WHOLE, before
 anything reads it.** Seen live: a fresh map's first frame said round 1, 9:4,
 `ended`. The card opening on it was the visible half; `apply()` would also
@@ -439,7 +449,10 @@ tested it for a map point and a half, and advanced `live_map_name` so the
 real first round no longer looked like the start. `LiveFrame.coherent` is
 `ct + t <= currentRound` — `<=`, never equality, because `freezePeriod`
 keeps the ended round's number with its score — measured on 4005 recorded
-frames with no exception. Do not narrow the guard to the card.
+frames with no exception. Do not narrow the guard to the card. And it refuses
+only what it can PROVE: a frame with no round number (0) passes, because
+reading a missing counter as round 0 would discard every frame of every map
+the day HLTV drops the field.
 
 **The live card must not be awaited by the frame loop.** It is one message
 per subscriber; a hundred of them is ten seconds of sequential calls with no
@@ -696,7 +709,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 693 tests
+python -m pytest                                    # 699 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

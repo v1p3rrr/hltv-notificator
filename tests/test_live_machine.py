@@ -618,3 +618,15 @@ def test_no_recorded_frame_is_incoherent(name):
     from hltv_notify.replay import frames
     seen = [f for f in frames(FIXTURES / name)]
     assert seen and all(f.coherent for f in seen)
+
+
+def test_no_round_number_means_nothing_to_judge_by(storage, config):
+    """The guard refuses only what it can prove. Read a missing counter as
+    round 0 and every frame with a score on the board would be discarded the
+    day HLTV drops the field — a different failure from the one it exists for."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    blind = frame("de_mirage", ours=7, theirs=5, rnd=0)
+    assert blind.coherent
+    assert m.snapshot(MATCH_ID, blind) is not None

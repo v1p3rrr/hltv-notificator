@@ -380,3 +380,79 @@ def test_close_gives_a_redraw_a_moment_before_dropping_it(messenger):
     assert len(telegram.sent) == 1
     row = storage.live_message(CHAT, MATCH_ID, 1)
     assert row is not None and row["telegram_message_id"] is not None
+
+
+# ---------- the trailing edge: a throttled frame is not lost ----------
+
+def test_a_throttled_frame_is_drawn_once_the_interval_is_out(messenger, monkeypatch):
+    """The feed can fall silent right after the frame the throttle skipped —
+    half time, a pause — and the card would then show the previous round for
+    as long as the silence lasts. So the skipped frame is held and drawn when
+    the interval runs out, unless something newer arrives first."""
+    from hltv_notify.notify import live_message
+    monkeypatch.setattr(live_message, "HARD_MIN_EDIT_SECONDS", 0.05)
+    m, telegram, storage = messenger
+
+    async def scenario():
+        await m.update(MATCH_ID, snapshot(score=(5, 6), rnd=12))     # the card
+        m.submit(MATCH_ID, snapshot(score=(6, 6), rnd=12))           # skipped
+        await asyncio.sleep(0.01)
+        assert telegram.edited == []                                  # throttled
+        await asyncio.sleep(0.15)                                     # ... silence
+
+    asyncio.run(scenario())
+    assert len(telegram.edited) == 1
+    assert "<b>6:6</b>" in telegram.edited[-1][1]
+
+
+def test_a_newer_frame_takes_the_held_slot(messenger, monkeypatch):
+    from hltv_notify.notify import live_message
+    monkeypatch.setattr(live_message, "HARD_MIN_EDIT_SECONDS", 0.05)
+    m, telegram, storage = messenger
+
+    async def scenario():
+        await m.update(MATCH_ID, snapshot(score=(5, 6), rnd=12))
+        m.submit(MATCH_ID, snapshot(score=(6, 6), rnd=12))
+        await asyncio.sleep(0.01)
+        m.submit(MATCH_ID, snapshot(score=(6, 6), rnd=13))           # newer
+        await asyncio.sleep(0.15)
+
+    asyncio.run(scenario())
+    assert len(telegram.edited) == 1
+    assert "round 13" in telegram.edited[-1][1]
+
+
+def test_settling_does_not_wait_out_the_throttle(messenger):
+    """`finalize` waits for the draw in flight; a draw sleeping out a ten-second
+    interval must not make it wait ten seconds, and must not redraw after."""
+    import time
+    m, telegram, storage = messenger
+
+    async def scenario():
+        await m.update(MATCH_ID, snapshot(score=(12, 6), rnd=19))
+        m.submit(MATCH_ID, snapshot(score=(12, 7), rnd=20))          # held ~5 s
+        await asyncio.sleep(0.01)
+        started = time.monotonic()
+        await m.finalize(MATCH_ID, snapshot(score=(13, 7), rnd=20))
+        assert time.monotonic() - started < 1.0
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+    assert [text for _, text in telegram.edited if "<b>12:7</b>" in text] == []
+    assert storage.live_message(CHAT, MATCH_ID, 1)["finalized"] == 1
+    assert m._drawing == {} and m._nudge == {}
+
+
+def test_close_does_not_wait_out_the_throttle(messenger):
+    import time
+    m, telegram, storage = messenger
+
+    async def scenario():
+        await m.update(MATCH_ID, snapshot(score=(12, 6), rnd=19))
+        m.submit(MATCH_ID, snapshot(score=(12, 7), rnd=20))
+        await asyncio.sleep(0.01)
+        started = time.monotonic()
+        await m.close()
+        assert time.monotonic() - started < 1.0
+
+    asyncio.run(scenario())
