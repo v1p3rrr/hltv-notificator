@@ -399,52 +399,47 @@ cleared and the stale score became the card's last text. `_settle` waits
 (never cancels: a cancel inside `send_message` loses the message id and the
 next start opens a second card).
 
-**"Something was sent below the card" is a COUNTER, not a flag.** The card is
-deleted and re-sent after E11/E12/E13 so it stays the last message, and that takes
-a moment. A boolean cleared at the end of the move erases a burial that arrived
-during it, and the card then sits above that message for the rest of the map.
-`bury_seq` is incremented; the move writes back into `posted_seq` the value it
-READ. Same shape as the `finalized` race `_settle` exists for.
+**A milestone goes INTO the card, and its body comes from `_latest`, never
+from `last_text`.** E11/E12/E13 are handed to the card by the queue
+(`absorb`): the card is deleted and sent again with the milestone's banner on
+top. The body is rendered from the newest snapshot in MEMORY. The card used to
+be re-sent from the stored text instead, and that text is stale at exactly
+that moment by construction: the frame that produced the milestone went to
+`submit`, and the edit throttle dropped its redraw as designed — so the chat
+read "Map point 8:12" with the card under it saying 8:11. `submit` records
+`_latest` whether or not it draws. And when there is no snapshot of that map
+in memory (a restart, a late milestone), the milestone goes PLAIN; falling
+back to the stored text would bring the defect back through a side door.
 
-**The card is moved by the QUEUE, not by the feed.** The obvious trigger — the
-next redraw — fails at exactly the moment it is needed: half time is when the
-feed falls silent, so the card would stay above the half-time message for a
-minute. `_drain_chat` calls `repost_buried` after delivering a chat's messages,
-which also gives the ordering for free, since that loop serves one chat in
-order. `_update_one` keeps a copy of the logic as a safety net for a restart,
-but it must NOT call `_settle` — it runs inside `_draw` and would wait on
-itself.
-
-**The card's whole write path is under `_moving`, not just the move.**
-`_drawing` serialises the feed's redraws, but the queue moves cards from its
-OWN task, and between that move's delete and its send the row carries NO
-message id. A redraw reading the row in that window concludes there is no card,
-sends its own, and the map ends with two — one of them an orphan nobody edits
+**`absorb` runs in the QUEUE's task and `_update_one` in the feed's, and one
+lock covers the whole write of both.** Between the delete and the send the
+row carries NO message id; a redraw reading it then concludes there is no
+card, sends its own, and the map ends with two — one an orphan nobody edits
 again. It fires on E11, when the feed is certainly running, so it is the
 ordinary case. Everything read before the lock is stale by definition: re-read
-the row inside it, the id and `finalized` included.
-
-**A move must carry `finalized` through.** `save_live_message` defaults it to
-False and writes `finalized = excluded.finalized`, so a move that omits it
-unfreezes a card frozen while the move was in flight — and the final score is
-then overwritten by later frames. `_buried()` checks `finalized` too, because
-the query that found the card ran before `_settle`.
-
-**Bury only the CURRENT map's card.** `finalize` runs only when the live
-machine emits E6, so a map that ends while the feed is down leaves its card
-unfinalized forever. Burying every unfinalized card of the match drags that
-stale one to the bottom of the chat next to the running map.
-
-**A newly created card owes nothing to an older burial.** It lands at the
-bottom by construction, so its `posted_seq` is caught up on creation. Without
-that it is born already "buried" — after a re-send that failed, say — and the
-next redraw deletes and re-posts the message that had only just appeared.
+the row inside it — the id, `finalized` AND the banner — and render inside
+too, since the banner is part of the row and the queue is what changes it.
+`absorb` may `_settle` first (it is the queue's task); `_update_one` must NOT
+— it runs inside `_draw` and would wait on itself.
 
 **A deleted card must have its id forgotten before the re-send.**
 `save_live_message` COALESCEs `telegram_message_id`, so writing NULL through it
 keeps the old one. If the send after a successful delete fails, the row would
 point at a message that no longer exists and every later redraw would edit a
-ghost. `forget_live_message_id` is a separate write for that reason.
+ghost. `forget_live_message_id` is a separate write for that reason. The
+banner is COALESCEd the same way — a redraw passes None and keeps it — and is
+written only WITH a successful send, so a failed rebuild leaves neither a
+ghost id nor a banner the chat never saw.
+
+**A frame whose score the round cannot hold is discarded WHOLE, before
+anything reads it.** Seen live: a fresh map's first frame said round 1, 9:4,
+`ended`. The card opening on it was the visible half; `apply()` would also
+have fed it to the comeback trajectory, taken highlight baselines from it,
+tested it for a map point and a half, and advanced `live_map_name` so the
+real first round no longer looked like the start. `LiveFrame.coherent` is
+`ct + t <= currentRound` — `<=`, never equality, because `freezePeriod`
+keeps the ended round's number with its score — measured on 4005 recorded
+frames with no exception. Do not narrow the guard to the card.
 
 **The live card must not be awaited by the frame loop.** It is one message
 per subscriber; a hundred of them is ten seconds of sequential calls with no
@@ -701,7 +696,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 682 tests
+python -m pytest                                    # 692 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

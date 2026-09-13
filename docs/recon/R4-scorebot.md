@@ -273,6 +273,33 @@ map.
 a timeout with no data — 45 seconds of silence is normal here, not a sign that
 the feed has died.
 
+**But the boundary is not always that clean.** Seen live on 2026-09-13 (FORZE
+Reload — INOX Division, map 2, Nuke): the first non-warmup frame of the map
+claimed `currentRound: 1, currentRoundState: "ended"` with a score of 9:4 on
+the board — thirteen rounds decided in round 1. Not the previous map's score
+(that was 13:5) and not this map's; where it came from is unknown. The frame
+was not recorded, the service built the map's card on it, and the card opened
+saying "round 1 · round over · 9:4".
+
+The invariant it breaks is measurable: after N rounds at most N are decided,
+so `ctTeamScore + tTeamScore <= currentRound`. Checked on every frame of both
+recordings — 4005 frames — it holds without exception. It is `<=` and not
+equality because of how the round number behaves around a round's end:
+
+| state | `currentRound` | score sum |
+|---|---|---|
+| `started` | N | N − 1 |
+| `ended` | N | N |
+| `freezePeriod` | **N** (still) | N |
+| next `started` | N + 1 | N |
+
+i.e. the freeze period before round N+1 is reported under round N's number,
+with round N's score. The service discards any frame that breaks the
+inequality (`LiveFrame.coherent`). What the round counter does inside an
+overtime is **not** in any recording; if HLTV resets it there, the guard would
+fire on every frame of that overtime, and the WARNING in the log would be the
+first sign.
+
 ## What the feed does not give
 
 - **A signal that a map has ended.** The moment a map ended was caught on

@@ -143,6 +143,12 @@ CREATE TABLE IF NOT EXISTS outbox (
     match_id            INTEGER,
     idempotency_key     TEXT NOT NULL,
     body                TEXT NOT NULL,
+    -- The short form of a milestone the live card absorbs (E11, E12, E13)
+    -- and the map it belongs to. NULL is the type test: a row without a
+    -- banner is delivered as a message of its own, which is also what every
+    -- row queued before the column existed gets.
+    banner              TEXT,
+    map_number          INTEGER,
     status              TEXT NOT NULL DEFAULT 'pending',
     attempts            INTEGER NOT NULL DEFAULT 0,
     next_attempt_utc    TEXT NOT NULL,
@@ -170,12 +176,10 @@ CREATE TABLE IF NOT EXISTS live_messages (
     last_text           TEXT,
     last_edit_utc       TEXT,
     finalized           INTEGER NOT NULL DEFAULT 0,
-    -- The card is meant to be the LAST message in the chat, and a milestone
-    -- of the same map pushes it up. Two counters rather than a flag: the
-    -- re-post takes a second, and a flag cleared afterwards would erase a
-    -- burial that happened during it. Buried iff bury_seq > posted_seq.
-    bury_seq            INTEGER NOT NULL DEFAULT 0,
-    posted_seq          INTEGER NOT NULL DEFAULT 0,
+    -- The last milestone the card absorbed, drawn above the body on every
+    -- redraw. Rendered text, per reader: the stream block in it depends on
+    -- their settings. A new map is a new row, so it is never cleared.
+    banner              TEXT,
     PRIMARY KEY (chat_id, match_id, map_number)
 );
 
@@ -282,15 +286,17 @@ class Storage:
             },
             "outbox": {
                 "chat_id": "TEXT NOT NULL DEFAULT ''",
-                # Rows queued before the upgrade have NULL here and simply
-                # never move a card. The safe direction: a card that stays
-                # where it is beats one that moves for the wrong reason.
                 "event_type": "TEXT",
                 "match_id": "INTEGER",
+                # Rows queued before the upgrade have NULL here and are
+                # delivered as their own message rather than through the
+                # card. The safe direction: a milestone that arrives on its
+                # own beats a card rebuilt for the wrong reason.
+                "banner": "TEXT",
+                "map_number": "INTEGER",
             },
             "live_messages": {
-                "bury_seq": "INTEGER NOT NULL DEFAULT 0",
-                "posted_seq": "INTEGER NOT NULL DEFAULT 0",
+                "banner": "TEXT",
             },
             "subscribers": {
                 "timezone": "TEXT",
@@ -328,6 +334,32 @@ class Storage:
         self._migrate_multikill_keys()
         self._migrate_phase_setting()
         self._migrate_overtime_mutes()
+        self._drop_burial_counters()
+
+    def _drop_burial_counters(self) -> None:
+        """The card no longer moves below a milestone, it absorbs it.
+
+        `bury_seq` and `posted_seq` counted "something was sent below the
+        card" and were read by nothing else; once nothing writes them either,
+        a column that is still there invites somebody to write it and expect
+        an effect. SQLite can only drop a column from 3.35 on, so the failure
+        is swallowed: on an older library the two stay as dead columns, which
+        is harmless — nothing reads them. Its own flag, so the attempt is made
+        once rather than on every start.
+        """
+        if self.get_meta("burial_counters_dropped"):
+            return
+        existing = {row["name"] for row in
+                    self.conn.execute("PRAGMA table_info(live_messages)")}
+        for column in ("bury_seq", "posted_seq"):
+            if column not in existing:
+                continue
+            try:
+                self.conn.execute(f"ALTER TABLE live_messages DROP COLUMN {column}")
+            except sqlite3.OperationalError as exc:
+                log.info("live_messages.%s could not be dropped (%s); it stays, unread",
+                         column, exc)
+        self.set_meta("burial_counters_dropped", iso(utcnow()))
 
     def _migrate_multikill_keys(self) -> int:
         """Take the kill count out of the multikill keys already in the journal.
@@ -1136,12 +1168,18 @@ class Storage:
     # ---------- events and the queue ----------
 
     def record_event(self, *, idempotency_key: str, event_type: str,
-                     match_id: Optional[int], body: str, chat_id: str = "") -> bool:
+                     match_id: Optional[int], body: str, chat_id: str = "",
+                     banner: Optional[str] = None,
+                     map_number: Optional[int] = None) -> bool:
         """Journal plus queue in one transaction. False means the event has
         already been sent.
 
         The journal key includes the recipient: one and the same event can
         concern several subscribers, and each of them must get it exactly once.
+
+        `banner` and `map_number` travel together: a milestone the live card
+        may absorb carries its short form and the map whose card it belongs
+        to. Either missing and the row is delivered as a plain message.
         """
         now = iso(utcnow())
         idempotency_key = f"{chat_id}|{idempotency_key}" if chat_id else idempotency_key
@@ -1154,8 +1192,10 @@ class Storage:
             )
             self.conn.execute(
                 "INSERT INTO outbox (chat_id, event_type, match_id, idempotency_key, "
-                "body, next_attempt_utc, created_utc) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (chat_id, event_type, match_id, idempotency_key, body, now, now),
+                "body, banner, map_number, next_attempt_utc, created_utc) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (chat_id, event_type, match_id, idempotency_key, body,
+                 banner, map_number, now, now),
             )
         except sqlite3.IntegrityError:
             # The key already exists — the event was sent. A normal outcome.
@@ -1325,18 +1365,18 @@ class Storage:
     def save_live_message(self, chat_id: str, match_id: int, map_number: int, *,
                           telegram_message_id: Optional[int], text: str,
                           finalized: bool = False,
-                          posted_seq: Optional[int] = None) -> None:
+                          banner: Optional[str] = None) -> None:
         """The message id survives a restart: otherwise, after a restart, the
         service would start a second live message for the same map.
 
-        `posted_seq` is written only by a re-post, and it is the value that
-        re-post SAW rather than the current `bury_seq`. A burial that lands
-        while the re-post is in flight must survive it — see `bury_live_card`.
+        `banner` is written only when the card absorbs a milestone; a redraw
+        passes None and keeps whatever is there. COALESCEd like the id for
+        that reason — and unlike `finalized`, which every write states.
         """
         self.conn.execute(
             """
             INSERT INTO live_messages (chat_id, match_id, map_number, telegram_message_id,
-                                       last_text, last_edit_utc, finalized, posted_seq)
+                                       last_text, last_edit_utc, finalized, banner)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(chat_id, match_id, map_number) DO UPDATE SET
                 telegram_message_id = COALESCE(excluded.telegram_message_id,
@@ -1344,10 +1384,10 @@ class Storage:
                 last_text     = excluded.last_text,
                 last_edit_utc = excluded.last_edit_utc,
                 finalized     = excluded.finalized,
-                posted_seq    = COALESCE(?, live_messages.posted_seq)
+                banner        = COALESCE(excluded.banner, live_messages.banner)
             """,
             (str(chat_id), match_id, map_number, telegram_message_id, text, iso(utcnow()),
-             1 if finalized else 0, posted_seq or 0, posted_seq))
+             1 if finalized else 0, banner))
 
     def forget_live_message_id(self, chat_id: str, match_id: int,
                                map_number: int) -> None:
@@ -1362,37 +1402,6 @@ class Storage:
             "UPDATE live_messages SET telegram_message_id = NULL "
             "WHERE chat_id = ? AND match_id = ? AND map_number = ?",
             (str(chat_id), match_id, map_number))
-
-    def bury_live_card(self, chat_id: str, match_id: int) -> None:
-        """Something was sent below the card: it is no longer the last message.
-
-        An increment, not a flag. The re-post reads the counter, spends a
-        second deleting and sending, and then writes back the value it read —
-        so a burial arriving inside that second is still ahead and the card
-        moves again. A boolean cleared at the end would erase it, and the card
-        would sit above that message for the rest of the map.
-
-        A finalized card is left alone: the map is over, its final score is
-        meant to stay where it was written. And only the CURRENT map's card is
-        moved, not every unfinalized one: a card is left unfinalized whenever a
-        map ends while the live feed is down (the page emits E6, and only the
-        live worker calls `finalize`), and without this the stale card of a map
-        played an hour ago would be deleted and re-posted at the bottom of the
-        chat next to the running one.
-        """
-        self.conn.execute(
-            "UPDATE live_messages SET bury_seq = bury_seq + 1 "
-            "WHERE chat_id = ? AND match_id = ? AND finalized = 0 "
-            "AND map_number = (SELECT MAX(map_number) FROM live_messages "
-            "                  WHERE chat_id = ? AND match_id = ? AND finalized = 0)",
-            (str(chat_id), match_id, str(chat_id), match_id))
-
-    def buried_live_messages(self, chat_id: str) -> List[sqlite3.Row]:
-        """Cards of this chat that have something below them."""
-        return list(self.conn.execute(
-            "SELECT * FROM live_messages WHERE chat_id = ? AND finalized = 0 "
-            "AND bury_seq > posted_seq AND telegram_message_id IS NOT NULL "
-            "ORDER BY match_id, map_number", (str(chat_id),)))
 
     # ---------- the map lineup ----------
 

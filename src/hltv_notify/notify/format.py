@@ -344,14 +344,21 @@ def render(event: Event, *, team_name: str, tz_name: str,
         played = (payload.get("score_team") or 0) + (payload.get("score_opponent") or 0)
         note = ("Level after the previous one" if overtime
                 else f"{played} rounds played, sides swap")
-        return "\n".join([
+        lines = [
             f"{'🕗' if overtime else '🔄'} <b>{headline}</b>",
             f"{_esc(payload.get('map_name'))} — "
             f"<b>{payload.get('score_team')}:{payload.get('score_opponent')}</b>",
             f"{team} — {opponent}",
             note,
-            _link(url, "Watch the match"),
-        ])
+        ]
+        # Only an overtime carries broadcasts (the half's payload has none),
+        # and the block goes above the link for the same reason as on a
+        # highlight: the thing to tap should be the thing the eye lands on.
+        block = stream_block(payload.get("streams"), stream_prefs)
+        if block:
+            lines.append(block)
+        lines.append(_link(url, "Watch the match"))
+        return "\n".join(lines)
 
     if event.type == "E11":
         ours = payload.get("score_team") or 0
@@ -364,14 +371,18 @@ def render(event: Event, *, team_name: str, tz_name: str,
         leader = team if ours_leading else opponent
         overtime = payload.get("overtime") or 0
         where = f" (overtime {overtime})" if overtime else ""
-        return "\n".join([
+        lines = [
             f"{icon} <b>Map point — {leader}</b>",
             f"{_esc(payload.get('map_name'))} — <b>{ours}:{theirs}</b>{where}",
             f"{team} — {opponent}",
             ("One round from taking the map — and the match"
              if payload.get("decides_match") else "One round from taking the map"),
-            _link(url, "Watch the match"),
-        ])
+        ]
+        block = stream_block(payload.get("streams"), stream_prefs)
+        if block:
+            lines.append(block)
+        lines.append(_link(url, "Watch the match"))
+        return "\n".join(lines)
 
     if event.type == "E6":
         ours = payload.get("score_team")
@@ -471,6 +482,52 @@ def render(event: Event, *, team_name: str, tz_name: str,
     return f"{_esc(event.type)}: {_esc(str(payload))}"
 
 
+# The types the live card absorbs: delivered as a banner on top of the card
+# when the reader has one, as the message above when they do not. Defined here
+# because `render_banner` is what knows how to draw them; the queue imports it
+# rather than keeping a list of its own that could drift by one type.
+CARD_EVENTS = frozenset({"E11", "E12", "E13"})
+
+
+def render_banner(event: Event, *, team_name: str,
+                  for_team_id: Optional[int] = None,
+                  stream_prefs: Optional[StreamPreference] = None) -> str:
+    """The short form of a milestone, for the top of the live card.
+
+    Headline and one line, nothing the card's body already says — the map, the
+    teams, the series and the link are all right below it. The score IS said,
+    on purpose: the banner stays on the card for the rest of the map, and
+    "12:11 · one round from the map" still reads as history under a body that
+    has moved on to 12:12, where a bare "one round from the map" would be a
+    lie. "" for a type the card does not absorb.
+    """
+    if event.type not in CARD_EVENTS:
+        return ""
+    payload = orient(event.payload, for_team_id)
+    team = _esc(payload.get("team_name") or team_name)
+    opponent = _esc(payload.get("opponent") or "TBD")
+    ours = payload.get("score_team") or 0
+    theirs = payload.get("score_opponent") or 0
+
+    if event.type == "E11":
+        ours_leading = ours > theirs
+        icon = "🏁" if ours_leading else "🚨"
+        leader = team if ours_leading else opponent
+        note = ("one round from the map and the match"
+                if payload.get("decides_match") else "one round from the map")
+        lines = [f"{icon} <b>Map point — {leader}</b>", f"{ours}:{theirs} · {note}"]
+    else:
+        overtime = payload.get("overtime") or 0
+        if overtime:
+            lines = [f"🕗 <b>Overtime {overtime} begins</b>", f"{ours}:{theirs}"]
+        else:
+            lines = ["🔄 <b>Half time</b>", f"{ours}:{theirs} · sides swap"]
+    block = stream_block(payload.get("streams"), stream_prefs)
+    if block:
+        lines.append(block)
+    return "\n".join(lines)
+
+
 PICK_LABELS = {
     "team": "our pick",
     "opponent": "their pick",
@@ -486,11 +543,14 @@ ROUND_STATE_LABELS = {
 
 
 def render_live(snapshot: dict, *, team_name: str,
-                announces_start: bool = False) -> str:
+                announces_start: bool = False, banner: str = "") -> str:
     """The live message for one map, updated as the game goes on.
 
     It is deliberately short: it is redrawn every few seconds, and a long text
     turns the chat history into a wall.
+
+    `banner` is the last milestone the card absorbed (`render_banner`), drawn
+    above the body and kept there on every redraw until the map ends.
 
     `announces_start` turns this message into the map's card: it then also
     carries what E5 used to say on its own, and no separate "map started"
@@ -521,4 +581,5 @@ def render_live(snapshot: dict, *, team_name: str,
     if announces_start and snapshot.get("event_name"):
         lines.append(escape(snapshot["event_name"]))
     lines.append(_link(snapshot.get("url") or "", "Match page"))
-    return "\n".join(lines)
+    body = "\n".join(lines)
+    return f"{banner}\n\n{body}" if banner else body

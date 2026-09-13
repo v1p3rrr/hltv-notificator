@@ -135,20 +135,51 @@ def test_new_columns_appear(legacy_db):
     assert {"live_map_name", "page_seen_utc", "regulation_rounds",
             "overtime_rounds"} <= state
     outbox = {row["name"] for row in storage.conn.execute("PRAGMA table_info(outbox)")}
-    # event_type and match_id let the queue tell, at SEND time, whether the
-    # live card has to move below the message it is about to deliver.
-    assert {"chat_id", "event_type", "match_id"} <= outbox
+    # banner and map_number let the queue tell, at SEND time, whether the
+    # live card can absorb the message it is about to deliver.
+    assert {"chat_id", "event_type", "match_id", "banner", "map_number"} <= outbox
     cards = {row["name"] for row in
              storage.conn.execute("PRAGMA table_info(live_messages)")}
-    assert {"bury_seq", "posted_seq"} <= cards
+    assert "banner" in cards
     storage.close()
 
 
-def test_a_row_queued_before_the_upgrade_moves_no_card(legacy_db):
-    """Old outbox rows have no event_type, and must not be guessed at.
+def test_the_burial_counters_are_dropped(tmp_path):
+    """A database from the version that moved the card below a milestone.
 
-    A card that stays where it is beats one that moves for the wrong reason —
-    and there is no match_id on those rows to move the right card anyway.
+    The two counters are read by nothing now, and a column nobody reads is a
+    trap. Dropped where SQLite can (3.35+); tolerated where it cannot, and the
+    database opens either way.
+    """
+    import sqlite3
+    path = tmp_path / "counters.db"
+    storage = Storage(path)
+    storage.close()
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE live_messages ADD COLUMN bury_seq INTEGER NOT NULL DEFAULT 0")
+    conn.execute("ALTER TABLE live_messages ADD COLUMN posted_seq INTEGER NOT NULL DEFAULT 0")
+    conn.execute("DELETE FROM meta WHERE key = 'burial_counters_dropped'")
+    conn.commit()
+    conn.close()
+
+    storage = Storage(path)
+    cards = {row["name"] for row in
+             storage.conn.execute("PRAGMA table_info(live_messages)")}
+    if sqlite3.sqlite_version_info >= (3, 35):
+        assert not ({"bury_seq", "posted_seq"} & cards)
+    assert storage.get_meta("burial_counters_dropped")
+    # And a card can still be written and read back.
+    storage.save_live_message("1", 1, 1, telegram_message_id=5, text="x")
+    assert storage.live_message("1", 1, 1)["telegram_message_id"] == 5
+    storage.close()
+
+
+def test_a_row_queued_before_the_upgrade_is_delivered_plain(legacy_db):
+    """Old outbox rows have no banner, and must not be guessed at.
+
+    A milestone that arrives as its own message beats a card rebuilt for the
+    wrong reason — and there is no map_number on those rows to find the right
+    card anyway.
     """
     storage = Storage(legacy_db)
     storage.conn.execute(
@@ -156,7 +187,7 @@ def test_a_row_queued_before_the_upgrade_moves_no_card(legacy_db):
         "created_utc) VALUES ('1', 'E12:1:map:1:half', 'x', '2020-01-01', '2020-01-01')")
     row = storage.conn.execute(
         "SELECT * FROM outbox ORDER BY id DESC LIMIT 1").fetchone()
-    assert row["event_type"] is None and row["match_id"] is None
+    assert row["banner"] is None and row["map_number"] is None
     storage.close()
 
 

@@ -81,7 +81,7 @@ switched off individually, per team, from the bot.
 | A map started | live feed |
 | A player of a followed team took 4+ kills in one round | live feed |
 | Half time, and the start of every overtime *(off by default)* | live feed |
-| **Map point** — someone is one round from taking the map | live feed |
+| **Map point** — someone is one round from taking the map, with the broadcasts | live feed |
 | **A map finished, with the score** — plus a comeback line when there was one | live feed, confirmed by the page |
 | The match finished, with the result map by map | live feed, confirmed by the page |
 
@@ -105,15 +105,35 @@ why E5 does not arrive as a separate message when the card is enabled. Turn it
 off with `/settings card off` if you would rather have a quiet chat
 (`LIVE_MESSAGE=false` sets that as the default for everybody).
 
-**The card stays at the bottom of the chat.** It is the thing you are actually
-watching, and a message arriving above it would leave you scrolling back for
-the score. So when a milestone of the same map arrives — a map point, or half
-time, and each new overtime — the card is deleted and sent again below it,
-and goes on updating there.
+**The card stays at the bottom of the chat, and the map's milestones go into
+it.** It is the thing you are actually watching, and a message arriving above
+it would leave you scrolling back for the score. So a map point, half time and
+each new overtime do not arrive as a message of their own: the card is deleted
+and sent again with the milestone on top and the score as of that moment, one
+message instead of two, and it goes on updating there with the milestone still
+showing:
 
-Only those two move it. A multikill or a clutch does not: there are several a
-map, and the card would spend the match jumping around. Neither does anything
-about a different match.
+```
+🚨 Map point — Spirit
+11:12 · one round from the map and the match
+┃ 🟣 🇷🇺 GLuck
+┃ 🟣 🇬🇧 caster
+
+🗺 Map 3: Inferno
+Vitality 11:12 Spirit · round 24 · round over
+Series score: 1:1
+BLAST Premier World Final 2026
+Match page
+```
+
+A map point and an overtime bring the broadcasts with them, like a highlight
+does — they are the moments to be watching. Half time does not. With the card
+off (`/settings card off`) the milestone arrives as its own message, as the
+one shown further down.
+
+Only those three go into it. A multikill or a clutch does not: there are
+several a map, and the card would spend the match jumping around. Neither
+does anything about a different match.
 
 ### A highlight comes with somewhere to watch it
 
@@ -250,6 +270,8 @@ Match page
 Inferno — 11:12
 Vitality — Spirit
 One round from taking the map — and the match
+┃ 🟣 🇷🇺 GLuck
+Watch the match
 ```
 
 ```

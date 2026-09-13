@@ -154,6 +154,24 @@ class LiveFrame:
         """The map is being played, not warming up between maps."""
         return self.live and self.round_state != ROUND_WARMUP
 
+    @property
+    def coherent(self) -> bool:
+        """Could this map have produced this score by this round.
+
+        After N rounds at most N are decided, so `ct + t <= currentRound` is a
+        physical invariant of the game — and measured on every frame of both
+        recordings (4005 frames) it holds without exception. It is `<=` and
+        never equality on purpose: a `freezePeriod` frame keeps the number of
+        the round that just ENDED while carrying its score (round 3, 2:1), so
+        the sum equals the round there and is one short of it in `started`.
+
+        Seen live: a fresh map's first non-warmup frame claiming round 1 with
+        thirteen rounds decided (9:4). Where the score came from HLTV does not
+        say; what matters is that a frame that breaks this is not evidence
+        about this map, and everything that reads frames must ignore it whole.
+        """
+        return self.ct_score + self.t_score <= self.current_round
+
 
 def _players(raw) -> Tuple[PlayerLine, ...]:
     """One side's players. `score` in the frame means kills for the map."""

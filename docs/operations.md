@@ -11,9 +11,9 @@
 | E1 new match, E2 reschedule, E3 cancellation | done, from the team page |
 | E4 match started | done, from the match page; waits for the first round while the feed reports a warmup |
 | E7 match finished | done, from the live feed by the map count; the page confirms |
-| E11 map point | done, from the live feed; a separate one for every overtime |
-| E12 half time | done, from the live feed, `/settings half` (default `HALF_ALERTS`), **off by default** |
-| E13 a new overtime begins | done, from the live feed, `/settings overtime` (default `OVERTIME_ALERTS`), **off by default**; separate from E12 because a half comes on every map and an overtime usually does not come at all |
+| E11 map point | done, from the live feed; a separate one for every overtime; carries the broadcast links; goes INTO the live card when the reader has one |
+| E12 half time | done, from the live feed, `/settings half` (default `HALF_ALERTS`), **off by default**; goes into the live card, no broadcast links |
+| E13 a new overtime begins | done, from the live feed, `/settings overtime` (default `OVERTIME_ALERTS`), **off by default**; carries the broadcast links and goes into the live card; separate from E12 because a half comes on every map and an overtime usually does not come at all |
 | E6 map finished with the score | done, **at the winning round** from the live feed; the page confirms |
 | A comeback on the map | done, an extra line on E6, `/settings comeback` (default `COMEBACK_ROUNDS`) |
 | E5 map started | done, from the live feed, once the warmup is over |
@@ -127,26 +127,33 @@ by config. Requests are sequential, with ±20% jitter.
 connection (the equivalent of a websocket), one per active match, not frequent
 polling.
 
-## The card stays at the bottom
+## The card absorbs the map's milestones
 
 The live score card is a fixed message in a moving chat, so anything sent after
-it leaves the reader scrolling back for the score. After a milestone of the
-same map the card is therefore **deleted and sent again** below it, keeping the
-score it had; the next ordinary redraw edits the new message as usual.
+it leaves the reader scrolling back for the score. A milestone of the same map
+therefore goes **into** the card: it is deleted and sent again with the
+milestone's banner on top and the score as of that moment — one message, not
+two — and every later redraw keeps the banner there. A later milestone replaces
+it.
 
-| Moves the card | Does not |
+| Goes into the card | Stays a message of its own |
 |---|---|
-| E11 (map point) | E9 (multikill) and E15 (clutch) — several a map, the card would jump about |
-| E12 (half) and E13 (each new overtime) | anything about a different match |
+| E11 (map point), with the broadcast links | E9 (multikill) and E15 (clutch) — several a map, the card would jump about |
+| E12 (half), E13 (each new overtime, with the links) | anything about a different match |
 | | E5 and E6 — one lives in the card, the other ends it |
 
-The move is triggered by the **queue**, not by the feed, right after it has
-delivered that chat's messages. Half time is precisely when the feed falls
-silent, so a card waiting for the next frame could sit above the message for a
-minute. A burst — a map point and then half time — costs one move, not two.
+The hand-over is done by the **queue**, right where it would have sent the
+message: the body is rendered from the newest frame the service has SEEN, not
+from the text of the last edit that got through the throttle — which at that
+moment is a round behind by construction. Half time is precisely when the feed
+falls silent, and that is fine: the newest frame is the half-time one.
 
-Nothing to configure: `/settings card off` already turns the whole card off,
-and with no card there is nothing to move.
+The milestone arrives as a plain message instead, below the card, when the
+card cannot be rebuilt honestly: the reader has it off (`/settings card off`),
+the map is already over (a milestone delivered late), there is no frame of
+that map in memory yet (a restart between the milestone and the feed's first
+frame), or Telegram refuses to delete the old card. Nothing is lost either
+way; the log says which happened.
 
 ## Settings that are per person
 

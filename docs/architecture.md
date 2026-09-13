@@ -194,6 +194,23 @@ The meaning of the `live` flag is "the map is in play", not "the match is
 running": at the end of a map it stays `true`, and during the next one's warmup
 it becomes `false`.
 
+**A frame whose score the round cannot hold is discarded whole.** After N
+rounds at most N are decided, so `ctTeamScore + tTeamScore <= currentRound`
+is a physical invariant — measured on every frame of both recordings, 4005 of
+them, with no exception. It is `<=` and not equality: a `freezePeriod` frame
+keeps the number of the round that just ended while carrying its score. Seen
+live once, on a fresh map's first non-warmup frame: round 1, `ended`, 9:4.
+Where HLTV got that score is unknowable from here; what matters is that the
+frame was evidence of nothing, and that the card was only the visible thing
+built on it. `apply()` would also have fed it to the comeback trajectory,
+taken the highlight baselines from it, tested it for a map point and a half,
+and advanced the map memo so the real first round no longer looked like the
+start. So `LiveFrame.coherent` is checked before anything reads the frame,
+and an incoherent one is logged at WARNING once per map and dropped. The
+known cost is written down in the limitations: a `currentRound` that HLTV
+reset inside an overtime would blind the feed for the rest of that map, and
+no recording has an overtime to say whether it does.
+
 Details and raw measurements: [recon/R4-scorebot.md](recon/R4-scorebot.md).
 
 ## When a map counts as finished: two sources, different roles
@@ -419,6 +436,18 @@ Both teams get a warning. A map point against us is the more urgent of the two,
 and the message is written from the score, not from a stored "whose": the score
 is turned around for a subscriber who follows the opponent, and a "whose" field
 would not have turned with it.
+
+The warning carries the broadcasts, the same way a highlight does and for the
+same reason: the point is to be watching when the round is played, so the
+thing to tap is in the message. The whole list goes into the payload, and the
+reader's own languages and count pick from it at render time. A new overtime
+(E13) carries them too; the half (E12) does not — it is routine, and nobody
+needs a link to watch a break. Whether a type carries streams is decided in
+the machine alone; the renderer and the queue draw what the payload has.
+
+And when the reader has the live card up, the warning does not arrive as a
+message of its own at all — it goes into the card. See "The card absorbs the
+map's milestones".
 
 ## The live message
 
@@ -729,76 +758,77 @@ A missed slot is caught up for an hour and then abandoned. A restart must not
 cost the morning digest; a container that was down all day must not deliver it
 at bedtime.
 
-## The card follows the conversation down
+## The card absorbs the map's milestones
 
 The card is the message a person watches during a map, and it is a fixed
-message in a chat that keeps moving: a map point or a half-time message pushes
-it out of view and the reader has to scroll back for the score. So after one of
-those the card is deleted and sent again, below.
+message in a chat that keeps moving: a map point or a half-time message would
+push it out of view and the reader has to scroll back for the score. So those
+milestones — E11, E12, E13, `fmt.CARD_EVENTS` — do not arrive as messages of
+their own when the reader has a card. The card is deleted and sent again with
+the milestone's **banner** on top and the score as of that moment underneath:
+one message where there used to be two, and it is the last thing in the chat.
+Every later redraw keeps the banner (it is stored on the card's row); a later
+milestone replaces it.
 
-Three decisions in that, none of them obvious.
+This is the second time a message has been folded into the card, and for the
+same reason E5 was: the card goes straight to Telegram while events wait in
+the queue, so anything that must sit beside the score is better off inside it.
 
-**The trigger is the queue, not the feed.** The natural place would be the next
-redraw — the feed brings frames several times a second, and the card is drawn
-from them. But half time is exactly when the feed falls silent (`FeedIdle`,
-and the whole break between maps passes the same way), so the card could sit
-above the half-time message for a minute. Instead `_drain_chat` calls
-`repost_buried` once it has delivered that chat's messages. That also settles
-the ordering for free: `_drain_chat` is the loop that serves one chat strictly
-in order, so the card is guaranteed to land BELOW what buried it. Awaiting it
-there is safe — the rule the card must not hold up is the FEED loop, and this
-is the queue's task.
+**The body comes from memory, never from the stored text.** The card used to
+be moved below the milestone by re-sending `last_text` from the database, and
+that produced the defect that motivated the rewrite: "Map point — 8:12" with
+the card right under it saying 8:11, one round behind. Not a race — the frame
+that produced the milestone had been submitted for a redraw, and the edit
+throttle dropped that redraw exactly as designed. The stored text is therefore
+stale by construction at the one moment it is wanted. `LiveMessenger._latest`
+keeps the newest snapshot per match, written by `submit` (throttled or not)
+and by `update`, and the rebuild renders from it. Half time, when the feed
+falls silent, is no problem: the newest frame is the half-time frame.
 
-**Two counters, not a flag.** `bury_seq` is incremented when something is sent
-below the card; the move writes back into `posted_seq` the value it READ, and
-the card is buried while `bury_seq > posted_seq`. A boolean cleared at the end
-of the move would erase a burial that arrived during it — the delete and the
-send take a moment — and the card would sit above that message for the rest of
-the map. Same class of bug as the `finalized` race that `_settle` exists for.
+**The hand-over is the queue's.** `Notifier._deliver` asks the card first
+(`absorb`) and sends the plain body only when the card answers "not this way".
+That keeps the per-chat ordering where it always was, and marks the milestone
+sent with the card's new message id — the journal is unchanged. Rendered
+twice at enqueue, banner and plain body, because which form goes out is only
+known at delivery: rows queued before the columns existed carry NULL and go
+plain, which is also the safe direction.
 
-**The text comes from the database.** `repost_buried` re-sends `last_text`
-rather than rendering a fresh snapshot, which is what lets it run with no feed
-at all. The feed-driven half (`_update_one`, the safety net for a restart or a
-failed queue-side attempt) does have a fresh score in hand, so there it deletes
-and re-creates with it — going through the stored text would cost a third call
-to edit it straight afterwards.
+**When the card says "not this way".** The milestone then arrives as its own
+message and the card stays where it is, edited as before:
 
-Only the CURRENT map's card is moved, not every unfinalized one. A card is
-left unfinalized whenever a map ends while the feed is down — `finalize` runs
-only when the LIVE machine emits E6, and a map decided from the page never
-reaches it — so without that restriction the stale card of a map played an hour
-ago would be dragged to the bottom of the chat beside the running one.
+* nothing is really sent (DRY_RUN, no Telegram);
+* the chat gets no card — `/settings card off`, the pause — answered by
+  `_recipients`, the one place that knows (rebuilding a card means SENDING
+  one, so it answers to the same rules as every other delivery);
+* there is no snapshot of that map in memory: a restart between the milestone
+  and the feed's first frame, or a milestone delivered after its map ended.
+  Falling back to the stored text here would bring the stale-score defect back
+  through a side door;
+* the card is finalized — the map is over and its final score stays put;
+* Telegram refuses to delete the old card (too old, the bot lost the right).
 
-Moving a card means SENDING one, so `repost_buried` answers "who gets this"
-through `_recipients` like every other delivery path: the pause and
-`/settings card off` are decided in one place, and a row left over from before
-someone switched the card off is not re-sent to them.
+**One lock per card, around the whole write.** The queue rebuilds a card from
+its own task, and between its delete and its send the row carries no message
+id at all. A redraw reading the row in that window would conclude there is no
+card, send its own, and the map would end with two — the rebuilt one plus an
+orphan nobody edits again. So `_update_one` takes `_move_lock` before it
+decides which message the card IS and holds it through the send or edit and
+the write; the row is re-read inside, `finalized` included, and the render
+happens inside too, because the banner is part of the row and the queue is
+what changes it. `absorb` waits for a redraw in flight (`_settle`) before
+taking the lock; that is safe because it runs in the queue's task, never
+inside `_draw`.
 
-Which types move it is a short list, `outbox.BURYING`: E11, E12 and E13. E9
-and E15 are deliberately absent — there are several a map, and a card that
-deletes and re-posts itself after each would spend the budget jumping around.
-Events about other matches are absent for the same reason in reverse: moving
-this card for them would be noise, and with two matches live in one chat only
-one card can be last anyway.
+A delete that succeeds is written to the database (`forget_live_message_id`)
+before the send is attempted, because `save_live_message` COALESCEs the
+message id — without that, a failed send would leave the row pointing at a
+message that no longer exists and every later redraw would edit a ghost. When
+that send fails the milestone simply goes plain and lands above the card the
+next redraw creates, which is the right order.
 
-**One lock per card, around the whole write.** Not only around the move: the
-queue can be moving a card right now, and between its delete and its send the
-row carries no message id at all. A redraw reading the row in that window would
-conclude there is no card and send its own, and the map would end with two —
-the deleted-and-re-sent one plus an orphan nobody ever edits again. So
-`_update_one` takes `_move_lock` before it decides which message the card IS
-and holds it through the send or edit and the write. The row is re-read inside,
-because everything read before waiting may be stale, `finalized` included: a
-map that ends mid-move must not have its freeze cleared by the write that
-follows.
-
-Failure is handled by giving up rather than retrying. Telegram refuses deletes
-it considers impossible; `posted_seq` is advanced anyway so the card goes back
-to being edited in place, instead of every frame attempting the same delete.
-And a delete that succeeds is written to the database (`forget_live_message_id`)
-before the send is attempted, because `save_live_message` COALESCEs the message
-id — without that, a failed send would leave the row pointing at a message that
-no longer exists and every later redraw would edit a ghost.
+E9 and E15 are deliberately not on the list — there are several a map, and a
+card that rebuilds itself after each would spend the budget jumping around.
+Events about other matches are absent for the same reason in reverse.
 
 ## Who a notification goes to
 

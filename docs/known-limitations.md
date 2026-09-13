@@ -302,20 +302,29 @@ already being read for the score. It is worth knowing only because "I raised my
 threshold, so the service does less" is a reasonable thing to assume, and it is
 not true.
 
-## Moving the card down loses the intermediate copies
+## Rebuilding the card for a milestone loses the intermediate copies
 
-The card is deleted and sent again after a map point or half time, so the chat
-history keeps only the last one. The score at each milestone is not lost — E11
-and E12 quote it, and E6 records the map's final score — but there is no trail
-of the card itself.
+The card is deleted and sent again with the milestone on top, so the chat
+history keeps only the last one — and only the LAST milestone's banner: a map
+point that follows the half replaces it. The score at each milestone is not
+lost — the banner quotes it, and E6 records the map's final score — but there
+is no trail of the card itself.
 
 That is what "always in the last message" costs, and it is the trade the owner
 asked for. `/settings card off` turns the card off entirely if the history
-matters more.
+matters more: the milestones then arrive as messages of their own.
+
+## A milestone right after a restart arrives as its own message
+
+The card's body for a milestone is rendered from the newest frame in memory —
+never from the stored text, which is the one thing guaranteed stale at that
+moment. After a restart there is no frame until the feed reconnects, so a
+milestone the queue delivers in that window goes as a plain message and the
+card is left where it is. Seconds, and the next redraw catches up.
 
 ## Two matches live in one chat cannot both be last
 
-The card is moved for milestones of its own map only, so with two tracked teams
+The card is rebuilt for milestones of its own map only, so with two tracked teams
 playing at the same time the two cards do not fight each other — but only one
 of them can be the bottom message, and the other stays wherever it was. Nothing
 is lost; it is simply not what "always last" suggests.
@@ -324,9 +333,21 @@ is lost; it is simply not what "always last" suggests.
 
 Telegram can decline `deleteMessage` — the message is too old, or the bot lost
 the right in a group. The card then stays in place and is edited as before, and
-the burial is written off rather than retried, so a chat that refuses deletes
-does not get one attempt per frame for the rest of the map. It is logged at
+the milestone arrives below it as a message of its own. It is logged at
 WARNING.
+
+## A frame whose score the round cannot hold is thrown away whole
+
+After N rounds at most N are decided, and every frame of both recordings
+respects that. Seen live once: a fresh map's first frame claiming round 1 with
+9:4 on the board. Such a frame is discarded entirely — no card, no map start,
+no map point, no comeback trajectory — and logged at WARNING once per map.
+
+The cost: if HLTV ever resets `currentRound` inside an overtime while the score
+keeps counting, every frame of that map from then on would be discarded, the
+card would freeze and the map's result would come from the page, minutes late.
+No recording contains an overtime, so this is unverified in both directions;
+the WARNING is what would say so.
 
 ## The stream list is as fresh as the last page poll
 

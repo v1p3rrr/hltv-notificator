@@ -124,8 +124,8 @@ def test_multikill_of_the_second_team_is_shown_from_its_own_side(both, config):
     assert both.canonical_team(MATCH) == ALPHA
 
     live = LiveMachine(both, config)
-    live.apply(MATCH, frame(rnd=9, alpha_score=7, beta_score=4, beta_kills=[("Kaide", 2)]))
-    events = live.apply(MATCH, frame(rnd=9, alpha_score=7, beta_score=4, state="ended",
+    live.apply(MATCH, frame(rnd=12, alpha_score=7, beta_score=4, beta_kills=[("Kaide", 2)]))
+    events = live.apply(MATCH, frame(rnd=12, alpha_score=7, beta_score=4, state="ended",
                                      beta_kills=[("Kaide", 6)]))
     e9 = next(e for e in events if e.type == "E9")
     assert e9.payload["team_id"] == BETA

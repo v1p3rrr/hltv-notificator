@@ -78,6 +78,10 @@ class LiveMachine:
         # survives feed reconnects, and a restart in the middle of a map can
         # understate a comeback but never invent one.
         self._comeback: Dict[str, ComebackTracker] = {}
+        # Maps on which an incoherent frame has already been reported. The
+        # first one is a WARNING with the numbers; the hundreds that repeat
+        # the same score are not worth a line each.
+        self._incoherent: set = set()
 
     def _threshold(self, name: str) -> int:
         """The lowest threshold any subscriber is waiting for.
@@ -133,6 +137,8 @@ class LiveMachine:
 
         map_name = normalize_map_name(frame.map_name)
         if not map_name:
+            return []
+        if not self._coherent(match_id, frame, map_name):
             return []
 
         recorded = {row["map_name"]: row["map_number"]
@@ -219,6 +225,9 @@ class LiveMachine:
         map_name = normalize_map_name(frame.map_name)
         if not map_name:
             return None
+        if not frame.coherent:
+            # Already reported by apply(), which sees every frame first.
+            return None
         recorded = self.storage.map_results(match_id)
         series = self._series(match_id)
         row = self.storage.get_match(match_id)
@@ -241,6 +250,32 @@ class LiveMachine:
             "event_name": row["event_name"] if row else "",
             "url": row["url"] if row else "",
         }
+
+    def _coherent(self, match_id: int, frame: LiveFrame, map_name: str) -> bool:
+        """Refuse a frame whose score the round count cannot hold.
+
+        Whole, not partially. The frame seen live — round 1, 9:4, `ended` on
+        the first non-warmup frame of a map — did not only open the card with
+        a lie: apply() would have fed it to the comeback trajectory, taken the
+        highlight baselines from it, tested it for a map point and a half, and
+        advanced `live_map_name` so the real first round no longer looked like
+        the start of the map. None of those may see it. `LiveFrame.coherent`
+        has the measurement.
+        """
+        if frame.coherent:
+            return True
+        key = (match_id, map_name)
+        if key not in self._incoherent:
+            self._incoherent.add(key)
+            log.warning("match %s: frame on %s claims %d:%d in round %d (%s) — "
+                        "a score the round cannot hold, frame discarded",
+                        match_id, map_name, frame.ct_score, frame.t_score,
+                        frame.current_round, frame.round_state or "?")
+        else:
+            log.debug("match %s: incoherent frame on %s discarded (%d:%d, round %d)",
+                      match_id, map_name, frame.ct_score, frame.t_score,
+                      frame.current_round)
+        return False
 
     def _highlight_events(self, match_id: int, frame: LiveFrame, map_number: int,
                           map_name: str) -> List[Event]:
@@ -466,6 +501,10 @@ class LiveMachine:
         Both off by default: the live card shows all of this already. Born
         whenever at least one person wants that type; the queue then withholds
         it from the rest.
+
+        An overtime carries the broadcasts, like a highlight does: it is a
+        "come back to the screen" moment. A half is not — it is routine, and
+        nobody needs a link to watch a break.
         """
         if self._warming_up(frame):
             return None
@@ -509,6 +548,7 @@ class LiveMachine:
                 "score_team": ours,
                 "score_opponent": theirs,
                 "overtime": number,
+                "streams": self.storage.match_streams(match_id) if number else [],
             },
         )
 
@@ -554,6 +594,11 @@ class LiveMachine:
         score at render time: the score is turned around for a subscriber who
         follows the opponent, and a separate "whose" field would not turn with
         it.
+
+        The broadcasts ride along as they do on a highlight: the point of the
+        warning is to be watching when the round is played, and the thing to
+        tap should be in the message. The whole list, unpicked — which ones a
+        reader sees is decided at render time from their own settings.
         """
         if self._warming_up(frame) or ours == theirs:
             return None
@@ -589,6 +634,7 @@ class LiveMachine:
                 "round": frame.current_round,
                 "overtime": overtime_number,
                 "decides_match": self._would_decide(match_id, ours > theirs),
+                "streams": self.storage.match_streams(match_id),
             },
         )
 

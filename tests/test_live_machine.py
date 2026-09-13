@@ -559,3 +559,62 @@ def test_the_half_and_the_overtime_are_switched_on_separately(storage, config):
     assert [e.type for e in
             m.apply(MATCH_ID, frame("de_mirage", ours=6, theirs=6, rnd=13))] == ["E12"]
     assert m.apply(MATCH_ID, frame("de_mirage", ours=12, theirs=12, rnd=25)) == []
+
+
+# ---------------------------------------------------------------- a frame the map cannot have produced
+
+def test_a_score_the_round_cannot_hold_is_discarded_whole(storage, config, caplog):
+    """Seen live: a fresh map's first non-warmup frame said round 1, 9:4, ended.
+
+    The card opened on it, and that was the visible half. The invisible half
+    is everything else apply() would have done with the same frame — the
+    comeback trajectory, the highlight baselines, the map-point and half-time
+    checks, and the map memo, which would then have told the real first round
+    "the map has not changed". Nothing may see it.
+    """
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    m.apply(MATCH_ID, frame("de_mirage", ours=13, theirs=5, rnd=18, state="ended"))
+    for _ in range(3):
+        assert m.apply(MATCH_ID, frame("de_nuke", rnd=1, state="warmup", live=False)) == []
+
+    with caplog.at_level("WARNING"):
+        bad = frame("de_nuke", ours=9, theirs=4, rnd=1, state="ended")
+        assert m.apply(MATCH_ID, bad) == []
+        assert m.snapshot(MATCH_ID, bad) is None
+        assert m.apply(MATCH_ID, bad) == []        # hundreds of these follow
+    assert sum("a score the round cannot hold" in r.message for r in caplog.records) == 1
+    assert storage.get_state(MATCH_ID)["live_map_name"] == "Mirage"
+
+    # The real first round, exactly as recorded: started/live=False at 0:0.
+    good = frame("de_nuke", rnd=1, state="started", live=False)
+    events = m.apply(MATCH_ID, good)
+    assert [e.type for e in events] == ["E5"]
+    snapshot = m.snapshot(MATCH_ID, good)
+    assert (snapshot["score_team"], snapshot["score_opponent"], snapshot["round"]) == (0, 0, 1)
+
+
+def test_the_freeze_period_keeps_the_previous_round_and_is_not_incoherent(storage, config):
+    """Round 3's freeze period carries round 3's score under round 3's number
+    (2:1 in round 3): the sum EQUALS the round there, which is why the test
+    is `<=` and not equality."""
+    add_match(storage)
+    m = LiveMachine(storage, config)
+    m.apply(MATCH_ID, frame("de_mirage", rnd=1))
+    assert m.snapshot(MATCH_ID, frame("de_mirage", ours=2, theirs=1, rnd=3,
+                                      state="freezePeriod")) is not None
+    assert m.snapshot(MATCH_ID, frame("de_mirage", ours=2, theirs=1, rnd=2,
+                                      state="ended")) is None
+
+
+@pytest.mark.parametrize("name", ["scorebot-2397053-forze.jsonl.gz",
+                                  "scorebot-2396936-map-boundary.jsonl.gz"])
+def test_no_recorded_frame_is_incoherent(name):
+    """The invariant behind the guard, pinned to the data it was measured on:
+    4005 frames across both recordings, every one of them coherent. A
+    recording that breaks this is a recording that changes the guard."""
+    from conftest import FIXTURES
+    from hltv_notify.replay import frames
+    seen = [f for f in frames(FIXTURES / name)]
+    assert seen and all(f.coherent for f in seen)

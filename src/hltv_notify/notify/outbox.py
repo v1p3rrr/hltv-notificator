@@ -22,16 +22,16 @@ from .telegram import Telegram, TelegramError
 
 log = logging.getLogger(__name__)
 
-# Event types after which the live card is moved back to the bottom of the
-# chat. Only milestones of the map the card is about: they are rare, and the
-# card is what the reader is watching when they arrive.
+# The types the live card absorbs — a map point, the half, an overtime — are
+# `fmt.CARD_EVENTS`, kept beside the function that draws their banner so the
+# two cannot drift by one type. Only milestones of the map the card is about:
+# they are rare, and the card is what the reader is watching when they arrive.
 #
 # E9 (multikill) and E15 (clutch) are deliberately absent — there are several a
 # map, and a card that deletes and re-posts itself after each would spend the
 # rate budget jumping around. Everything else is either about a different match,
-# where moving this card would be noise, or already lives in the card itself
+# where rebuilding this card would be noise, or already lives in the card itself
 # (E5) or ends it (E6).
-BURYING = frozenset({"E11", "E12", "E13"})
 
 # Events about ONE player of one team, rather than about the match. They go to
 # the people following that player's team and nobody else, and they are the two
@@ -73,9 +73,9 @@ class Notifier:
         self.storage = storage
         self.config = config
         self.telegram = telegram
-        # The live card, so the queue can move it back to the bottom after a
-        # milestone of the same map. Optional: the replay tool and most tests
-        # have no card at all.
+        # The live card, so the queue can hand it a milestone of the same map
+        # instead of sending the milestone beside it. Optional: the replay
+        # tool and most tests have no card at all.
         self.live_messenger = live_messenger
         # Which flags stand for which language. Parsed once: the config is
         # frozen for the life of the process, and this is read for every
@@ -95,6 +95,13 @@ class Notifier:
         """
         created = 0
         for chat_id, for_team_id in self._recipients(event):
+            # Their own taste in broadcasts, asked for only when the payload
+            # actually carries streams, which costs two queries per
+            # recipient. Keyed off the payload rather than off a list of
+            # event types: a list would be a fourth thing to keep in step,
+            # and this one cannot drift.
+            stream_prefs = (self._stream_prefs(chat_id)
+                            if event.payload.get("streams") else None)
             body = fmt.render(
                 event, team_name=self.config.team_name,
                 # Everyone has their own timezone: subscribers may live in
@@ -105,22 +112,27 @@ class Notifier:
                 # watched once, at the lowest bar in use; whether the line is
                 # worth printing is decided here, per reader.
                 comeback_threshold=self._threshold(chat_id, "comeback"),
-                # And their own taste in broadcasts. Same reasoning again: one
-                # multikill, many readers, and which streams are worth a tap
-                # is not a property of the event.
-                #
-                # Asked for only when the payload actually carries streams,
-                # which costs two queries per recipient. Keyed off the payload
-                # rather than off a list of event types: a list would be a
-                # fourth thing to keep in step, and this one cannot drift.
-                stream_prefs=(self._stream_prefs(chat_id)
-                              if event.payload.get("streams") else None))
+                # And their own streams. Same reasoning again: one multikill,
+                # many readers, and which are worth a tap is not a property
+                # of the event.
+                stream_prefs=stream_prefs)
+            # A milestone the card absorbs is rendered twice, because which
+            # form is sent is only known at delivery: the banner when this
+            # reader has a card up, the message above when they do not.
+            banner = map_number = None
+            if event.type in fmt.CARD_EVENTS:
+                banner = fmt.render_banner(
+                    event, team_name=self.config.team_name,
+                    for_team_id=for_team_id, stream_prefs=stream_prefs)
+                map_number = event.payload.get("map_number")
             if self.storage.record_event(
                     idempotency_key=event.idempotency_key,
                     event_type=event.type,
                     match_id=event.match_id,
                     body=body,
-                    chat_id=chat_id):
+                    chat_id=chat_id,
+                    banner=banner,
+                    map_number=map_number):
                 created += 1
 
         if created:
@@ -313,30 +325,18 @@ class Notifier:
 
     async def _drain_chat(self, rows, limit: Optional[asyncio.Semaphore],
                           deadline: Optional[float]) -> None:
-        chat_id = (rows[0]["chat_id"] if rows else "") or self.config.main_chat_id
-        moved = False
         if limit is not None:
             await limit.acquire()
         try:
             for index, row in enumerate(rows):
                 if deadline is not None and time.monotonic() >= deadline:
                     return
-                moved |= await self._deliver(row)
+                await self._deliver(row)
                 if index + 1 < len(rows) and self._sending():
                     # The pause goes between messages, not after the last one:
                     # on shutdown a spare second is a second that may be
                     # missing.
                     await asyncio.sleep(SEND_INTERVAL_SECONDS)
-            if moved and self.live_messenger is not None:
-                # Once for the whole batch, not once per message: a map point
-                # followed by half time should cost one move, not two.
-                #
-                # Here rather than anywhere else because this loop is what
-                # serves one chat strictly in order — so the card is guaranteed
-                # to land BELOW the messages that buried it. Awaiting it is
-                # safe: this is the queue's task, and the thing the card must
-                # not hold up is the FEED loop.
-                await self.live_messenger.repost_buried(chat_id)
         finally:
             if limit is not None:
                 limit.release()
@@ -346,44 +346,48 @@ class Notifier:
         the log instead, and neither of the two rates applies to a log."""
         return not (self.config.dry_run or self.telegram is None)
 
-    async def _deliver(self, row) -> bool:
-        """True means this message pushed the live card up and it has to move.
-
-        Answered by the DELIVERY rather than by the enqueue, because that is
-        when the message actually reaches the chat: the queue retries, and a
-        card moved for a message still sitting in the queue would end up above
-        it anyway.
-        """
+    async def _deliver(self, row) -> None:
         if self.config.dry_run or self.telegram is None:
             reason = "DRY_RUN" if self.config.dry_run else "Telegram not configured"
             log.info("[%s] message not sent, contents:\n%s", reason, row["body"])
             self.storage.mark_sent(row["id"], None)
-            return False
+            return
 
         attempts = row["attempts"] + 1
         chat_id = row["chat_id"] or self.config.main_chat_id
+
+        # A milestone of a map goes INTO the card when this reader has one:
+        # the card deletes itself and comes back with the milestone on top
+        # and the score as of now, one message instead of two. Decided at
+        # delivery, not at enqueue — that is when the message actually
+        # reaches the chat, and whether a card is up can change in between.
+        # Rows queued before the columns existed carry NULL and go plain.
+        if (row["banner"] is not None and row["map_number"] is not None
+                and row["match_id"] is not None and self.live_messenger is not None):
+            message_id = await self.live_messenger.absorb(
+                chat_id, row["match_id"], int(row["map_number"]), row["banner"])
+            if message_id is not None:
+                self.storage.mark_sent(row["id"], message_id)
+                log.info("message %s delivered inside the live card (telegram id %s)",
+                         row["id"], message_id)
+                return
+
         try:
             message_id = await self.telegram.send_message(chat_id, row["body"])
         except TelegramError as exc:
             if exc.fatal:
                 log.error("message %s dropped, retrying will not help: %s", row["id"], exc)
                 self.storage.mark_sent(row["id"], None)
-                return False
+                return
             if attempts >= MAX_ATTEMPTS:
                 log.error("message %s not delivered in %d attempts: %s",
                           row["id"], attempts, exc)
                 self.storage.mark_retry(row["id"], attempts, 3600)
-                return False
+                return
             delay = exc.retry_after if exc.retry_after else min(2 ** attempts, 300)
             log.warning("Telegram refused it (%s), retrying in %.0fs", exc, delay)
             self.storage.mark_retry(row["id"], attempts, delay)
-            return False
+            return
 
         self.storage.mark_sent(row["id"], message_id)
         log.info("sent message %s (telegram id %s)", row["id"], message_id)
-
-        # Rows queued before this column existed carry NULL and move nothing.
-        if row["event_type"] in BURYING and row["match_id"] is not None:
-            self.storage.bury_live_card(chat_id, row["match_id"])
-            return True
-        return False
