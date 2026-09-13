@@ -200,6 +200,13 @@ class LiveMessenger:
             if held is None or match_id in self._pending:
                 # Drawn, or a newer frame is already waiting: no trailing edge.
                 continue
+            if self._drawing.get(match_id) is not asyncio.current_task():
+                # `_settle` or `close` let go of this task while it was
+                # drawing: whoever did is about to write the card themselves
+                # (the final edit, a rebuild) and is WAITING for this task.
+                # Sleeping out the interval here would make them wait it out
+                # too — the feed loop with them.
+                return
             # The throttle skipped this frame. Dropping it was wrong: the feed
             # can fall silent right after it — half time, a pause, the last
             # round before a break — and the card would then show the previous
@@ -213,7 +220,11 @@ class LiveMessenger:
             except asyncio.TimeoutError:
                 pass
             finally:
-                self._nudge.pop(match_id, None)
+                # Only our own event: a task that superseded this one may
+                # already be sleeping on its own, and popping THAT would leave
+                # it deaf to the next `_settle`.
+                if self._nudge.get(match_id) is nudge:
+                    del self._nudge[match_id]
             self._pending.setdefault(match_id, snapshot)
 
     async def close(self) -> None:

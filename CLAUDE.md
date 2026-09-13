@@ -436,7 +436,11 @@ the throttle used to be the end of that snapshot; when the feed then went
 quiet (half time, a pause) the card sat a round behind until the next frame.
 `_draw` now sleeps out the remaining interval and draws it — through an
 Event, so `_settle` and `close` can cut the sleep short; never a bare sleep,
-or the final edit waits ten seconds. And the "same text" shortcut applies
+or the final edit waits ten seconds. And before sleeping the task checks it
+is still the registered drawer: `_settle` can let go of it while it is INSIDE
+`update`, where the throttle hit lands after the nudge was sent, and a task
+that sleeps then makes the final edit — and the feed loop behind it — sit
+through the interval. And the "same text" shortcut applies
 only when the row HAS a message id: after a delete whose re-send failed the
 row keeps the old text with no id, and "unchanged" then meant "never
 re-created".
@@ -709,7 +713,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 699 tests
+python -m pytest                                    # 700 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

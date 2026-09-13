@@ -456,3 +456,33 @@ def test_close_does_not_wait_out_the_throttle(messenger):
         assert time.monotonic() - started < 1.0
 
     asyncio.run(scenario())
+
+
+def test_settling_mid_draw_does_not_wait_out_a_throttle_hit_inside_it(messenger):
+    """The draw is in the middle of `update` — one chat's edit in flight, the
+    next chat throttled — when `finalize` settles it. The task must not then
+    go to sleep for the interval: the final edit is waiting for it, and the
+    feed loop is waiting for the final edit."""
+    import time
+    m, telegram, storage = messenger
+    storage.add_subscriber("1")
+    storage.add_subscriber("2")
+
+    async def slow_edit(chat_id, message_id, text, reply_markup=None):
+        await asyncio.sleep(0.05)
+        telegram.edited.append((message_id, text))
+    telegram.edit_message_text = slow_edit
+
+    async def scenario():
+        await m.update(MATCH_ID, snapshot(score=(12, 6), rnd=19))     # both cards
+        m._last_edit[("1", MATCH_ID, 1)] = 0.0                       # chat 1 is due
+        m.submit(MATCH_ID, snapshot(score=(12, 7), rnd=20))         # chat 2 throttled
+        await asyncio.sleep(0.01)                                    # inside the edit
+        started = time.monotonic()
+        await m.finalize(MATCH_ID, snapshot(score=(13, 7), rnd=20))
+        assert time.monotonic() - started < 1.0
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+    assert storage.live_message("2", MATCH_ID, 1)["finalized"] == 1
+    assert m._nudge == {} and m._drawing == {}
