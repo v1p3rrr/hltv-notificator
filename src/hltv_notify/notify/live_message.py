@@ -274,9 +274,12 @@ class LiveMessenger:
             except TelegramError as exc:
                 # The old card is gone and its id already forgotten: the next
                 # redraw creates a fresh one, and the plain message the caller
-                # falls back to lands ABOVE it — the right order.
+                # falls back to lands ABOVE it — the right order. The throttle
+                # is reset so that redraw is not held back: it applies to
+                # EDITS, and there is no card left to edit.
                 log.warning("the live card of match %s could not be rebuilt for "
                             "%s: %s", match_id, chat_id, exc)
+                self._last_edit.pop(key, None)
                 return None
             self._last_edit[key] = time.monotonic()
             self.storage.save_live_message(

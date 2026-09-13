@@ -242,7 +242,13 @@ class Notifier:
             if not wanted:
                 log.debug("event %s is muted for %s", event.type, chat)
                 continue
-            recipients.append((chat, wanted[0]))
+            # A milestone the card absorbs is shown from the SAME side as the
+            # card — its first team — even when that team has the type muted
+            # and the second one is what let it through. The banner sits on
+            # top of the card's body; oriented on the other team it would say
+            # "map point against, 6:12" over a body reading 12:6.
+            side = their_teams[0] if event.type in fmt.CARD_EVENTS else wanted[0]
+            recipients.append((chat, side))
         return recipients
 
     async def run(self, stop: asyncio.Event) -> None:

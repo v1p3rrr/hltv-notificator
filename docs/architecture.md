@@ -793,6 +793,15 @@ twice at enqueue, banner and plain body, because which form goes out is only
 known at delivery: rows queued before the columns existed carry NULL and go
 plain, which is also the safe direction.
 
+**The banner faces the same side as the card.** The queue shows an event from
+the first of the reader's teams that has not muted it; the card is always
+drawn from the reader's FIRST team. For a chat following both teams of one
+match, with the map point muted for the first, those differ — and the banner
+would read "map point for us, 12:6" over a body saying "6:12". So for
+`CARD_EVENTS` the queue orients on the card's team regardless of the mute
+(`Notifier._recipients`); the second team only decides whether the event
+reaches the chat at all.
+
 **When the card says "not this way".** The milestone then arrives as its own
 message and the card stays where it is, edited as before:
 

@@ -388,6 +388,48 @@ def test_a_failed_send_after_the_delete_leaves_no_ghost_id(tmp_path):
     assert row["telegram_message_id"] is None
     assert row["banner"] is None
     assert storage.pending_count() == 1     # the queue will try again
+
+    # And the next redraw is not held back by the throttle: there is no card
+    # left to edit, and a chat with the milestone but no score under it is
+    # worse than one extra call.
+    assert (CHAT, MATCH_ID, 1) not in messenger._last_edit
+    telegram.deleted.clear()                 # the fake sends again
+    asyncio.run(messenger.update(MATCH_ID, snapshot(score=(7, 6), rnd=14)))
+    assert storage.live_message(CHAT, MATCH_ID, 1)["telegram_message_id"] == telegram.sent_ids[-1]
+    storage.close()
+
+
+def test_the_banner_faces_the_same_side_as_the_card(tmp_path):
+    """A chat following BOTH teams of a match, with the map point muted for the
+    first one (Color, id 1 — the card is drawn from the first team's side).
+    The second team lets the milestone through, and the banner used to be
+    oriented on IT: "🏁 map point for us, 12:6" over a body reading
+    "Color 6:12 FORZE Reload"."""
+    storage = fresh_storage(tmp_path)
+    storage.add_subscriber(CHAT)
+    storage.add_team(CHAT, TEAM_ID, "forze", "FORZE Reload")
+    storage.add_team(CHAT, 1, "color", "Color")
+    storage.link_match_team(MATCH_ID, TEAM_ID)
+    storage.link_match_team(MATCH_ID, 1)
+    storage.set_team_mutes(CHAT, 1, ["E11"])
+    telegram = FakeTelegram()
+    config = live_config()
+    messenger = LiveMessenger(storage, config, telegram)
+    notifier = Notifier(storage, config, telegram, live_messenger=messenger)
+    # The machine's snapshot is oriented on the canonical team and carries
+    # both ids, which is what lets the card turn around for Color's follower.
+    live = {**snapshot(score=(12, 6), rnd=19), "team_name": "FORZE Reload",
+            "team_id": TEAM_ID, "opponent_id": 1}
+    asyncio.run(messenger.update(MATCH_ID, live))
+    assert "Color <b>6:12</b> FORZE Reload" in telegram.sent[-1]
+
+    event = map_point()
+    event.payload.update(team_name="FORZE Reload", opponent_id=1)
+    notifier.enqueue(event)
+    drain(notifier)
+    text = telegram.sent[-1]
+    assert text.startswith("🚨 <b>Map point — FORZE Reload</b>\n6:12")
+    assert "Color <b>6:12</b> FORZE Reload" in text
     storage.close()
 
 
