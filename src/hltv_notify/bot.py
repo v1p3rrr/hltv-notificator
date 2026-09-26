@@ -962,8 +962,9 @@ class CommandBot:
         rows = [row for row in self._mine(
                     chat_id, self.matches.active() if self.matches else [])
                 if row["state"] == MatchState.LIVE]
+        waiting = self._late_block(chat_id)
         if not rows:
-            return "No matches right now."
+            return "\n\n".join(["No matches right now."] + waiting)
 
         supervisor = getattr(self.matches, "supervisor", None)
         feeds = supervisor.connected_matches() if supervisor else {}
@@ -991,7 +992,36 @@ class CommandBot:
                              f"{result['score_team']}:{result['score_opponent']}")
             block.append(fmt.escape(row["url"]))
             blocks.append("\n".join(block))
-        return "\n\n".join(blocks)
+        return "\n\n".join(blocks + waiting)
+
+    def _late_matches(self, chat_id: str):
+        """This reader's matches past their time and not started, described.
+
+        `/next` lists what is ahead and `/live` what is being played, and a
+        match whose slot has come without it starting was in neither — so it
+        vanished from the bot at exactly the moment somebody opens it to ask
+        where the match is, which is also the moment HLTV moves it. The window
+        is the one the polling keeps up for (`LATE_START_GRACE_MINUTES`): while
+        a match is listed here, its page is being read every minute.
+        """
+        rows = self._mine(chat_id, self.storage.matches_awaiting_start(
+            grace_minutes=self.config.late_start_grace_minutes))
+        found = digest.describe_matches(self.storage, self.config, chat_id, rows)
+        for one in found:
+            one["late"] = True
+        return found
+
+    def _late_block(self, chat_id: str) -> list:
+        """The late matches as a block of `/live`, or nothing at all."""
+        late = self._late_matches(chat_id)
+        if not late:
+            return []
+        lines = ["⏳ <b>Should have started</b>"]
+        lines += fmt.schedule_lines(late, self._tz(chat_id))
+        lines += ["", f"The match page is read every "
+                      f"{self.config.interval_for('due')} s until it starts; "
+                      "a new time is reported as soon as HLTV shows one."]
+        return ["\n".join(lines)]
 
     def _match_team_name(self, match_id: int) -> str:
         team_id = self.storage.canonical_team(match_id)
@@ -1006,17 +1036,23 @@ class CommandBot:
         uses: the two answer one question over different spans, and a person
         comparing them should not find a match described two ways.
         """
-        rows = self._mine(chat_id, self.storage.upcoming_matches())
-        if not rows:
+        # The late ones first: their time is behind us, so that is where they
+        # sort, and they are the ones a person opening /next is asking about.
+        late = self._late_matches(chat_id)
+        seen = {one["match_id"] for one in late}
+        rows = [row for row in self._mine(chat_id, self.storage.upcoming_matches())
+                if row["match_id"] not in seen]
+        total = len(late) + len(rows)
+        if not total:
             return ("📅 <b>Nothing scheduled</b>\n"
                     "For one team that is normal — it can go weeks without "
                     "playing. /check reads the schedule again right now.")
-        shown = rows[:self.NEXT_SHOWN]
-        matches = digest.describe_matches(self.storage, self.config, chat_id, shown)
-        lines = [f"📅 <b>Upcoming</b> — {fmt.count(len(rows), 'match', 'matches')}", ""]
+        shown = rows[:max(0, self.NEXT_SHOWN - len(late))]
+        matches = late + digest.describe_matches(self.storage, self.config, chat_id, shown)
+        lines = [f"📅 <b>Upcoming</b> — {fmt.count(total, 'match', 'matches')}", ""]
         lines += fmt.schedule_lines(matches, self._tz(chat_id))
-        if len(rows) > len(shown):
-            lines += ["", f"…and {len(rows) - len(shown)} further ahead."]
+        if total > len(matches):
+            lines += ["", f"…and {total - len(matches)} further ahead."]
         return "\n".join(lines)
 
     # ---------- the daily digest ----------

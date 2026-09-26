@@ -130,6 +130,37 @@ may never happen at all.
 And once the new time itself has passed, E2 is not sent at all. It is no longer
 news but history, and E4 is about to report the start anyway.
 
+**Around the slot the match page is the one that sees the move first.** Seen
+in use: 18:45 moved to 18:55, on HLTV at 18:46, reported around 18:49 — the
+team page came round on its three-minute cycle, and nothing looked sooner. Two
+changes, and the division of labour stays where it was:
+
+* from `DUE_LEAD_MINUTES` (5) before the start until the match begins or
+  `LATE_START_GRACE_MINUTES` runs out, the match poller is in mode `due` and
+  reads the page at the live cadence (`POLL_LIVE_SECONDS`). That page carries
+  both the start (LIVE) and the time (`.timeAndEvent [data-unix]`), so the
+  same read serves E4 as well. The window is judged by the newest known time,
+  pending included, like everything else here;
+* when that time differs from the newest one the schedule knows, the match
+  poller asks the schedule poller for an out-of-turn sweep
+  (`recheck_schedule`, which is `SchedulePoller.request_poll`). It does not
+  write the time and it does not send E2: a second writer of the start would
+  flip it back and forth whenever the two pages disagree for a poll, and the
+  team page stays the one that decides. A wrong read therefore costs one
+  request, never a false E2. It asks once per distinct time, so a team page
+  lagging behind cannot turn this into a sweep every minute.
+
+The cost of the path is one ceiling slot (30 s) between the two reads, which
+is the price of keeping E2 with a single writer.
+
+**A match late for its slot was in neither `/next` nor `/live`.** The first
+asks `upcoming_matches` — its time is behind us — and the second lists LIVE
+matches — it has not started. So it vanished from the bot at exactly the
+moment somebody opened it to ask where the match was. Both now also read
+`matches_awaiting_start`, the same window that keeps the polling up, and mark
+it as late; the time shown is the one the service knows, which is the one
+HLTV is about to change.
+
 That case also exposed a second half of the same bug. Everything hangs off
 `upcoming_matches`: the polling cadence, the reminders, `/next`. It judged by
 the CONFIRMED time, which during a debounce is stale by definition — so at

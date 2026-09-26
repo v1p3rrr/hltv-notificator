@@ -167,7 +167,11 @@ async def run() -> int:
     # One of the two references has to be set second.
     notifier.live_messenger = messenger
     supervisor = LiveSupervisor(storage, config, notifier, messenger)
-    matches = MatchPoller(storage, config, http, notifier, supervisor)
+    # The match page is read every minute around a start and the team page
+    # every three; when the former shows a new time it asks the latter, which
+    # alone decides E2, to look now.
+    matches = MatchPoller(storage, config, http, notifier, supervisor,
+                          recheck_schedule=poller.request_poll)
 
     if config.dry_run:
         log.warning("DRY_RUN is on: notifications go to the log, not to Telegram")

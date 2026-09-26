@@ -237,6 +237,10 @@ class Config:
         base = {
             "idle": self.poll_idle,
             "prematch": self.poll_prematch,
+            # A match about to start, or late for it: its page is read like a
+            # running match's, because that page is where both the start and
+            # a last-minute move show first. Match-page polling only.
+            "due": self.poll_live,
             "live": self.poll_live,
             "live_with_feed": self.poll_live_with_feed,
         }[mode]

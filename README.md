@@ -73,7 +73,7 @@ switched off individually, per team, from the bot.
 | Notification | Where it comes from |
 |---|---|
 | A new match appeared in the team's schedule | team page |
-| The match time changed | team page |
+| The match time changed | team page — around the start the match page, read every minute, sees the new time first and makes the team page look at once |
 | The match was cancelled or removed | team page |
 | A reminder, N minutes before the start | your own setting |
 | A daily list of what is on in the next 24 hours, at times you choose | your own setting |
@@ -508,8 +508,8 @@ Not everything has a button: a few commands carry a value that has to be typed
 |---|---|---|
 | `/menu`, `/start`, `/help` | the menu; `/help` and `/start` also print this whole list | — |
 | `/status` | health of the service, the sources and the live feed | yes |
-| `/live` | what is happening in a running match, and which source the data came from | yes |
-| `/next` | upcoming matches as the service sees them | yes |
+| `/live` | what is happening in a running match, and which source the data came from; a match past its time that has not started is listed too | yes |
+| `/next` | upcoming matches as the service sees them, a match late for its slot first | yes |
 | `/teams` | which teams you follow, and what is muted for each | yes |
 | `/track <team link>` | start following a team — paste the link to its HLTV page, or just its numeric id. Up to `MAX_TEAMS_PER_SUBSCRIBER` of them | **no** — it needs the link |
 | `/untrack <id>` | stop following it (history is kept) | yes |
@@ -674,7 +674,7 @@ these values cannot raise it.
 |---|---|---|
 | `POLL_IDLE_SECONDS` | `1800` | nothing due within the next half hour |
 | `POLL_PREMATCH_SECONDS` | `180` | shortly before a scheduled start |
-| `POLL_LIVE_SECONDS` | `60` | a match is running and there is no live feed |
+| `POLL_LIVE_SECONDS` | `60` | a match is running and there is no live feed — and a match's page from 5 min before its start until it begins, or until `LATE_START_GRACE_MINUTES` runs out |
 | `POLL_LIVE_WITH_FEED_SECONDS` | `300` | a match is running and the feed works |
 | `PREMATCH_WINDOW_MINUTES` | `30` | how early pre-match mode turns on |
 | `LATE_START_GRACE_MINUTES` | `60` | how long an overdue match keeps pre-match mode |
