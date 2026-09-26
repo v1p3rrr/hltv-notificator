@@ -80,8 +80,8 @@ command the bot does not recognise.
 | `/menu` | the inline menu: status, live, upcoming, teams and their mutes, reminders, settings, quiet. `/track`, `/tz`, `/check`, `/whoami` and `/verbose` have no buttons |
 | `/whoami` | your own chat_id, for allowed chats only |
 | `/status` | polling modes, live feed health, match counts, the queue, the last error |
-| `/live` | the running match: map, score, series score, map results and **which source** the data came from |
-| `/next` | upcoming matches as the service sees them |
+| `/live` | the running match: map, score, series score, map results and **which source** the data came from. A match past its time and not started yet is listed under "Should have started" |
+| `/next` | upcoming matches as the service sees them; one late for its slot comes first, marked ⏳ |
 | `/check` | an out-of-turn schedule check |
 | `/verbose on\|off` | debug logging in the service log, without a restart. **The main chat only**: it is a setting of the whole process |
 
@@ -96,10 +96,10 @@ The values live in `.env`; the defaults are a balanced profile:
 |---|---|---|
 | `POLL_IDLE_SECONDS` | 1800 (30 min) | no matches within the next 30 min |
 | `POLL_PREMATCH_SECONDS` | 180 (3 min) | 30 min before the scheduled start |
-| `POLL_LIVE_SECONDS` | 60 | a match is running, there is no live feed |
+| `POLL_LIVE_SECONDS` | 60 | a match is running, there is no live feed; also the match page from 5 min before the start until it begins (mode `due`) |
 | `POLL_LIVE_WITH_FEED_SECONDS` | 300 (5 min) | a match is running, scorebot works |
 | `PREMATCH_WINDOW_MINUTES` | 30 | how long before the start pre-match mode turns on |
-| `LATE_START_GRACE_MINUTES` | 60 | how long a match that should have started keeps pre-match mode |
+| `LATE_START_GRACE_MINUTES` | 60 | how long a match that should have started keeps the frequent polling — pre-match for the schedule, `due` for its page — and stays in `/next` and `/live` as late |
 | `MAX_TEAMS_PER_SUBSCRIBER` | 10 | teams one person may follow; the sweep costs one request per distinct team |
 | `LIVE_EDIT_BUDGET` | 10 | card edits a second in total; the per-person interval stretches beyond that |
 | `COMMAND_RATE_LIMIT` | 0 | commands per chat per minute, 0 is off; meant for the open mode |

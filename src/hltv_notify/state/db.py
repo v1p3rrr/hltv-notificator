@@ -527,7 +527,7 @@ class Storage:
                 found = LEGACY_REMINDER_KEY_RE.match(row["idempotency_key"])
                 if not found:
                     continue
-                start = self._effective_start(int(found.group("match")))
+                start = self.effective_start(int(found.group("match")))
                 if start is None:
                     # The match itself is gone: there is nothing to rebuild the
                     # key from, and nothing left to remind anybody about.
@@ -545,8 +545,14 @@ class Storage:
             log.info("reminder keys given their start time: %d record(s)", rewritten)
         return rewritten
 
-    def _effective_start(self, match_id: int) -> Optional[str]:
-        """The start a reminder for this match would be about right now."""
+    def effective_start(self, match_id: int) -> Optional[str]:
+        """The newest start known for this match: the pending time during a
+        debounce, the confirmed one otherwise.
+
+        It is what a reminder would be about right now, and what the match
+        page's own time is compared against to decide whether the schedule is
+        worth reading again (`MatchPoller._notice_moved_start`).
+        """
         row = self.conn.execute(
             "SELECT COALESCE(s.pending_start_utc, m.start_utc) AS start_utc "
             "FROM matches m LEFT JOIN match_state s ON s.match_id = m.match_id "
@@ -963,7 +969,8 @@ class Storage:
         ))
 
     def matches_awaiting_start(self, now: Optional[datetime] = None, *,
-                               grace_minutes: int = 60) -> List[sqlite3.Row]:
+                               grace_minutes: int = 60,
+                               ahead_minutes: int = 0) -> List[sqlite3.Row]:
         """Matches whose time has come and gone without them starting.
 
         HLTV moves a match after its own slot has arrived as a matter of
@@ -971,12 +978,19 @@ class Storage:
         18:15, then 18:30. Judged only by "is the start still ahead", such a
         match is nobody's business any more — the schedule falls back to idle
         and looks at the page again half an hour later, by which time the move
-        no longer matters.
+        no longer matters. It is also in neither `upcoming_matches` (its time
+        has passed) nor among the running ones (it is not LIVE), so `/next` and
+        `/live` both read this query too, or the match vanishes from the bot at
+        the one moment somebody opens it to ask where the match is.
 
         A match that really started drops out on its own: the page sets the
         state to LIVE (even when the "match started" message itself is being
         held back for the warmup). The window is bounded so a match that never
         happens does not keep the polling up forever.
+
+        `ahead_minutes` stretches the window forwards, for the match-page
+        cadence: a move announced two minutes before the slot is as much the
+        thing to catch as one announced two minutes after it.
         """
         now = now or utcnow()
         return list(self.conn.execute(
@@ -990,7 +1004,8 @@ class Storage:
             "  AND (s.state IS NULL OR s.state NOT IN "
             "       ('LIVE', 'MAP_LIVE', 'MAP_BREAK', 'FINISHED', 'CANCELLED')) "
             "ORDER BY COALESCE(s.pending_start_utc, m.start_utc)",
-            (iso(now), iso(now - timedelta(minutes=grace_minutes))),
+            (iso(now + timedelta(minutes=ahead_minutes)),
+             iso(now - timedelta(minutes=grace_minutes))),
         ))
 
     def upsert_match(self, *, match_id: int, opponent_id: Optional[int], opponent_name: str,

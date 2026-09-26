@@ -632,6 +632,16 @@ one that should have started and has not keeps the frequent cadence
 (`matches_awaiting_start`) — otherwise nobody is looking at the page precisely
 when the moves happen.
 
+**A match late for its slot is in neither `upcoming_matches` nor the LIVE
+list.** `/next` asked the first and `/live` the second, so a match whose time
+had come without it starting vanished from the bot at the one moment somebody
+opened it to ask where it was — which is also the moment HLTV moves it. Both
+read `matches_awaiting_start` too now, the same window that keeps the polling
+up. And the match page, read every minute in that window (mode `due`), only
+ASKS the schedule to look when it shows a new time (`recheck_schedule`): E2
+and the start stay the team page's, because two writers would flip the time
+back and forth whenever the pages disagree for a poll.
+
 **The live message carries E5, and it is not a stylistic choice.** The two
 delivery paths differ: the live message goes straight to Telegram, an event is
 merely queued and the outbox worker wakes every five seconds. So a separate E5
@@ -721,7 +731,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 700 tests
+python -m pytest                                    # 726 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

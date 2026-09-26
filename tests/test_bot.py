@@ -721,6 +721,93 @@ def test_a_time_typed_by_hand_is_still_on_the_screen(bot):
     assert all(len(one.encode("utf-8")) <= 64 for one in payloads)
 
 
+def add_late_match(storage, match_id=910, minutes_late=1, chat=CHAT, team_id=12857,
+                   opponent="Nemiga"):
+    storage.add_team(chat, team_id, f"team-{team_id}", f"Team {team_id}")
+    storage.upsert_match(
+        match_id=match_id, team_id=team_id, opponent_id=1, opponent_name=opponent,
+        event_name="CCT", start_utc=utcnow() - timedelta(minutes=minutes_late),
+        url=f"https://www.hltv.org/matches/{match_id}/x", snapshot={}, snapshot_hash="h")
+    storage.link_match_team(match_id, team_id)
+    storage.set_state(match_id, MatchState.SCHEDULED, source="team_page")
+
+
+def test_next_keeps_a_match_that_is_late_for_its_slot(bot):
+    """Seen in use: 18:45, moved to 18:55, and at 18:46 neither /next nor
+    /live had it — its time was behind us and it was not LIVE, and those were
+    the only two questions asked. That is the moment somebody opens the bot to
+    ask where the match is."""
+    command_bot, telegram, storage = bot
+    add_late_match(storage)
+    send(command_bot, "/next")
+    reply = telegram.sent[-1][1]
+    assert "Nemiga" in reply
+    assert "⏳" in reply and "late, not started yet" in reply
+    assert "1 match" in reply
+
+
+def test_live_names_a_match_that_should_have_started(bot):
+    command_bot, telegram, storage = bot
+    storage.set_state(MATCH_ID, MatchState.FINISHED, source="match_page")
+    add_late_match(storage)
+    send(command_bot, "/live")
+    reply = telegram.sent[-1][1]
+    assert reply.startswith("No matches right now.")
+    assert "Should have started" in reply and "Nemiga" in reply
+    assert "every 60 s" in reply
+
+
+def test_live_lists_the_late_match_beside_the_running_one(bot):
+    command_bot, telegram, storage = bot
+    add_late_match(storage)
+    send(command_bot, "/live")
+    reply = telegram.sent[-1][1]
+    assert "Dust2" in reply
+    assert "Should have started" in reply and "Nemiga" in reply
+
+
+def test_a_late_match_leaves_both_lists_once_it_starts(bot):
+    command_bot, telegram, storage = bot
+    add_late_match(storage)
+    storage.set_state(910, MatchState.LIVE, source="match_page")
+    send(command_bot, "/next")
+    assert "Nemiga" not in telegram.sent[-1][1]
+    send(command_bot, "/live")
+    assert "Should have started" not in telegram.sent[-1][1]
+
+
+def test_a_late_match_moved_ahead_reads_as_upcoming_again(bot):
+    """Once the schedule has the new time the match is simply ahead."""
+    command_bot, telegram, storage = bot
+    add_late_match(storage)
+    storage.set_pending_start(910, utcnow() + timedelta(minutes=9), utcnow())
+    send(command_bot, "/next")
+    reply = telegram.sent[-1][1]
+    assert "Nemiga" in reply and "🕒" in reply
+    assert "late, not started yet" not in reply
+
+
+def test_a_match_past_the_grace_is_not_called_late(bot):
+    """The window is the one the polling keeps up for: a match listed as
+    being watched must actually be watched."""
+    command_bot, telegram, storage = bot
+    add_late_match(storage, minutes_late=90)
+    send(command_bot, "/next")
+    assert "Nemiga" not in telegram.sent[-1][1]
+
+
+def test_a_late_match_is_shown_only_to_its_followers(bot):
+    command_bot, telegram, storage = bot
+    storage.add_subscriber(CHAT)
+    storage.add_subscriber("777")
+    storage.add_team(CHAT, 12857, "forze-reload", "FORZE Reload")
+    add_late_match(storage, chat="777", team_id=4494, opponent="Vitality")
+    send(command_bot, "/next")
+    assert "Vitality" not in telegram.sent[-1][1]
+    send(command_bot, "/live")
+    assert "Vitality" not in telegram.sent[-1][1]
+
+
 def test_next_groups_by_day_and_links_the_match(bot):
     command_bot, telegram, storage = bot
     storage.add_team(CHAT, 12857, "forze-reload", "FORZE Reload")

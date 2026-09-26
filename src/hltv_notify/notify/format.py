@@ -204,7 +204,9 @@ def schedule_lines(matches, tz_name: str, *, now=None) -> list:
     two would come to disagree about what a match looks like.
 
     Each match is a dict, not a database row: the digest's arrive through an
-    event payload, which is JSON.
+    event payload, which is JSON. One marked `late` is past its time and has
+    not started — `/next` and `/live` list those, the digest never does — and
+    its time is the one the service knows, which HLTV is likely to move.
     """
     # `now` may be an ISO string: it travels in an event payload, which is
     # JSON. `to_local` reads both.
@@ -220,8 +222,11 @@ def schedule_lines(matches, tz_name: str, *, now=None) -> list:
             lines.append(f"<b>{label}</b>")
             current = label
         title = f"{one.get('team_name') or '?'} — {one.get('opponent') or 'TBD'}"
-        lines.append(f"🕒 {when.hour:02d}:{when.minute:02d} · "
+        icon = "⏳" if one.get("late") else "🕒"
+        lines.append(f"{icon} {when.hour:02d}:{when.minute:02d} · "
                      f"{_link(one.get('url') or '', title)}")
+        if one.get("late"):
+            lines.append("    <i>late, not started yet</i>")
         if one.get("event_name"):
             # Indented rather than joined with a separator: on a phone the two
             # together overflow the line and wrap into something worse.

@@ -131,10 +131,24 @@ mean a message every three rounds.
 
 A match past its start and not running keeps the schedule on the pre-match
 cadence for `LATE_START_GRACE_MINUTES` (60 by default), because that is the
-window in which HLTV moves it. If it was simply cancelled without the page
-saying so, that is up to twenty extra requests spent on nothing. The
-alternative — falling back to a poll every half hour — is what lost a
-reschedule.
+window in which HLTV moves it, and its own page on the live cadence (mode
+`due`, every `POLL_LIVE_SECONDS`). If it was simply cancelled without the page
+saying so, that is up to twenty schedule reads and sixty page reads spent on
+nothing. The alternative — falling back to a poll every half hour — is what
+lost a reschedule. For the same hour the match is listed as late in `/next`
+and `/live`; after it, it drops out of both.
+
+## A move the match page sees first still waits for the team page
+
+Around a start the match page is read every minute and notices a new time
+first, but it only asks the schedule to look — E2 is decided from the team
+page alone. So a move costs one extra ceiling slot (30 s) on top of the
+minute, and if the team page does not show the new time yet when it is read,
+the request is spent and E2 waits for the schedule's own next cycle (three
+minutes): the page asks once per distinct time, not once a minute. Whether
+the two pages ever lag behind each other has not been observed either way —
+the log line "the page says it starts at …" followed by no E2 is what would
+show it.
 
 ## A map decided without the live feed carries no comeback line
 
