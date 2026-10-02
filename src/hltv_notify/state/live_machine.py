@@ -111,6 +111,14 @@ class LiveMachine:
         # also why the worker feeds frames and kills in the order the feed sent
         # them rather than all the frames first.
         self._where: Dict[int, Tuple[int, str, bool]] = {}
+        # And the frame that placed them, kept for the header of an event born
+        # from a kill. It has to be a REAL frame: `_context` reads the
+        # opponent's name off it and falls back to `matches.opponent_name`,
+        # which is the CANONICAL team's opponent — so a fabricated empty frame
+        # tells a follower of the second tracked team that its opponent is
+        # itself. Exactly the "FORZE — FORZE" trap `_highlights_for_team`
+        # exists to avoid, reached through the back door.
+        self._frames: Dict[int, LiveFrame] = {}
 
     def _threshold(self, name: str) -> int:
         """The lowest threshold any subscriber is waiting for.
@@ -422,8 +430,12 @@ class LiveMachine:
         classified and no counter is written — which is the point of asking
         here rather than per reader: this is the only part of the service that
         reads the log, and it may cost nothing when it is off.
+
+        One expression, in `bingo.enabled`, because the page machine and the
+        card's own writers ask the same question and two spellings of it would
+        let a machine count what no reader keeps.
         """
-        return self._threshold("bingo") > 0
+        return bingo.enabled(self.storage, self.config)
 
     def _bingo_tracker(self, match_id: int) -> BingoTracker:
         if match_id not in self._bingo:
@@ -467,6 +479,7 @@ class LiveMachine:
         tracker = self._bingo_tracker(match_id)
         in_play = not self._warming_up(frame)
         self._where[match_id] = (map_number, map_name, in_play)
+        self._frames[match_id] = frame
 
         found, reset = tracker.observe_frame(
             map_name, frame, tracked, ours, theirs, in_play)
@@ -560,7 +573,14 @@ class LiveMachine:
             square = bingo.BY_KEY[occurrence.square]
             before = bingo.totals(self.storage.bingo_rows(
                 match_id, occurrence.team_id)).get(square.key, 0)
-            if square.aggregate == bingo.MAX:
+            if square.aggregate == bingo.MAX or occurrence.absolute:
+                # A MAX square, or one READ off the frame's own history rather
+                # than witnessed. Both carry what the square stands at for
+                # this map, so both are written with MAX — the read ones
+                # because the high-water mark that kept them from repeating
+                # lives in memory, and a fresh worker (`reconcile`, a 403
+                # cooldown, a restart) recomputes the whole value again. Added
+                # there, two pistol rounds become four. See bingo.Occurrence.
                 value = self.storage.raise_bingo(match_id, map_number,
                                                  occurrence.team_id, square.key,
                                                  occurrence.amount)
@@ -631,34 +651,17 @@ class LiveMachine:
         return self._bingo_occurrence_events(match_id, frame, map_number,
                                              map_name, found)
 
-    # The match as a whole rather than any of its maps. Taking the match is
-    # the one square no map can answer, and giving it a map's number would put
-    # it into that map's summary, where it would be a claim about a series
-    # that was still running.
-    MATCH_WIDE = 0
-
     def _record_bingo_win(self, match_id: int, finished: Event) -> None:
         """Tick "win the match" for whoever took it.
 
-        Read off the series score in E7's payload rather than counted, and
-        written for the WINNER only: the card is each team's own, and a
-        subscriber following the losing side has a square that stays open.
+        The writing itself is shared with the page machine — see
+        `bingo.record_win` — because both machines can be the one that reaches
+        the end of the match first, and whichever does has to leave the card
+        complete before the summary is built from it.
         """
         if not self._bingo_on():
             return
-        ours = int(finished.payload.get("series_team") or 0)
-        theirs = int(finished.payload.get("series_opponent") or 0)
-        if ours == theirs:
-            return
-        winner = finished.payload.get("team_id") if ours > theirs else \
-            finished.payload.get("opponent_id")
-        if not winner:
-            return
-        tracked = self.storage.match_team_ids(match_id)
-        if tracked and winner not in tracked:
-            # The match was taken by a team nobody follows. Nothing to tick.
-            return
-        self.storage.raise_bingo(match_id, self.MATCH_WIDE, int(winner), "win", 1)
+        bingo.record_win(self.storage, self.config, match_id, finished.payload)
 
     def _bingo_summary(self, match_id: int, frame: LiveFrame, *,
                        map_number: Optional[int], map_name: str) -> List[Event]:
@@ -721,13 +724,23 @@ class LiveMachine:
                                              map_number, map_name, found)
 
     def _last_frame(self, match_id: int) -> LiveFrame:
-        """A frame for the event header when only kills are in hand.
+        """The frame that placed these kills, for the event's header.
 
-        The context (team names, the opponent, the url) comes from the
-        database; the frame is consulted for the opponent's name and falls
-        back to the match row when it cannot supply one. So an empty one is
-        enough and is better than keeping a real frame alive for it.
+        The real one, not a fabricated empty one. `_context` asks the frame
+        for the opponent's NAME and falls back to `matches.opponent_name` when
+        it cannot answer — and that row holds the opponent of the CANONICAL
+        team, so for the second tracked team of a match the fallback names
+        that team itself ("FORZE — FORZE"). Only a frame carries both ids and
+        can be asked per side.
+
+        The empty frame remains the last resort: `observe_kills` already drops
+        kills that arrived before any frame, so this is reachable only if the
+        card was switched on between the frame and the kills, and an empty
+        header beats raising inside the feed loop.
         """
+        frame = self._frames.get(match_id)
+        if frame is not None:
+            return frame
         return LiveFrame(map_name="", current_round=0, round_state="", live=False,
                          ct_team_id=None, ct_team_name="", ct_score=0,
                          t_team_id=None, t_team_name="", t_score=0,

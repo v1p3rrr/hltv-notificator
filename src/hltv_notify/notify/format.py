@@ -53,6 +53,8 @@ def _link(url: str, title: str) -> str:
 # other tags in every client — but line by line it is safe, and that is also
 # how it reads: a struck-through paragraph with the link still tappable.
 RETRACTED_MARK = "❌"
+RETRACTED_LINE = (f"{RETRACTED_MARK} <i>the map's score was reset — "
+                  f"this did not count</i>")
 
 
 def strike(body: str) -> str:
@@ -67,15 +69,23 @@ def strike(body: str) -> str:
     accepted, but around several lines of them the clients disagree, and a
     message that 400s is a retraction that never happens. An already struck
     line is left alone, so a second pass cannot nest the tag.
+
+    And a second pass is a no-op altogether: the footer is what says the text
+    has been withdrawn, so a body that already ends in it is returned
+    untouched rather than struck again with a second footer under it. Tested
+    on the footer rather than on the mark alone — ❌ is also the icon of a
+    lost map inside E6 and the headline of E3.
     """
+    text = body or ""
+    if text.endswith(RETRACTED_LINE):
+        return text
     lines = []
-    for line in (body or "").split("\n"):
+    for line in text.split("\n"):
         if not line.strip() or line.startswith("<s>"):
             lines.append(line)
         else:
             lines.append(f"<s>{line}</s>")
-    return "\n".join(lines + [f"{RETRACTED_MARK} <i>the map's score was reset — "
-                              f"this did not count</i>"])
+    return "\n".join(lines + [RETRACTED_LINE])
 
 
 SWAPPED_PAIRS = (

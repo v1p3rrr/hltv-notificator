@@ -793,6 +793,16 @@ the series; a run of rounds won and the flags take the MAX. Summing a streak in
 SQL would turn four rounds in a row on each of two maps into eight, which is
 why `bingo.totals` is the only place several maps become one number.
 
+**And a third distinction that cuts across them: what `amount` means.** A kill
+is a thing that happened and is ADDED; a pistol count is a number READ off the
+frame's history on every frame, and `Occurrence.absolute` says so, which makes
+its write a per-map MAX. The high-water mark that keeps the read ones from
+repeating (`_MapState.reported`) is in memory while the counters are in the
+database, so added, the whole recomputed value lands again every time a worker
+is re-created mid-map — `reconcile`, a 403 cooldown, a restart — and two
+pistol rounds are reported as four. Written with MAX it is also
+self-correcting: the step number *is* the per-map value at that step.
+
 **Counts live in the database, unlike every other tracker here.** The summary
 is sent at the end of a map and of the match, hours after the kills, and a
 restart in between must not report half a match as the whole of it. What stays
@@ -804,6 +814,15 @@ kills through smoke cannot be turned round at render time the way a score can:
 shown to the opponent's follower it is simply wrong, and `format.orient` sees
 the payload's team_id, finds it is not the reader's, and has nothing to flip.
 Same reasoning as the highlight events, one level up.
+
+Which is also why the **team is in the key** of E16, E17 and E18. The journal
+key is `<chat>|<key>`, so without it a subscriber following both teams of a
+match has the second card swallowed as a duplicate of the first and is shown
+one side of a match they follow from both. And why an event born from a kill
+is built from the **last real frame** rather than from a fabricated empty one:
+`_context` reads the opponent's name off the frame and falls back to
+`matches.opponent_name`, which is the canonical team's opponent — so the empty
+frame told a follower of the second tracked team that its opponent was itself.
 
 ### The two things that must not fill the card
 
@@ -863,6 +882,12 @@ knows the match is over at the winning round when it knows the format; the page
 knows when it notices the status. `bingo.summary_events` is shared by both, and
 the key is the same from either side, so when both get there the unique index
 swallows the second — as it already does for E6 and E7 themselves.
+
+`bingo.record_win` is shared for exactly the same reason, and it has to be
+called *before* the card is built. Ticked in the feed alone, a match the page
+reported first — the feed never ran for the last map, or the format was never
+reported and its E7 stayed silent — went out with "Win the match" still open
+above an E7 announcing the win.
 
 ## The daily digest (E14)
 

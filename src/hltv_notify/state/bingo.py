@@ -12,8 +12,9 @@ Where the numbers come from, and why that is not obvious:
   read. A scoreboard frame says who has how many kills; it cannot say that one
   of them went through smoke, through a wall, out of a grenade or with a
   knife. Only `Kill` entries carry that, and they carry it reliably — measured
-  across both recordings, `throughSmoke` on 94 kills, `penetrated` on 57,
-  `hegrenade` on 4 and a `knife_*` on 16.
+  across both recordings' 731 unique kills, `throughSmoke` on 40,
+  `penetrated` on 28, `hegrenade` on 4 and a `knife_*` on 16 — the same
+  figures as R4's table, which is the source of truth for them.
 * **The log replays its whole backlog on every connect**, which is exactly why
   it was left alone. The way in is `KillEvent.event_id`: unique per kill and
   strictly increasing in arrival order over all 731 recorded kills, so a
@@ -90,7 +91,11 @@ SQUARES: Tuple[Square, ...] = (
     Square("streak", "Win 4 rounds in a row", 4, MAX,
            unit="rounds in a row", unit_one="round",
            moment="made it 4 rounds in a row"),
-    Square("win", "Win the match", 1, MAX, moment="took the match"),
+    # No `moment`: taking the match is ticked from E7's payload
+    # (`record_win`) and never produces an Occurrence, so a per-occurrence
+    # text here is a field nothing reads — the trap this project has already
+    # been caught by twice. E7 itself is the message about the win.
+    Square("win", "Win the match", 1, MAX),
     Square("wallbang", "3 kills through a wall", 3, SUM,
            unit="kills", unit_one="kill", moment="killed through a wall"),
     Square("knife", "A knife kill", 1, SUM,
@@ -243,6 +248,57 @@ def closed_count(counts: Dict[str, int]) -> int:
     return sum(1 for square in SQUARES if square.closed(counts.get(square.key, 0)))
 
 
+# The match as a whole rather than any of its maps. Taking the match is the
+# one square no map can answer, and giving it a map's number would put it into
+# that map's summary, where it would be a claim about a series that was still
+# running.
+MATCH_WIDE = 0
+
+
+def enabled(storage, config) -> bool:
+    """Is anybody keeping the card at all.
+
+    The lowest bar in use, like every other per-reader thing here, and in ONE
+    place: with nobody keeping it the log is not parsed, no kill is classified
+    and no counter is written.
+    """
+    from .. import settings             # here, to keep this module importable
+
+    return storage.threshold_in_use(
+        "bingo", settings.default_for(config, "bingo")) > 0
+
+
+def record_win(storage, config, match_id: int, finished: dict) -> None:
+    """Tick "win the match" for whoever took it, from E7's payload.
+
+    Shared by both machines, exactly like `summary_events` and for the same
+    reason: either of them can be the one that reaches the end of the match
+    first. The feed does when it knows the format; the page does when the feed
+    never ran for the last map, or when the format was never reported and
+    `LiveMachine._event_e7` therefore stayed silent. Written in only one of
+    them, the winner's card went out from the other with "Win the match" still
+    open — a card that contradicts the E7 sitting right above it.
+
+    Read off the series score rather than counted, and written for the WINNER
+    only: the card is each team's own, and a subscriber following the losing
+    side has a square that stays open.
+    """
+    if not enabled(storage, config):
+        return
+    ours = int(finished.get("series_team") or 0)
+    theirs = int(finished.get("series_opponent") or 0)
+    if ours == theirs:
+        return
+    winner = finished.get("team_id") if ours > theirs else finished.get("opponent_id")
+    if not winner:
+        return
+    tracked = storage.match_team_ids(match_id)
+    if tracked and winner not in tracked:
+        # The match was taken by a team nobody follows. Nothing to tick.
+        return
+    storage.raise_bingo(match_id, MATCH_WIDE, int(winner), "win", 1)
+
+
 def summary_events(storage, config, match_id: int, *, context_for,
                    map_number: Optional[int], map_name: str) -> List:
     """The card after a map (E17) and after the match (E18).
@@ -255,15 +311,21 @@ def summary_events(storage, config, match_id: int, *, context_for,
     either side, so when both do get there the unique index swallows the
     second in silence, exactly as it does for E6 and E7 themselves.
 
+    The key also names the TEAM, and that is not decoration either. One card
+    is built per tracked team, and the journal key is `<chat>|<key>`: a
+    subscriber following BOTH teams of a match would otherwise have the second
+    card swallowed as a duplicate of the first and be shown one side of a
+    match it follows from both. Same reasoning as E9's key carrying the
+    player's steam id and E16's carrying the team.
+
     Silent when the feed never ran for this match: with no watermark nothing
     was ever counted, and a card of nine zeroes is not a summary of a match,
     it is a claim about one nobody watched.
     """
-    from ..models import Event          # here, to keep this module importable
-    from .. import settings             # by the sources, which models is not
+    from ..models import Event          # here, to keep this module importable,
+                                        # by the sources, which models is not
 
-    if storage.threshold_in_use(
-            "bingo", settings.default_for(config, "bingo")) <= 0:
+    if not enabled(storage, config):
         return []
     if storage.bingo_watermark(match_id) is None:
         return []
@@ -275,7 +337,7 @@ def summary_events(storage, config, match_id: int, *, context_for,
         total = totals(storage.bingo_rows(match_id, team_id))
         payload = {"squares": card(total), "closed": closed_count(total)}
         if finished:
-            key = f"E18:{match_id}:bingo"
+            key = f"E18:{match_id}:{team_id}:bingo"
         else:
             on_map = totals(storage.bingo_rows(match_id, team_id,
                                                map_number=map_number))
@@ -284,7 +346,7 @@ def summary_events(storage, config, match_id: int, *, context_for,
                 "map_number": map_number,
                 "map_name": map_name,
             })
-            key = f"E17:{match_id}:map:{map_number}:bingo"
+            key = f"E17:{match_id}:map:{map_number}:{team_id}:bingo"
         events.append(Event(
             type="E18" if finished else "E17",
             idempotency_key=key,
@@ -300,6 +362,16 @@ class Occurrence:
     `anchor` is what makes the idempotency key unique, and each kind supplies
     its own: a kill has its `eventId`, a pistol round its ordinal, a streak its
     length. Nothing here is keyed on the count, which a reconnect can retake.
+
+    `absolute` says what `amount` MEANS, and it is the difference between a
+    thing that happened and a number that was read. A kill is an event: it is
+    added, and nothing else can tell you about it twice. A pistol round is
+    recomputed from the frame's own history on every frame, so `amount` is
+    what the square stands at FOR THIS MAP and the write must be a MAX rather
+    than an addition. Added, it is counted again in full every time the
+    in-memory high-water mark is lost — a worker re-created by `reconcile`, a
+    403 cooldown, a restart — and a team that took two pistol rounds is
+    reported as having taken four.
     """
 
     square: str
@@ -309,6 +381,7 @@ class Occurrence:
     nick: str = ""
     round_number: Optional[int] = None
     weapon: str = ""
+    absolute: bool = False
 
 
 @dataclass
@@ -524,6 +597,14 @@ class BingoTracker:
         occurrence carrying the new value: "four rounds in a row" is a single
         thing that happened, and stepping it would announce the first, second
         and third round of the run as if each were news.
+
+        What does NOT part company is the write: everything that comes out of
+        here is `absolute`, because everything that comes out of here was READ
+        off the frame rather than witnessed. `state.reported` lives in memory
+        and the counters live in the database, so a step the tracker has
+        forgotten would otherwise be added a second time — see `Occurrence`.
+        The step number IS the per-map value at that step, which is what makes
+        the MAX write exact rather than merely safe.
         """
         if value <= 0:
             return []
@@ -534,9 +615,11 @@ class BingoTracker:
         state.reported[key] = value
         if BY_KEY[square].aggregate == MAX:
             return [Occurrence(square=square, team_id=team_id,
-                               anchor=f"{square}:{value}", amount=value)]
+                               anchor=f"{square}:{value}", amount=value,
+                               absolute=True)]
         return [Occurrence(square=square, team_id=team_id,
-                           anchor=f"{square}:{step}", amount=1)
+                           anchor=f"{square}:{step}", amount=step,
+                           absolute=True)
                 for step in range(seen + 1, value + 1)]
 
     def close_map(self, map_name: str) -> List[Occurrence]:
@@ -562,16 +645,17 @@ class BingoTracker:
         round is a question about the round and not about our team: a knife
         round is one where nobody at all used anything else.
         """
+        if not in_play:
+            # Nothing a warmup produces may be read, and that includes the
+            # "there was a real weapon in this round" mark. The warmup's
+            # deathmatch kills carry the round number the knife round is about
+            # to use, so counting them would answer the knife round's question
+            # for it — with the wrong answer. The whole batch, because `in_play`
+            # is the frame's and does not change inside one.
+            return []
         state = self._state(map_name)
         found: List[Occurrence] = []
         for kill in kills:
-            if not in_play:
-                # Nothing a warmup produces may be read, and that includes the
-                # "there was a real weapon in this round" mark. The warmup's
-                # deathmatch kills carry the round number the knife round is
-                # about to use, so counting them would answer the knife
-                # round's question for it — with the wrong answer.
-                continue
             squares = kill_squares(kill)
             if not kill.is_knife:
                 # The round had a real weapon in it, so it was not the knife

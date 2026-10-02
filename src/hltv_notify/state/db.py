@@ -1327,18 +1327,27 @@ class Storage:
         return row is not None
 
     def sent_before(self, *, event_type: str, match_id: int, map_number: int,
-                    created_before: str) -> List[sqlite3.Row]:
+                    created_before: str,
+                    delivered: bool = True) -> List[sqlite3.Row]:
         """Delivered messages of one type about one map, sent before a moment.
 
         What a confirmed score reset has to strike through: it says the map
         started over, so everything announced about the map BEFORE it was
-        about rounds the server threw away. Only rows that actually reached
-        Telegram (a message id) and have not been struck through already.
+        about rounds the server threw away. Only rows marked 'sent' that have
+        not been struck through already.
+
+        `delivered` requires a Telegram message id on top of that, because
+        without one there is nothing in a chat to edit. It is False only in
+        DRY_RUN, where every row is marked sent with a NULL id and the
+        retraction goes to the log instead — requiring the id there would make
+        a DRY_RUN run against live HLTV, which is how this project verifies
+        itself, show no retraction at all.
         """
+        clause = (" AND telegram_message_id IS NOT NULL" if delivered else "")
         return list(self.conn.execute(
             "SELECT * FROM outbox WHERE event_type = ? AND match_id = ? "
-            "AND map_number = ? AND status = 'sent' AND retracted = 0 "
-            "AND telegram_message_id IS NOT NULL AND created_utc < ? ORDER BY id",
+            "AND map_number = ? AND status = 'sent' AND retracted = 0"
+            + clause + " AND created_utc < ? ORDER BY id",
             (event_type, match_id, map_number, created_before)))
 
     def mark_retracted(self, outbox_id: int) -> None:

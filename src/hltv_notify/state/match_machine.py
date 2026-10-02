@@ -390,6 +390,13 @@ class MatchMachine:
         growing a second idea of whose match it is.
         """
         payload = finished.payload
+        # Before the card is built, not after: when the page is the machine
+        # that gets to the end of the match first — the feed never ran for the
+        # last map, or the format was never reported and its E7 stayed silent
+        # — this is the only place "Win the match" is ever ticked, and a card
+        # built ahead of it would go out with that square open above an E7
+        # announcing the win.
+        bingo.record_win(self.storage, self.config, observation.match_id, payload)
         return bingo.summary_events(
             self.storage, self.config, observation.match_id,
             context_for=lambda side: self._bingo_context(observation, row, side,

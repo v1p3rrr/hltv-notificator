@@ -498,6 +498,27 @@ are placed on the map the feed is showing now. Across a map boundary that is
 the wrong map. Short disconnects — which is what they are, measured at 14 over
 an hour — do not cross one.
 
+## A score reset that happens entirely while the service is down is not seen
+
+The reset watch is in memory and works by watching the score FALL. A service
+that was down for the whole of the knife round and the reset comes back to a
+map sitting at 0:0 with nothing to compare it against, while the backlog hands
+it the kills from before the reset. They are counted, and nothing will take
+them away again.
+
+Two things keep this narrow. The service has to be down across both events, not
+merely during one of them — a restart before the reset sees the pre-reset score
+on its first frame and the watch works normally. And the knife kills go anyway:
+a round of nothing but knives is dropped whatever the reset watch thinks. What
+is left is a handful of idle-round kills on one map's card.
+
+Everything else about a restart holds: the counts are in the database, the
+squares read off the frame's history are written with MAX rather than added
+(so they recompute to the same number instead of doubling), the kills missed
+while the service was down arrive in the next backlog and are counted exactly
+once, and a square that was already closed is not announced a second time.
+`tests/test_bingo.py` asserts each of those, this limitation included.
+
 ## A score reset is believed three minutes late, and a restored one is not seen at all
 
 A map's score dropping to 0:0 can be the real map starting after a knife round,

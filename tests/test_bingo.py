@@ -273,6 +273,42 @@ def test_each_tracked_team_keeps_its_own_card(storage):
     assert storage.bingo_value(MATCH_ID, 1, FOE_ID, "smoke") == 1
 
 
+def test_a_square_read_off_the_history_is_not_counted_twice(storage):
+    """The pistol count is RECOMPUTED from the frame on every frame, and the
+    high-water mark that keeps it from repeating lives in memory. So the write
+    has to be a MAX and not an addition: a worker re-created mid-map — by
+    `reconcile`, by a 403 cooldown, by a restart — recomputes the whole value
+    again, and added, a team that took two pistol rounds is reported as having
+    taken four, then six."""
+    add_match(storage)
+    won = history(*([True] + [False] * 11 + [True]))
+    lost = history(*([False] + [True] * 11 + [False]))
+    for _ in range(3):
+        # A FRESH machine each time: the same database, nothing remembered.
+        machine(storage).apply(MATCH_ID, frame(
+            ours=2, theirs=11, rnd=13, our_history=won, their_history=lost))
+        assert storage.bingo_value(MATCH_ID, 1, TEAM_ID, "pistol") == 2
+    assert bingo.totals(storage.bingo_rows(MATCH_ID, TEAM_ID))["pistol"] == 2
+
+
+def test_a_moment_from_a_kill_names_the_right_opponent(storage):
+    """An event born from a kill has no frame of its own, and `_context` reads
+    the opponent's NAME off the frame — falling back to `matches.opponent_name`,
+    which is the CANONICAL team's opponent. Built on a fabricated empty frame,
+    a moment about the second tracked team named that team as its own
+    opponent: the "FORZE — FORZE" trap by the back door."""
+    add_match(storage, teams=(TEAM_ID, FOE_ID))
+    storage.add_team("1", TEAM_ID, "forze", "FORZE")
+    storage.add_team("1", FOE_ID, "navi", "Natus Vincere")
+    m = machine(storage)
+    seed(m, storage)
+    events = m.observe_kills(MATCH_ID, [kill(40, killer=THEIRS[0], smoke=True)])
+    moment = next(e for e in events if e.payload["team_id"] == FOE_ID)
+    assert moment.payload["team_name"] == "Natus Vincere"
+    assert moment.payload["opponent"] == "FORZE"
+    assert moment.payload["opponent_id"] == TEAM_ID
+
+
 # ------------------------------------------------------- the knife round
 
 def test_a_round_of_nothing_but_knives_is_the_knife_round(storage):
@@ -705,7 +741,15 @@ def test_the_page_sends_the_card_too(storage):
     events = page.apply(observation("over", [done]))
     summary = [e for e in events if e.type == "E18"]
     assert len(summary) == 1
-    assert summary[0].idempotency_key == f"E18:{MATCH_ID}:bingo"
+    # The team is in the key: one card per tracked team, and the journal key
+    # is `<chat>|<key>` — without it a subscriber following both teams of a
+    # match has the second card swallowed as a duplicate of the first.
+    assert summary[0].idempotency_key == f"E18:{MATCH_ID}:{TEAM_ID}:bingo"
+    # And the page is the machine that ticked the win here: the feed never
+    # reported this match finished, so a card built without `record_win` would
+    # have gone out with "Win the match" open above an E7 announcing it.
+    assert next(sq for sq in summary[0].payload["squares"]
+                if sq["key"] == "win")["done"]
     smoke = next(s for s in summary[0].payload["squares"] if s["key"] == "smoke")
     assert smoke["value"] == 1
 
@@ -757,3 +801,155 @@ def test_a_retraction_strikes_the_message_through_and_keeps_the_journal(storage)
     assert storage.pending_count() == 0
     # ...and a second retraction has nothing left to do.
     assert asyncio.run(notifier.retract(MATCH_ID, 1, later)) == 0
+
+
+def test_a_dry_run_retraction_is_visible_in_the_log(storage, caplog):
+    """A run against live HLTV in DRY_RUN is how this project checks itself,
+    and nothing is sent to Telegram there — the rows are marked sent with a
+    NULL message id. Requiring one would make the retraction invisible in the
+    one place it can be verified."""
+    import asyncio
+    import datetime as _dt
+    import logging
+
+    from hltv_notify.notify.outbox import Notifier
+
+    add_match(storage)
+    storage.add_subscriber("1")
+    storage.add_team("1", TEAM_ID, "forze", "FORZE")
+    storage.set_setting("1", "bingo", 1)
+    storage.set_setting("1", "bingo_live", 1)
+    notifier = Notifier(storage, Config(dry_run=True), None)
+    notifier.enqueue(Event(
+        type="E16", idempotency_key="E16:777:map:1:k", match_id=MATCH_ID,
+        payload={"square": "knife", "label": "A knife kill",
+                 "moment": "killed with a knife", "nick": "Lack1", "count": 1,
+                 "target": 1, "closed": True, "map_number": 1,
+                 "map_name": "Mirage", "round": 2, "team_id": TEAM_ID,
+                 "team_name": "FORZE", "opponent": "Color", "url": "https://x/1"}))
+    asyncio.run(notifier._drain())
+
+    later = (utcnow() + _dt.timedelta(minutes=5)).isoformat()
+    with caplog.at_level(logging.INFO, logger="hltv_notify.notify.outbox"):
+        assert asyncio.run(notifier.retract(MATCH_ID, 1, later)) == 1
+    assert any("[retracted]" in record.message for record in caplog.records)
+    # And the row is marked, so a second pass has nothing left to do.
+    assert asyncio.run(notifier.retract(MATCH_ID, 1, later)) == 0
+
+
+# ------------------------------------- the service lying down mid-match
+
+def restarted(storage) -> LiveMachine:
+    """A brand-new machine on the same database — a process restart, a worker
+    re-created by `reconcile`, or the far side of a 403 cooldown. Everything
+    the tracker held in memory is gone; everything in the database is not."""
+    return machine(storage)
+
+
+def test_a_restart_in_the_middle_of_a_map_doubles_nothing(storage):
+    """The one failure that would be invisible: every square keeps counting
+    from where the database left it, and the squares RECOMPUTED from the
+    frame's history recompute to the same number rather than adding it again."""
+    add_match(storage)
+    won = history(*([True] * 5))
+    before = machine(storage)
+    seed(before, storage)
+    before.apply(MATCH_ID, frame(ours=5, theirs=0, rnd=6, our_history=won))
+    before.observe_kills(MATCH_ID, [kill(40, smoke=True), kill(41, wall=True)])
+    snapshot = bingo.totals(storage.bingo_rows(MATCH_ID, TEAM_ID))
+    assert snapshot["smoke"] == 1 and snapshot["pistol"] == 1
+    assert snapshot["streak"] == 5
+
+    # Down, and up again on the same database.
+    after = restarted(storage)
+    for _ in range(3):
+        after.apply(MATCH_ID, frame(ours=5, theirs=0, rnd=6, our_history=won))
+    assert bingo.totals(storage.bingo_rows(MATCH_ID, TEAM_ID)) == snapshot
+
+
+def test_kills_missed_while_the_service_was_down_are_counted_once(storage):
+    """The backlog replayed on the next connect is how they arrive, and the
+    watermark is in the database, so they are new exactly once."""
+    add_match(storage)
+    before = machine(storage)
+    seed(before, storage)
+    before.observe_kills(MATCH_ID, [kill(40, smoke=True)])
+    assert storage.bingo_value(MATCH_ID, 1, TEAM_ID, "smoke") == 1
+
+    after = restarted(storage)
+    after.apply(MATCH_ID, frame(ours=3, theirs=1, rnd=5))
+    # The whole backlog: what we saw, plus what happened while we were down.
+    after.observe_kills(MATCH_ID, [kill(1), kill(40, smoke=True),
+                                   kill(55, smoke=True), kill(56, wall=True)])
+    assert storage.bingo_value(MATCH_ID, 1, TEAM_ID, "smoke") == 2
+    assert storage.bingo_value(MATCH_ID, 1, TEAM_ID, "wallbang") == 1
+    # And the same backlog once more changes nothing.
+    after.observe_kills(MATCH_ID, [kill(40, smoke=True), kill(55, smoke=True),
+                                   kill(56, wall=True)])
+    assert storage.bingo_value(MATCH_ID, 1, TEAM_ID, "smoke") == 2
+
+
+def test_a_restart_repeats_the_keys_rather_than_the_messages(storage):
+    """Nothing in the machine remembers what was SENT — the journal does. So
+    what a restart has to guarantee is that the same fact produces the same
+    idempotency key, or the unique index has nothing to catch it by.
+
+    The two aggregates answer this differently, and both answers are right. A
+    counted square re-announces its step under the key it used before, and the
+    journal swallows it. A square whose match answer is the best map's does not
+    re-announce at all: it speaks on the step that takes the match from open to
+    closed, and after a restart the database already says closed — so the
+    message is never built, which is one fewer thing to depend on the journal
+    for."""
+    add_match(storage)
+    won = history(*([True] * 4))
+    before = machine(storage)
+    seed(before, storage)
+    first = before.apply(MATCH_ID, frame(ours=4, theirs=0, rnd=5, our_history=won))
+    said = {e.payload["square"]: e.idempotency_key for e in first if e.type == "E16"}
+    assert said.keys() == {"pistol", "streak"}
+
+    after = restarted(storage)
+    again = after.apply(MATCH_ID, frame(ours=4, theirs=0, rnd=5, our_history=won))
+    repeated = {e.payload["square"]: e.idempotency_key for e in again if e.type == "E16"}
+    assert repeated == {"pistol": said["pistol"]}
+
+
+def test_the_map_summary_survives_a_restart_unchanged(storage):
+    add_match(storage)
+    before = machine(storage)
+    seed(before, storage)
+    before.observe_kills(MATCH_ID, [kill(40, smoke=True), kill(41, smoke=True)])
+
+    after = restarted(storage)
+    events = after.apply(MATCH_ID, frame(ours=13, theirs=5, rnd=18))
+    summary = next(e for e in events if e.type == "E17")
+    smoke = next(s for s in summary.payload["squares"] if s["key"] == "smoke")
+    assert smoke["value"] == 2
+    assert summary.idempotency_key == f"E17:{MATCH_ID}:map:1:{TEAM_ID}:bingo"
+
+
+def test_a_reset_that_happened_entirely_while_we_were_down_is_not_seen(storage):
+    """The known cost, asserted so it is a decision and not a surprise.
+
+    The reset watch is in memory, and it works by seeing the score fall. A
+    service that was down for the whole of the knife round AND the reset comes
+    back to a map at 0:0 with nothing to compare it against, while the
+    backlog hands it the kills from before the reset. They are counted.
+
+    What keeps this narrow: the knife kills still go (a round of nothing but
+    knives is dropped whatever the reset watch thinks), and the service has to
+    be down across both events. It is written up in the limitations.
+    """
+    add_match(storage)
+    before = machine(storage)
+    seed(before, storage)
+    before.apply(MATCH_ID, frame(ours=1, theirs=0, rnd=2))        # knife round
+
+    after = restarted(storage)
+    after.apply(MATCH_ID, frame(ours=0, theirs=0, rnd=1))         # already reset
+    after.observe_kills(MATCH_ID, [kill(60, smoke=True),           # from the warmup
+                                   kill(61, weapon="knife_t")])
+    after.apply(MATCH_ID, frame(ours=0, theirs=0, rnd=1))
+    assert storage.bingo_value(MATCH_ID, 1, TEAM_ID, "smoke") == 1   # the cost
+    assert storage.bingo_value(MATCH_ID, 1, TEAM_ID, "knife") == 0   # still safe

@@ -294,6 +294,37 @@ speaks once, on the step that takes the MATCH from open to closed — not the
 map, or a second map with four in a row would announce a square ticked an hour
 ago.
 
+**A number READ off the frame is not a thing that HAPPENED, and the write
+differs.** `Occurrence.absolute` is that distinction. A kill through smoke is
+an event and is ADDED; the pistol count is recomputed from `ctMatchHistory` on
+every frame and is written as a per-map MAX. The guard that keeps the
+recomputed one from repeating — `_MapState.reported` — lives in MEMORY while
+the counters live in the DATABASE, so added, the whole value lands again every
+time a worker is re-created mid-map (`reconcile`, a 403 cooldown, a restart)
+and a team that took two pistol rounds is reported as having taken four, then
+six. MAX is also self-healing: the step number IS the per-map value at that
+step, so a rolled-back or lost count comes back right on the next frame.
+`tests/test_bingo.py` runs three fresh machines over one frame for this.
+
+**The bingo card's key names the TEAM, and the card comes off a REAL frame.**
+Two instances of rules this project already has, reached through a new door.
+The journal key is `<chat>|<key>`, so an E17/E18 keyed on the match alone is
+swallowed as a duplicate for the one subscriber who follows BOTH teams of a
+match — shown one side of a match they follow from both. And `_context` reads
+the opponent's NAME off the frame, falling back to `matches.opponent_name`,
+which is the CANONICAL team's opponent: an event born from a kill has no frame
+of its own, and the fabricated empty one that was handed to it told a follower
+of the second tracked team that its opponent was itself. The last real frame
+is kept per match (`_frames`) for exactly that.
+
+**A square only one machine can tick does not belong in only one machine.**
+`record_win` reads the win off E7's payload, and it lived in the live machine
+alone — so a match the PAGE reported finished first (the feed never ran for
+the last map, or the format was never reported and its E7 stayed silent) sent
+the winner a card with "Win the match" still open, directly under an E7
+announcing the win. It is shared with `summary_events` now, and called BEFORE
+the card is built.
+
 **`render` is one long function, so a local name takes it from every branch.**
 `count = payload.get("count")` in the E16 branch shadowed the module's
 `count()` helper and broke E14's "3 matches" — in a branch hundreds of lines
@@ -801,7 +832,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 777 tests
+python -m pytest                                    # 780 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify

@@ -46,7 +46,8 @@ def test_replay_produces_the_expected_events(prepared, config):
         "E5:2397053:map:2:started:Dust2",
         "E11:2397053:map:2:point:them:13",
         "E6:2397053:map:2:result:10-13",
-        "E17:2397053:map:2:bingo",
+        # The team is in the key — see bingo.summary_events.
+        "E17:2397053:map:2:12857:bingo",
     ]
 
 

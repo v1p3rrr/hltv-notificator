@@ -323,16 +323,30 @@ class Notifier:
         Failures are logged and swallowed: a message the reader deleted, or one
         older than Telegram's 48-hour edit window, answers 400 forever, and a
         retraction that could not be made must not stall the feed behind it.
+
+        The types come from `RETRACTABLE` rather than being named here: the
+        same list decides which rows are queued carrying their map, and a type
+        added to one and not the other would be stored so it could be found
+        again and then never looked for. The same reasoning as `menu.MUTABLE`.
+
+        In DRY_RUN there is nothing in the chat to edit, so the rows carry no
+        message id — `delivered` is what lets them be found all the same, and
+        the struck text goes to the log. That is not cosmetic: a run against
+        live HLTV in DRY_RUN is how this project checks itself, and a
+        retraction invisible there is a retraction nobody can verify.
         """
-        rows = self.storage.sent_before(
-            event_type="E16", match_id=match_id, map_number=map_number,
-            created_before=sent_before)
+        sending = self._sending()
+        rows = []
+        for event_type in sorted(RETRACTABLE):
+            rows.extend(self.storage.sent_before(
+                event_type=event_type, match_id=match_id, map_number=map_number,
+                created_before=sent_before, delivered=sending))
         if not rows:
             return 0
         done = 0
         for row in rows:
-            if self.config.dry_run or self.telegram is None:
-                log.info("[retracted] %s", row["body"])
+            if not sending:
+                log.info("[retracted] %s", fmt.strike(row["body"]))
                 self.storage.mark_retracted(row["id"])
                 done += 1
                 continue
