@@ -72,8 +72,8 @@ def replay(path: Path, storage: Storage, config: Config, match_id: int) -> List[
     machine = LiveMachine(storage, config)
     produced: List[Event] = []
     for kind, item in items(path):
-        if kind == "kills":
-            produced.extend(machine.observe_kills(match_id, item))
+        if kind == "log":
+            produced.extend(machine.observe_log(match_id, item))
         else:
             produced.extend(machine.apply(match_id, item))
     return produced

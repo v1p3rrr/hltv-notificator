@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Any, Dict, List, Mapping, Optional
 
+from curl_cffi import CurlMime
 from curl_cffi.requests import AsyncSession
 
 log = logging.getLogger(__name__)
@@ -109,6 +110,54 @@ class Telegram:
             payload["reply_markup"] = reply_markup
         result = await self._call("sendMessage", payload)
         return int(result["message_id"])
+
+    async def send_document(self, chat_id: str, filename: str, content: bytes,
+                            caption: str = "") -> int:
+        """Upload a file to a chat.
+
+        The one call that is not JSON: `sendDocument` takes multipart, so it
+        does not go through `_call` and repeats the handful of lines that
+        matter. It still takes the shared gate first — the global rate is one
+        budget for every writer, and an upload is a call like any other.
+
+        The body is built with `CurlMime` and NOT with the `files=` argument
+        every other HTTP client in Python takes: curl_cffi accepts `files` in
+        its signature and then raises `NotImplementedError` from inside the
+        request, which is a failure nothing short of a real upload would have
+        shown. Measured against a local server — this shape produces a proper
+        `multipart/form-data` body with the filename, the content and the form
+        fields all in it.
+
+        The caption goes with the file rather than as a message beside it, so
+        the two cannot arrive in the wrong order.
+        """
+        session = await self._ensure()
+        await self._pace()
+        url = API.format(token=self._token, method="sendDocument")
+        payload = {"chat_id": str(chat_id)}
+        if caption:
+            payload["caption"] = caption
+            payload["parse_mode"] = "HTML"
+        try:
+            body = CurlMime.from_list([{
+                "name": "document", "filename": filename,
+                "content_type": "text/plain", "data": content,
+            }])
+            response = await session.post(url, data=payload, multipart=body,
+                                          timeout=120)
+        except Exception as exc:  # noqa: BLE001 - network
+            raise TelegramError(f"{type(exc).__name__}: {exc}") from exc
+        try:
+            data = response.json()
+        except Exception as exc:  # noqa: BLE001 - invalid response
+            raise TelegramError(f"HTTP {response.status_code}, body is not JSON") from exc
+        if not data.get("ok"):
+            description = data.get("description", "")
+            retry_after = (data.get("parameters") or {}).get("retry_after")
+            fatal = response.status_code in (400, 401, 403) and retry_after is None
+            raise TelegramError(f"Telegram {response.status_code}: {description}",
+                                retry_after=retry_after, fatal=fatal)
+        return int(data["result"]["message_id"])
 
     async def edit_message_text(self, chat_id: str, message_id: int, text: str,
                                 reply_markup: Optional[Dict[str, Any]] = None) -> None:

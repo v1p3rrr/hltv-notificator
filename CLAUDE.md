@@ -80,6 +80,7 @@ src/hltv_notify/
   streams.py           choosing which broadcasts go under a multikill
   digest.py            the daily "what is on" at a chosen local time
   replay.py            replaying a recorded dump through the state machine
+  matchlog_cli.py      printing a match's transcript, for a file off the server
   bot.py               bot commands
   sources/
     team_page.py       the schedule
@@ -92,6 +93,7 @@ src/hltv_notify/
     live_machine.py    E5, E6, E9, E15, E16-E18 from the live feed
     highlights.py      what a round produced: a multikill, a clutch, both
     bingo.py           the nine-square card: what fills it, what must not
+    matchlog.py        the match transcript: the log, written out readably
   notify/
     audience.py        who a notification goes to (the only pause check)
     format.py          message rendering
@@ -293,6 +295,32 @@ a MESSAGE: every counted occurrence is its own moment, while a MAX square
 speaks once, on the step that takes the MATCH from open to closed — not the
 map, or a second map with four in a row would announce a square ticked an hour
 ago.
+
+**`curl_cffi` takes a `files=` argument and then refuses it.** It is in the
+signature, like in every other HTTP client in Python, and raises
+`NotImplementedError` from inside the request — so an upload written the
+obvious way fails only in production, where the symptom is a command that
+answers nothing. `sendDocument` builds its body with `CurlMime` instead, and
+`tests/test_matchlog.py` posts it at a REAL socket: a mocked Telegram agrees
+with the mistake all the way out.
+
+**The log's cursor is a POSITION, and what tells a replay is the stream's
+FIRST id.** Most types have nothing to tell them apart by — `RoundStart` is
+literally `{}` — so the transcript counts entries instead. The test "its first
+id is one we have already seen" is the obvious one and it is wrong: the feed
+sends an `Assist` as its own packet carrying the `killEventId` of the kill
+before it, so that packet's only id EQUALS the newest seen. Read as a replay,
+its position of one overwrote a cursor of two thousand and the next connect
+rewrote the whole match — 317 round-end lines for a match with 46 rounds.
+
+**The transcript reads the map and the round off the LOG, not the frame.**
+`MatchStarted` has the map; `RoundEnd` has the score, whose sum IS the round's
+number; `Restart` puts the count back, which is what stops the knife round
+turning the real round one into round two. The frame describes the map being
+played NOW, and the backlog reaches back to maps played before we connected.
+The same reasoning puts `startingCt` behind every team name in it: `ctTeamId`
+is true only of the frame in hand, and half the rounds being written are from
+the other half of the map.
 
 **A number READ off the frame is not a thing that HAPPENED, and the write
 differs.** `Occurrence.absolute` is that distinction. A kill through smoke is

@@ -25,6 +25,7 @@
 | E14 the daily digest | done, at times set with `/digest`, in the subscriber's own zone; matches STARTING within a rolling 24 h, so neither the running match nor a finished one, and nothing at all on a day with none |
 | Broadcast links under a multikill | done, a quoted block on E9, `/settings streams` (default `STREAM_LINKS`); read off the match page we already poll, Twitch and Kick only |
 | E17 / E18 the bingo card after a map and after the match | done, `/settings bingo` (default `BINGO`), **on by default**; nine fixed squares counted over the whole match, built by whichever of the two machines reaches the end first |
+| The match transcript | done, `MATCH_LOG` (on by default), kept `MATCH_LOG_DAYS` days; every entry of the feed's log, fetched with `/log` as a file or with `python -m hltv_notify.matchlog_cli` from the server. Not per person: nothing is sent |
 | E16 a bingo moment | done, `/settings bingo_live` (default `BINGO_LIVE`), **off by default**; needs `bingo` on as well |
 
 ## Starting up

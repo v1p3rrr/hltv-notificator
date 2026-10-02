@@ -115,13 +115,12 @@ class LiveWorker:
                 log.debug("live feed of match %s is quiet, polling again", self.match_id)
                 continue
             for kind, item in feed_items(packets):
-                if kind == "kills":
-                    # The log's kills feed the bingo card and nothing else.
-                    # They are handed over in the order the feed sent them,
-                    # interleaved with the frames, because a kill carries no
-                    # map and no round of its own and is placed by the frame
-                    # before it.
-                    for event in self.machine.observe_kills(self.match_id, item):
+                if kind == "log":
+                    # The feed's log feeds the bingo card and the match
+                    # transcript. It is handed over in the order the feed sent
+                    # it, interleaved with the frames, because an entry carries
+                    # no map and no round of its own.
+                    for event in self.machine.observe_log(self.match_id, item):
                         self.notifier.enqueue(event)
                     await self._retract()
                     continue

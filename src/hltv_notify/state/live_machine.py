@@ -23,8 +23,10 @@ from .. import settings
 from ..config import Config
 from ..models import Event, MatchState
 from ..scoring import map_completed, rounds_to_win, series_decided
-from ..sources.scorebot import ROUND_WARMUP, KillEvent, LiveFrame
+from ..sources.scorebot import (ROUND_WARMUP, KillEvent, LiveFrame,
+                                kills_from_log)
 from . import bingo
+from . import matchlog
 from .bingo import BingoTracker
 from .comeback import ComebackTracker
 from .db import Storage, iso, utcnow
@@ -119,6 +121,15 @@ class LiveMachine:
         # itself. Exactly the "FORZE — FORZE" trap `_highlights_for_team`
         # exists to avoid, reached through the back door.
         self._frames: Dict[int, LiveFrame] = {}
+        # Team names by id, learned from the frames. The transcript names the
+        # team that won a round, including the opponent, who is not in the
+        # database as a team at all — but is in every frame, under whichever
+        # side they are on at the time.
+        self._names: Dict[int, Dict[int, str]] = {}
+        # Where each match's transcript has got to in the log stream. Rebuilt
+        # from the last line written, so a restart resumes rather than
+        # starting a fresh map at round one.
+        self._transcripts: Dict[int, matchlog.Transcript] = {}
 
     def _threshold(self, name: str) -> int:
         """The lowest threshold any subscriber is waiting for.
@@ -177,6 +188,13 @@ class LiveMachine:
             return []
         if not self._coherent(match_id, frame, map_name):
             return []
+
+        # Kept for everything that reads a frame it was not handed: the
+        # transcript's sides and team names, and the header of an event born
+        # from a kill. Recorded here and not inside the bingo path, which is
+        # switched off per subscriber while the transcript is not.
+        self._frames[match_id] = frame
+        self._learn_names(match_id, frame)
 
         recorded = {row["map_name"]: row["map_number"]
                     for row in self.storage.map_results(match_id)}
@@ -479,7 +497,6 @@ class LiveMachine:
         tracker = self._bingo_tracker(match_id)
         in_play = not self._warming_up(frame)
         self._where[match_id] = (map_number, map_name, in_play)
-        self._frames[match_id] = frame
 
         found, reset = tracker.observe_frame(
             map_name, frame, tracked, ours, theirs, in_play)
@@ -722,6 +739,99 @@ class LiveMachine:
             return []
         return self._bingo_occurrence_events(match_id, self._last_frame(match_id),
                                              map_number, map_name, found)
+
+    # ------------------------------------------------------------------
+    # The match transcript.
+
+    def observe_log(self, match_id: int, entries) -> List[Event]:
+        """One log packet: the bingo card's kills, and the transcript.
+
+        One entry point so the worker hands the packet over once and the two
+        readers cannot fall out of step over which entries they saw.
+        """
+        events = self.observe_kills(match_id, kills_from_log(entries))
+        try:
+            self._write_transcript(match_id, entries)
+        except Exception:  # noqa: BLE001 - a record must not cost the feed
+            # The transcript is a convenience; the feed is the service. An
+            # exception here lands inside the frame loop, which is the one
+            # place that costs every subscriber their live score.
+            log.exception("match %s: the transcript could not be written", match_id)
+        return events
+
+    def _learn_names(self, match_id: int, frame: LiveFrame) -> None:
+        names = self._names.setdefault(match_id, {})
+        for team_id, name in ((frame.ct_team_id, frame.ct_team_name),
+                              (frame.t_team_id, frame.t_team_name)):
+            if team_id and name:
+                names[int(team_id)] = name
+
+    def _name_of(self, match_id: int):
+        """Team id -> name, from the frames and then from the database.
+
+        The frames first because they carry the OPPONENT's name too, and the
+        opponent is not a tracked team: `team_name` would fall back to the
+        config's team and put the first seed's name on somebody else's side.
+        """
+        names = self._names.get(match_id, {})
+
+        def lookup(team_id) -> str:
+            if not team_id:
+                return ""
+            found = names.get(int(team_id))
+            if found:
+                return found
+            return self.storage.team_name(int(team_id), "") or ""
+
+        return lookup
+
+    def _transcript(self, match_id: int) -> "matchlog.Transcript":
+        """Where the stream had got to, resumed from the last line written."""
+        if match_id not in self._transcripts:
+            state = matchlog.Transcript()
+            tail = self.storage.match_log_tail(match_id)
+            if tail is not None:
+                state.map_name = tail["map_name"] or ""
+                state.decided = max(0, int(tail["round_number"] or 1) - 1)
+            self._transcripts[match_id] = state
+        return self._transcripts[match_id]
+
+    def _write_transcript(self, match_id: int, entries) -> None:
+        if not self.config.match_log or not entries:
+            return
+        position, first_id = self.storage.match_log_cursor(match_id)
+        if first_id is None:
+            # The first packet of a match is also the one moment worth pruning
+            # on. Startup does it too, but a service that runs for weeks would
+            # otherwise keep every transcript it ever wrote; doing it per
+            # WRITE instead would be a DELETE for every line of every kill.
+            dropped = self.storage.prune_match_log(self.config.match_log_days)
+            if dropped:
+                log.info("dropped %d transcript line(s) older than %d days",
+                         dropped, self.config.match_log_days)
+        fresh, position, first_id = matchlog.new_entries(
+            entries, position=position, first_id=first_id)
+        self.storage.set_match_log_cursor(match_id, position, first_id)
+        if not fresh:
+            return
+        frame = self._frames.get(match_id)
+        name_of = self._name_of(match_id)
+        state = self._transcript(match_id)
+        rows = []
+        for entry in fresh:
+            # The round BEFORE the entry is folded in, because a RoundEnd
+            # belongs to the round it ends rather than to the next one.
+            round_number = state.round_of(entry)
+            state.observe(entry)
+            text = matchlog.render(entry, round_number=round_number,
+                                   frame=frame, name_of=name_of)
+            if text:
+                rows.append((state.map_name or None, round_number,
+                             entry.kind, text))
+        written = self.storage.append_match_log(match_id, rows)
+        if written:
+            log.debug("match %s: %d line(s) added to the transcript",
+                      match_id, written)
 
     def _last_frame(self, match_id: int) -> LiveFrame:
         """The frame that placed these kills, for the event's header.

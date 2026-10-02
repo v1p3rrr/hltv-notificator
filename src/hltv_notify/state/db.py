@@ -251,6 +251,48 @@ CREATE TABLE IF NOT EXISTS bingo_watermark (
     event_id INTEGER NOT NULL
 );
 
+-- The match transcript: every entry of the feed's log, rendered into a line.
+-- A record rather than a decision — kept for a couple of days so that "what
+-- actually happened in that round" can be answered after the fact, and pruned
+-- by age like raw_log.
+--
+-- `created_utc` is when the line was RECORDED, not when the thing happened:
+-- the feed stamps nothing, and a connect replays the whole match at once. It
+-- is here to prune by and is deliberately not printed, because a transcript
+-- whose times are all the moment of one reconnect would be worse than one with
+-- none. The map and the round are what orient a reader of a CS match, and both
+-- come out of the log stream itself.
+CREATE TABLE IF NOT EXISTS match_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id     INTEGER NOT NULL,
+    created_utc  TEXT NOT NULL,
+    map_name     TEXT,
+    round_number INTEGER,
+    kind         TEXT NOT NULL,
+    text         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS match_log_match ON match_log(match_id, id);
+CREATE INDEX IF NOT EXISTS match_log_ts ON match_log(created_utc);
+
+-- How far into a match's log stream the transcript has got.
+--
+-- The server's log is append-only and a connect replays it from the start, so
+-- a COUNT of entries taken is an exact cursor into it. A set of fingerprints
+-- could not do this job: most types have nothing to fingerprint — `RoundStart`
+-- is literally `{}` — and two bomb plants by the same player on the same site
+-- with the same players alive are a real pair of events, not a duplicate.
+-- `highest_id` is what tells a replay from the next few entries.
+-- `first_id` is the id the match's log stream STARTS at, and it is what tells
+-- a replay of the whole backlog from the next few entries. Not "an id we have
+-- already seen": the feed sends an Assist as its own packet carrying the
+-- killEventId of the kill before it, so that test reads a one-entry packet as
+-- a full replay and resets the cursor to one.
+CREATE TABLE IF NOT EXISTS match_log_state (
+    match_id   INTEGER PRIMARY KEY,
+    position   INTEGER NOT NULL,
+    first_id   INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -1363,6 +1405,78 @@ class Storage:
         return self.conn.execute(
             "SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0]
 
+    # ---------- the match transcript ----------
+
+    def match_log_cursor(self, match_id: int) -> Tuple[int, Optional[int]]:
+        """How many entries of this match's log have been written, and the id
+        its stream starts at. (0, None) for a match never seen."""
+        row = self.conn.execute(
+            "SELECT position, first_id FROM match_log_state WHERE match_id = ?",
+            (match_id,)).fetchone()
+        if row is None:
+            return 0, None
+        return int(row["position"]), row["first_id"]
+
+    def set_match_log_cursor(self, match_id: int, position: int,
+                             first_id) -> None:
+        self.conn.execute(
+            "INSERT INTO match_log_state (match_id, position, first_id) "
+            "VALUES (?, ?, ?) ON CONFLICT(match_id) DO UPDATE SET "
+            "position = excluded.position, "
+            # Kept once it is known: it is the stream's beginning, which does
+            # not change for the life of the match.
+            "first_id = COALESCE(first_id, excluded.first_id)",
+            (match_id, int(position), first_id))
+
+    def append_match_log(self, match_id: int, rows: List[tuple]) -> int:
+        """Add lines to a match's transcript. `rows` are
+        (map_name, round_number, kind, text), already rendered."""
+        if not rows:
+            return 0
+        now = iso(utcnow())
+        self.conn.executemany(
+            "INSERT INTO match_log (match_id, created_utc, map_name, round_number, "
+            "kind, text) VALUES (?, ?, ?, ?, ?, ?)",
+            [(match_id, now, map_name, round_number, kind, text)
+             for map_name, round_number, kind, text in rows])
+        return len(rows)
+
+    def match_log_lines(self, match_id: int,
+                        limit: int = 100000) -> List[sqlite3.Row]:
+        return list(self.conn.execute(
+            "SELECT map_name, round_number, kind, text FROM match_log "
+            "WHERE match_id = ? ORDER BY id LIMIT ?", (match_id, limit)))
+
+    def match_log_tail(self, match_id: int) -> Optional[sqlite3.Row]:
+        """The last line written for a match.
+
+        It is also where the transcript resumes after a restart: the map and
+        the round are columns, so the state the stream was in does not need a
+        second place to live."""
+        return self.conn.execute(
+            "SELECT map_name, round_number FROM match_log WHERE match_id = ? "
+            "ORDER BY id DESC LIMIT 1", (match_id,)).fetchone()
+
+    def match_log_ids(self, limit: int = 20) -> List[sqlite3.Row]:
+        """Matches with a transcript, newest first, for a bot command with no
+        argument to offer."""
+        return list(self.conn.execute(
+            "SELECT match_id, COUNT(*) AS lines, MAX(created_utc) AS last_utc "
+            "FROM match_log GROUP BY match_id ORDER BY MAX(id) DESC LIMIT ?",
+            (limit,)))
+
+    def prune_match_log(self, keep_days: int) -> int:
+        """Drop transcripts older than this. Their cursors go with them: a
+        match whose lines are gone must not resume halfway through a stream
+        whose beginning no longer exists anywhere."""
+        cutoff = iso(utcnow() - timedelta(days=max(0, keep_days)))
+        cursor = self.conn.execute(
+            "DELETE FROM match_log WHERE created_utc < ?", (cutoff,))
+        self.conn.execute(
+            "DELETE FROM match_log_state WHERE match_id NOT IN "
+            "(SELECT DISTINCT match_id FROM match_log)")
+        return cursor.rowcount or 0
+
     # ---------- the bingo card ----------
 
     def bingo_watermark(self, match_id: int) -> Optional[int]:
@@ -1659,7 +1773,8 @@ class Storage:
         self.set_meta("legacy_keys_adopted", iso(utcnow()))
         return cur.rowcount
 
-    def prune(self, *, sent_days: int = 90, events_days: int = 365) -> None:
+    def prune(self, *, sent_days: int = 90, events_days: int = 365,
+              match_log_days: Optional[int] = None) -> None:
         """Remove what nobody needs any more.
 
         Sent queue rows are simply rubbish. The event journal is treated far
@@ -1679,6 +1794,8 @@ class Storage:
             "DELETE FROM live_messages WHERE match_id IN "
             "(SELECT match_id FROM matches WHERE start_utc < ?)",
             (iso(utcnow() - timedelta(days=sent_days)),))
+        if match_log_days is not None:
+            self.prune_match_log(match_log_days)
 
     def get_meta(self, key: str) -> Optional[str]:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()

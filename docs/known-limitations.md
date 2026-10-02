@@ -553,3 +553,32 @@ also had a real weapon in it, because a round of nothing but knives is the
 knife round before the map. If the feed drops for the part of a round that
 held the other kills, a genuine knife frag is read as a knife round and lost.
 Missed, never invented — the same trade as the highlights.
+
+## The transcript has no times, and no defuser
+
+Two things HLTV's log simply does not carry.
+
+It stamps nothing, and a connect delivers the whole match in one packet, so the
+only time this service could print is the moment it happened to write the line
+— which for most of a transcript is one and the same second, the second of a
+reconnect. Printing that would be worse than printing nothing, so the lines
+carry the map and the round and no clock.
+
+And there is no `BombDefused` entry at all. A defuse is visible only as
+`RoundEnd.winType == "Bomb_Defused"`, which names no player. The round's line
+says the bomb was defused and does not guess who did it, for the same reason a
+clutch that cannot be sized is dropped rather than called a 1v1.
+
+## A transcript entry already taken is written again if the same packet is fed twice
+
+The cursor into the log stream is a count of entries, and what tells a replay
+of the whole backlog from the next few entries is the id the stream starts at.
+That is exact for the only repeat that happens in service: a reconnect, which
+replays everything from the beginning — measured on the forze recording, a
+second pass of the full backlog adds zero lines.
+
+What it does not cover is re-feeding an incremental packet the cursor has
+already passed, because such a packet carries nothing to say it is old. Nothing
+in the live service does that; replaying a recorded dump twice does, and the
+transcript then grows by the dump's incremental packets. The events the replay
+test asserts on are unaffected — they have their own journal.

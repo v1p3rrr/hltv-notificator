@@ -185,6 +185,16 @@ class Config:
     # by default — the counting is what the feature IS, and with it off the
     # feed's log is not even parsed.
     bingo: bool = field(default_factory=lambda: _bool("BINGO", True))
+
+    # The match transcript: every entry of the feed's log written out in
+    # readable English, so that "what actually happened in that round" can be
+    # answered after the fact. Not a notification — nothing is sent, it is
+    # fetched with /log. On by default, because its whole purpose is to be
+    # there when something looks wrong and there is nothing to go back to.
+    match_log: bool = field(default_factory=lambda: _bool("MATCH_LOG", True))
+    # And how long it is kept. Two days: long enough to look at yesterday's
+    # match, short enough that a few thousand lines a match never adds up.
+    match_log_days: int = field(default_factory=lambda: _int("MATCH_LOG_DAYS", 2))
     # And a message for each moment as it happens. Off by default, and
     # measured rather than guessed: a team produces some seven kills through
     # smoke and six through a wall per map, so this is around fifteen extra

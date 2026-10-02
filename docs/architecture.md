@@ -889,6 +889,70 @@ reported first — the feed never ran for the last map, or the format was never
 reported and its E7 stayed silent — went out with "Win the match" still open
 above an E7 announcing the win.
 
+## The match transcript
+
+A record, not a decision and not a notification: every entry of the feed's log
+written out readably and kept for two days, so that "what actually happened in
+that round" can be answered after the fact. Fetched with `/log`, which uploads
+it as a file, or from the server with `python -m hltv_notify.matchlog_cli`.
+
+Everything else in this service is built to be CERTAIN before it speaks. This
+one is built to be COMPLETE, and the difference shows in what it is allowed to
+do: it prints what the source said, including the types no machine reads, and
+an unknown type is printed raw rather than dropped.
+
+**The map and the round come out of the log stream, not out of the frames.**
+`MatchStarted` carries the map name, and `RoundEnd` carries the score AFTER the
+round — whose sum IS that round's number, in regulation and overtime alike,
+because every round adds exactly one to it. So the backlog a connect replays
+lays itself out across its own maps and rounds, and a service that joined a
+match halfway still writes a transcript that starts at round one. Reading the
+map off the current frame instead would stamp map one's rounds with map two's
+name. `Restart` puts the count back, which is what keeps the knife round from
+making the real round one into round two.
+
+**The position in the stream is the deduplication.** The server's log is
+append-only and a connect replays it from the beginning, so a COUNT of entries
+taken is an exact cursor into it. A set of fingerprints could not do this job:
+`RoundStart` is literally `{}`, and two bomb plants by the same player on the
+same site with the same players alive are a real pair of events rather than a
+duplicate.
+
+Which of the two kinds of packet is in hand is told by `first_id`, the id the
+match's stream starts at. The obvious test — "its first id is one we have seen"
+— is wrong in a way that destroys the cursor: the feed sends an `Assist` as its
+own packet carrying the `killEventId` of the kill before it, so that packet's
+only id EQUALS the newest one seen. Read as a replay, its position of one
+overwrote a cursor of two thousand and the next connect rewrote the whole
+match. Measured on the forze recording: 317 round-end lines for a match with 46
+rounds, against the 48 it writes now.
+
+**The team that won a round is read from `startingCt`, never from `ctTeamId`.**
+The transcript writes rounds that are already over — the whole backlog of them
+on the first connect — and the current frame's sides are the wrong answer for
+every round of the other half. `matchlog.ct_half` turns a round number into a
+half, including the overtime ones, where the first OT half puts the teams back
+on the sides they started the map on. With no starting sides known, no team is
+named: the line says CT and T, which is true.
+
+**What the source does not have is not invented.** There is no `BombDefused`
+entry in the log at all: a defuse shows up only as `RoundEnd.winType ==
+"Bomb_Defused"`, with no player on it. The round's line says the bomb was
+defused and names nobody. The same reasoning leaves `CTs_Win` and
+`Terrorists_Win` unglossed — neither says whether the round went on elimination
+or on the clock — while the three bomb outcomes are put into words, and every
+line keeps the raw code beside the gloss because this is a diagnostic file.
+
+**There are no timestamps.** The feed stamps nothing, and a connect delivers
+the whole match at once, so the only time this service knows is when it
+happened to write the line. `created_utc` is stored to prune by and is
+deliberately not printed: a transcript whose times were all the moment of one
+reconnect would be worse than one with none.
+
+Writing it can never cost the feed: `observe_log` catches everything the
+transcript raises, because an exception there lands inside the frame loop,
+which is the one place that costs every subscriber their live score.
+
 ## The daily digest (E14)
 
 A reminder answers "this match starts soon". The digest answers a different
@@ -1130,6 +1194,8 @@ queue rows are in the database and go out on the next start.
 | `live_messages` | the id of the live message per map |
 | `bingo_counters` | the bingo card, per match **per map per team** |
 | `bingo_watermark` | the last kill of a match already counted; the row existing is also what says the match has been seeded |
+| `match_log` | the match transcript, one row per log entry, pruned by age |
+| `match_log_state` | how far into a match's log stream the transcript has got |
 | `raw_log` | raw responses for debugging, pruned by age |
 | `meta` | the first-run flag, a match's map lineup, the last poll time |
 

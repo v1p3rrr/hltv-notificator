@@ -128,6 +128,12 @@ class LiveFrame:
     t_score: int
     regulation: int
     overtime: int
+    # Which team STARTED on which side. Fixed for the whole map, unlike
+    # ct_team_id, and the only way to say who was on CT in a round that is
+    # already over — which the match log needs for every round of the backlog
+    # the feed replays on connect.
+    starting_ct: Optional[int] = None
+    starting_t: Optional[int] = None
     ct_players: Tuple["PlayerLine", ...] = ()
     t_players: Tuple["PlayerLine", ...] = ()
     # The round-by-round result of the map, per side. Tied to ctTeamId/tTeamId
@@ -352,6 +358,8 @@ def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
         t_score=int(payload.get("tTeamScore") or 0),
         regulation=int(payload.get("regulationHalfLength") or 12),
         overtime=int(payload.get("overtimeHalfLength") or 3),
+        starting_ct=payload.get("startingCt"),
+        starting_t=payload.get("startingT"),
         ct_players=_players(payload.get("CT")),
         t_players=_players(payload.get("TERRORIST")),
         ct_history=_history(payload.get("ctMatchHistory")),
@@ -532,19 +540,52 @@ class ScorebotClient:
             self._session = None
 
 
-def parse_kills(payload: str) -> Tuple[KillEvent, ...]:
-    """The `Kill` entries of one log event, OLDEST FIRST.
+@dataclass(frozen=True)
+class LogEntry:
+    """One entry of the feed's `log`, whatever its type.
+
+    The log is an append-only stream on the server, and a connect replays all
+    of it. `kind` is the key the entry arrived under and `data` is that key's
+    object, untouched: the types and their shapes are measured in R4 and
+    nothing here guesses at a field that was not seen.
+
+    Only `Kill` and `Assist` carry an id (`eventId` / `killEventId`). Every
+    other type is anonymous, which is what `matchlog.new_entries` exists to
+    work around.
+    """
+
+    kind: str
+    data: dict
+
+    @property
+    def event_id(self) -> Optional[int]:
+        """The kill this entry IS, or the kill it belongs to.
+
+        An `Assist` names the kill it assisted (`killEventId`), which is both
+        how it is folded into that kill's line and how it is placed in the
+        stream. Nothing else has one.
+        """
+        for field_name in ("eventId", "killEventId"):
+            try:
+                return int(self.data[field_name])
+            except (KeyError, TypeError, ValueError):
+                continue
+        return None
+
+
+def parse_log(payload: str) -> Tuple[LogEntry, ...]:
+    """One log event into its entries, OLDEST FIRST.
 
     The feed sends them newest first — measured, every packet of both
     recordings is in descending `eventId` — and everything downstream reads
-    them as a stream in time order: the round a kill belongs to, the running
-    count, the high-water mark. So they are turned round here, once, rather
-    than at each of those places.
+    them as a stream in time order: the round an entry belongs to, the running
+    count, the high-water mark, the match log's own ordering. So they are
+    turned round here, once, rather than at each of those places.
 
     The payload is a JSON STRING holding `{"log": [{"<Type>": {...}}, ...]}`,
-    not an object. The other types (`RoundStart`, `MatchStarted`, `Assist`,
-    `BombPlanted`, …) are skipped: `MatchStarted` in particular arrives 150
-    times over a two-map series and says nothing a scoreboard frame does not.
+    not an object. Every type is kept, including the ones no decision is made
+    from: the match log prints them, and an entry dropped here would also
+    shift the positions the match log counts by.
     """
     try:
         body = json.loads(payload)
@@ -552,13 +593,24 @@ def parse_kills(payload: str) -> Tuple[KillEvent, ...]:
         return ()
     if not isinstance(body, dict):
         return ()
-    kills: List[KillEvent] = []
+    entries: List[LogEntry] = []
     for item in body.get("log") or []:
         if not isinstance(item, dict):
             continue
-        raw = item.get("Kill")
-        if not isinstance(raw, dict):
+        for kind, data in item.items():
+            if isinstance(data, dict):
+                entries.append(LogEntry(kind=str(kind), data=data))
+    entries.reverse()
+    return tuple(entries)
+
+
+def kills_from_log(entries: Tuple[LogEntry, ...]) -> Tuple[KillEvent, ...]:
+    """The `Kill` entries as the typed events the bingo card counts."""
+    kills: List[KillEvent] = []
+    for entry in entries:
+        if entry.kind != "Kill":
             continue
+        raw = entry.data
         try:
             event_id = int(raw["eventId"])
         except (KeyError, TypeError, ValueError):
@@ -577,24 +629,29 @@ def parse_kills(payload: str) -> Tuple[KillEvent, ...]:
             through_smoke=bool(raw.get("throughSmoke")),
             penetrated=bool(raw.get("penetrated")),
         ))
-    kills.reverse()
     return tuple(kills)
+
+
+def parse_kills(payload: str) -> Tuple[KillEvent, ...]:
+    """The `Kill` entries of one log event, oldest first."""
+    return kills_from_log(parse_log(payload))
 
 
 def feed_items(packets: List[str]) -> List[Tuple[str, object]]:
     """Everything usable in a batch, IN THE ORDER THE FEED SENT IT.
 
-    `("frame", LiveFrame)` and `("kills", (KillEvent, ...))`. The order is the
-    point: a kill carries no map and no round of its own, so it is placed by
-    the last frame seen before it. Sorting the frames out first and the kills
-    afterwards would hand every kill of the batch the round the batch ENDED
+    `("frame", LiveFrame)` and `("log", (LogEntry, ...))`. The order is the
+    point: a log entry carries no map and no round of its own, so it is placed
+    by the last frame seen before it. Sorting the frames out first and the log
+    afterwards would hand every entry of the batch the round the batch ENDED
     in, which across a round boundary is the wrong round and across a map
     boundary the wrong map.
 
-    Scoreboard frames stay the only thing decisions are made from — the log is
-    read for what a frame cannot say (which weapon, through what) and for
-    nothing else. Transitions are still born on comparison with stored state,
-    because the log replays its whole backlog on every connect.
+    Scoreboard frames stay the only thing DECISIONS are made from — the log is
+    read for what a frame cannot say (which weapon, through what, who planted)
+    and for the match log, which is a transcript rather than a decision.
+    Transitions are still born on comparison with stored state, because the
+    log replays its whole backlog on every connect.
     """
     items: List[Tuple[str, object]] = []
     for packet in packets:
@@ -609,9 +666,9 @@ def feed_items(packets: List[str]) -> List[Tuple[str, object]]:
             if frame is not None:
                 items.append(("frame", frame))
         elif name == "log" and isinstance(payload, str):
-            kills = parse_kills(payload)
-            if kills:
-                items.append(("kills", kills))
+            entries = parse_log(payload)
+            if entries:
+                items.append(("log", entries))
     return items
 
 

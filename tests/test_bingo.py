@@ -19,7 +19,8 @@ from hltv_notify.config import Config
 from hltv_notify.models import Event
 from hltv_notify.notify import format as fmt
 from hltv_notify.sources.scorebot import (KillEvent, LiveFrame, PlayerLine,
-                                          RoundOutcome, feed_items, parse_kills)
+                                          RoundOutcome, feed_items,
+                                          kills_from_log, parse_kills)
 from hltv_notify.state import bingo
 from hltv_notify.state.db import utcnow
 from hltv_notify.state.live_machine import LiveMachine
@@ -658,8 +659,8 @@ def test_the_log_of_a_real_recording_parses_into_kills():
     the numbers rather than by a shrug."""
     kills = {}
     for kind, item in recorded("scorebot-2397053-forze.jsonl.gz"):
-        if kind == "kills":
-            for one in item:
+        if kind == "log":
+            for one in kills_from_log(item):
                 kills[one.event_id] = one
     assert len(kills) == 543
     assert sum(1 for k in kills.values() if k.through_smoke) == 30
@@ -677,8 +678,8 @@ def test_kills_arrive_oldest_first_however_the_feed_sends_them():
     for name in ("scorebot-2397053-forze.jsonl.gz",
                  "scorebot-2396936-map-boundary.jsonl.gz"):
         for kind, item in recorded(name):
-            if kind == "kills":
-                ids = [one.event_id for one in item]
+            if kind == "log":
+                ids = [one.event_id for one in kills_from_log(item)]
                 assert ids == sorted(ids)
 
 

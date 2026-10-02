@@ -248,7 +248,9 @@ async def run() -> int:
     await http.close()
     if telegram is not None:
         await telegram.close()
-    storage.prune(sent_days=config.outbox_keep_days, events_days=config.events_keep_days)
+    storage.prune(sent_days=config.outbox_keep_days,
+                  events_days=config.events_keep_days,
+                  match_log_days=config.match_log_days)
     storage.close()
     return 0
 

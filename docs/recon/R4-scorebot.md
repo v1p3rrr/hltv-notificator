@@ -177,6 +177,48 @@ The payload is a JSON **string** with `{"log":[ {<Type>: {...}}, … ]}`. The
 types observed: `MatchStarted`, `RoundStart`, `RoundEnd`, `Restart`, `Kill`,
 `Assist`, `BombPlanted`, `Suicide`, `PlayerJoin`, `PlayerQuit`.
 
+#### Every type, measured 2026-10-02
+
+The shapes, from both recordings. These are what the match transcript prints,
+and three of them say things no scoreboard frame does.
+
+```json
+{"RoundStart":   {}}
+{"Restart":      {}}
+{"MatchStarted": {"map": "de_dust2"}}
+{"RoundEnd":     {"counterTerroristScore": 0, "terroristScore": 1,
+                  "winner": "TERRORIST", "winType": "Terrorists_Win"}}
+{"BombPlanted":  {"playerName": "Ryujin", "playerNick": "Ryujin",
+                  "ctPlayers": 2, "tPlayers": 3, "bombSite": "B"}}
+{"Suicide":      {"playerName": "YumsaN", "playerNick": "YumsaN",
+                  "side": "TERRORIST", "weapon": "world"}}
+{"Assist":       {"assisterNick": "HeCkBNk", "assisterSide": "TERRORIST",
+                  "victimNick": "reyoz", "victimSide": "CT",
+                  "killEventId": 3943695551}}
+{"PlayerJoin":   {"playerName": "KusMe", "playerNick": "KusMe"}}
+{"PlayerQuit":   {"playerName": "YumsaN", "playerNick": "YumsaN",
+                  "playerSide": "TERRORIST"}}
+```
+
+Four things worth writing down.
+
+**There is no `BombDefused`.** Not in either recording, under any name. A
+defuse is visible ONLY as `RoundEnd.winType == "Bomb_Defused"`, which carries
+no player — so "who defused it" is not answerable from this source.
+
+**`RoundEnd` carries the score AFTER the round**, whose sum is that round's
+number: every round adds exactly one to it, in regulation and in overtime
+alike. That is how the transcript numbers rounds without counting them.
+
+**`Assist` has no id of its own**, only the `killEventId` of the kill it
+assisted — and the feed sends it as a packet of its own, AFTER that kill. So a
+one-entry packet whose only id equals the newest one already seen is the
+ordinary case, not a replay.
+
+**`winType` values observed:** `Target_Bombed`, `Target_Saved`, `Bomb_Defused`,
+`CTs_Win`, `Terrorists_Win`. The last two do not say whether the round went on
+elimination or on the clock.
+
 #### `Kill` — measured 2026-10-02, and the only reason the log is read at all
 
 ```json

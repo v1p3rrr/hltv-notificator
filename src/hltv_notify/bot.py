@@ -24,6 +24,7 @@ from .notify.telegram import Telegram, TelegramError
 from . import menu
 from . import settings as prefs
 from .models import MatchState
+from .state import matchlog
 from .scheduler import LAST_ERROR_KEY, LAST_POLL_KEY, SchedulePoller
 from .state.db import Storage, parse_iso, utcnow
 from .watchdog import Watchdog
@@ -112,6 +113,7 @@ COMMANDS = (
      "Your alerts: multikill, comeback, half, overtime, card, streams"),
     ("pause", "", "Go quiet"),
     ("resume", "", "Start sending again"),
+    ("log", "[match id]", "The last match's full transcript, as a file"),
     ("check", "", "Read the schedule now, without waiting for the next cycle"),
     ("whoami", "", "Your chat_id"),
     ("verbose", "on|off", "Debug logging in the service log (main chat only)"),
@@ -280,6 +282,8 @@ class CommandBot:
                 reply = self._timezone(chat_id, argument)
             elif command == "/settings":
                 reply = self._settings(chat_id, argument)
+            elif command == "/log":
+                reply = await self._match_log(chat_id, argument)
             elif command == "/pause":
                 reply = self._pause(chat_id, True)
             elif command == "/resume":
@@ -293,7 +297,61 @@ class CommandBot:
             log.exception("failed to handle command %s", command)
             reply = "The command crashed, details are in the logs."
 
-        await self._reply(chat_id, reply, self._markup_for(chat_id, command))
+        if reply:
+            # A handler that answered for itself — /log uploads a file and has
+            # nothing left to say — returns "". Sending an empty message there
+            # would be a Telegram 400 and a reply the person never asked for.
+            await self._reply(chat_id, reply, self._markup_for(chat_id, command))
+
+    async def _match_log(self, chat_id: str, argument: str) -> str:
+        """`/log` — the whole match as a file.
+
+        A transcript is thousands of lines; a chat message cannot hold one and
+        should not try. It goes up as a document, which is also the shape a
+        person wants it in — to scroll, to search, to keep.
+        """
+        if not self.config.match_log:
+            return ("The match transcript is switched off "
+                    "(<code>MATCH_LOG</code> in the environment).")
+        recent = self.storage.match_log_ids()
+        if not recent:
+            return ("No transcripts yet. One is kept for every match the live "
+                    f"feed watches, for {self.config.match_log_days} days.")
+
+        argument = (argument or "").strip()
+        if argument:
+            if not argument.isdigit():
+                return ("Give a match id, or nothing at all for the most "
+                        "recent one.")
+            match_id = int(argument)
+            if match_id not in {int(row["match_id"]) for row in recent}:
+                known = ", ".join(f"<code>{row['match_id']}</code>"
+                                  for row in recent[:10])
+                return f"No transcript for that match. Kept right now: {known}"
+        else:
+            match_id = int(recent[0]["match_id"])
+
+        rows = self.storage.match_log_lines(match_id)
+        if not rows:
+            return "That transcript has already been pruned."
+        row = self.storage.get_match(match_id)
+        title = ""
+        if row is not None:
+            team = self.storage.team_name(
+                self.storage.canonical_team(match_id) or self.config.team_id,
+                self.config.team_name)
+            title = f"{team} vs {row['opponent_name']}"
+        body = matchlog.to_text(match_id, title, rows)
+        try:
+            await self.telegram.send_document(
+                chat_id, f"match-{match_id}.txt", body.encode("utf-8"),
+                caption=f"Transcript of match <code>{match_id}</code> — "
+                        f"{fmt.escape(title)}, {len(rows)} lines")
+        except TelegramError as exc:
+            log.error("could not send the transcript of match %s: %s",
+                      match_id, exc)
+            return "Telegram would not take the file, details are in the logs."
+        return ""
 
     def _rate_limited(self, chat_id: str) -> Optional[str]:
         """Whether this chat has run over its command allowance.

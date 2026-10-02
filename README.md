@@ -257,6 +257,44 @@ the chat into a struck-through line with a ❌ on it rather than quietly
 deleted. A score that drops to 0:0 and then comes *back* is a server that
 crashed and was restored, not a reset, and nothing is thrown away.
 
+### The match transcript
+
+Every entry of HLTV's live feed, written out in English and kept for two days,
+for when something looked wrong and there is nothing to go back to:
+
+```
+=== map: de_dust2 ===
+--- round 12 ---
+    Lack1 (T) killed reyoz (CT) — ak47, headshot, through smoke
+    YumsaN (CT) assisted the kill on reyoz
+    Ryujin (T) planted the bomb at B (2 CT vs 3 T alive)
+    KusMe (CT) killed Kaide (T) — usp_silencer, wallbang
+    round 12 ended — FORZE Reload (CT) won · the bomb was defused
+                     [Bomb_Defused] · FORZE Reload 7:5 Color
+```
+
+`/log` uploads the whole thing as a file; `/log 2397053` picks a particular
+match. From the server instead, without the bot:
+
+```bash
+docker compose exec app python -m hltv_notify.matchlog_cli > match.txt
+docker compose exec app python -m hltv_notify.matchlog_cli --list
+```
+
+It is a record rather than a notification: nothing is sent, nothing is muted,
+and there is no per-person switch — only `MATCH_LOG` and `MATCH_LOG_DAYS`.
+
+**There are no timestamps**, and that is on purpose: the feed stamps nothing,
+and a reconnect delivers the whole match at once, so the only time this
+service could print is the moment it happened to write the line — which for
+most of a transcript is one and the same second. The map and the round are
+what orient a reader of a CS match, and both are read out of the log stream
+itself.
+
+**There is no defuser either.** HLTV's log has no "bomb defused" entry at all:
+a defuse shows up only as the round's outcome, with no player on it. The line
+says the bomb was defused and does not guess who did it.
+
 ### The morning digest
 
 A reminder tells you a match is about to start. This tells you whether the day
@@ -574,6 +612,7 @@ Not everything has a button: a few commands carry a value that has to be typed
 | `/tz Europe/Berlin` | your timezone | **no** |
 | `/settings` | your own thresholds — multikill, clutch, comeback, half, overtime, the live card, the bingo card, the stream links. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
 | `/pause`, `/resume` | go completely quiet / start receiving again | yes |
+| `/log` | the last match's full transcript, uploaded as a file; `/log <id>` for a particular one | yes |
 | `/check` | read the schedule now instead of waiting for the next cycle, which is up to 30 min when nothing is due | **no** |
 | `/whoami` | your numeric `chat_id` — the value that goes into `TELEGRAM_CHAT_ID` | **no** |
 | `/verbose on`, `/verbose off` | turn debug logging on and off without restarting the container. It changes the service's log only, never what arrives in the chat. **Main chat only** — it is a setting of the whole service, and it is not even offered to anyone else | **no** |
@@ -717,6 +756,8 @@ are most likely to touch:
 | `COMEBACK_ROUNDS` | `9` | swing that counts as a comeback; `0` removes the line — the **default** for `/settings comeback` |
 | `BINGO` | `true` | count the bingo card and report it after every map and match — the **default** for `/settings bingo` |
 | `BINGO_LIVE` | `false` | a message for every bingo moment as it happens — the **default** for `/settings bingo_live` |
+| `MATCH_LOG` | `true` | keep a readable transcript of every match the live feed watches, fetched with `/log` |
+| `MATCH_LOG_DAYS` | `2` | how long a transcript is kept |
 | `STREAM_LINKS` | `true` | broadcast links under a multikill — the **default** for `/settings streams` |
 | `STREAM_LINKS_MAX` | `3` | how many to list; `0` means **all** — the **default** for `/settings streams_count` |
 | `STREAM_LANGUAGES` | `en,ru` | languages worth a tap — the **default** for `/settings streams_langs` |
