@@ -25,7 +25,7 @@ from .models import Event
 from .notify.live_message import LiveMessenger
 from .notify.outbox import Notifier
 from .sources.scorebot import (FeedIdle, FeedRejected, FeedUnavailable,
-                               ScorebotClient, frames_from_packets)
+                               ScorebotClient, feed_items)
 from .state.db import Storage, utcnow
 from .state.live_machine import LiveMachine
 
@@ -114,8 +114,20 @@ class LiveWorker:
                 # maps. The connection is alive, no need to reconnect.
                 log.debug("live feed of match %s is quiet, polling again", self.match_id)
                 continue
-            for frame in frames_from_packets(packets):
+            for kind, item in feed_items(packets):
+                if kind == "kills":
+                    # The log's kills feed the bingo card and nothing else.
+                    # They are handed over in the order the feed sent them,
+                    # interleaved with the frames, because a kill carries no
+                    # map and no round of its own and is placed by the frame
+                    # before it.
+                    for event in self.machine.observe_kills(self.match_id, item):
+                        self.notifier.enqueue(event)
+                    await self._retract()
+                    continue
+                frame = item
                 events = self.machine.apply(self.match_id, frame)
+                await self._retract()
                 # E5 is held back: where the live message is on, it carries the
                 # map start itself. Sending both would mean two messages about
                 # one thing, and in the wrong order at that — the live message
@@ -139,6 +151,23 @@ class LiveWorker:
                     continue
                 await self._refresh_live_message(frame, events, self._map_started)
                 self._map_started = None
+
+    async def _retract(self) -> None:
+        """Strike through what a map's reset score has invalidated.
+
+        The machine decides and the queue writes: a notification sent from
+        inside a state machine is the one shape of bug this project refuses by
+        rule, and the Telegram budget is accounted for in exactly one place.
+
+        This is awaited from the frame loop, unlike the live card, and the
+        difference is how often it has anything to do: the list is empty on
+        every frame but the one that confirms a map's score was reset, which
+        happens at most once a map. When it is not empty the edits are worth
+        waiting for — the feed is in a restart at that moment and there is
+        nothing behind us to miss.
+        """
+        for match_id, map_number, sent_before in self.machine.take_retractions():
+            await self.notifier.retract(match_id, map_number, sent_before)
 
     def _start_message_pending(self) -> bool:
         """Is the "match has started" message still on its way out."""

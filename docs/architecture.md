@@ -242,6 +242,31 @@ known cost is written down in the limitations: a `currentRound` that HLTV
 reset inside an overtime would blind the feed for the rest of that map, and
 no recording has an overtime to say whether it does.
 
+**The `log` is read for the bingo card and for nothing else.** Everything
+above is about `scoreboard` frames, which is where every transition in this
+service is still born. The log was deliberately unused for a long time, because
+on every connect the server replays the whole of it — 8255 `Kill` entries for
+543 real kills in the forze recording, 150 `MatchStarted` over a two-map
+series, reaching back to a map played before we connected. Nothing built on
+"an entry arrived" can survive that.
+
+What makes four of the bingo squares possible anyway is that a `Kill` says
+things no scoreboard frame can:
+
+```json
+{"killerId": 13240, "killerNick": "Lack1", "weapon": "usp_silencer",
+ "throughSmoke": true, "penetrated": false, "eventId": 3943698493}
+```
+
+and that `eventId` is **unique per kill and strictly increasing in arrival
+order** — measured across all 731 kills of both recordings with no exception.
+So the backlog is handled by one number per match, the high-water mark in
+`bingo_watermark`, which also survives a restart where a set of ids would not.
+`killerId` is the scoreboard's `dbId`, which is what attributes a kill to a
+team: the log's own `killerSide` is the side at the time of the kill, and the
+backlog replays kills from before the break, so reading it would credit half
+the match to the wrong team.
+
 Details and raw measurements: [recon/R4-scorebot.md](recon/R4-scorebot.md).
 
 ## When a map counts as finished: two sources, different roles
@@ -750,6 +775,95 @@ so English arrives under `GB`, `US`, `WORLD` and every anglophone country.
 only exceptions need writing. Measured on fixture 2397091: without `AU` in that
 table the block drops a cast on 155 viewers in favour of one on 8.
 
+## The bingo card (E16, E17, E18)
+
+Nine fixed squares, counted passively over a match and reported after every map
+(E17) and at the end of it (E18). A moment of its own (E16) is a per-subscriber
+option and off by default — measured, a team makes some seven kills through
+smoke and six through a wall per map, so that stream is around fifteen messages
+a map on top of the multikills.
+
+**The targets are not configurable, and that is the point.** The card is a
+thing people tick off while watching; a per-person target would have two
+readers disagreeing about whether a square is closed. `state/bingo.py` holds
+the nine, each with how it aggregates.
+
+**Two aggregates, and they must not be one.** Kills and pistol rounds SUM over
+the series; a run of rounds won and the flags take the MAX. Summing a streak in
+SQL would turn four rounds in a row on each of two maps into eight, which is
+why `bingo.totals` is the only place several maps become one number.
+
+**Counts live in the database, unlike every other tracker here.** The summary
+is sent at the end of a map and of the match, hours after the kills, and a
+restart in between must not report half a match as the whole of it. What stays
+in memory is the working state — the roster mapping kills to teams, the knife
+hold, the reset watch — which a restart may legitimately lose.
+
+**Counted per team.** Two tracked teams can play each other, and a count of
+kills through smoke cannot be turned round at render time the way a score can:
+shown to the opponent's follower it is simply wrong, and `format.orient` sees
+the payload's team_id, finds it is not the reader's, and has nothing to flip.
+Same reasoning as the highlight events, one level up.
+
+### The two things that must not fill the card
+
+Both were measured, and neither is visible in a single frame.
+
+**A knife round scores like a real round.** All 16 knife kills of the forze
+recording come from the knife rounds before its two maps, and by the time one
+is played the frame no longer says `warmup`. The signal that works is the
+round itself: a round in which *nobody at all* used anything but a knife is the
+knife round. So a knife kill is **held until its round is over** and released
+only if that round also had a real weapon in it. That is why `BingoTracker`
+watches every player's kills and not only ours — whether a round was a knife
+round is a question about the round.
+
+**The server resets a map's score.** Seen live: warmup, a knife round that
+scores 1:0, a couple of idle rounds, and only then 0:0 for the real map, after
+which it never resets again. Everything before that last 0:0 belongs to no map
+and has to go — the knife round, the idle rounds, an ace, a grenade kill, all
+of it, not just the knives.
+
+What this must not fire on is a server that crashed, showed 0:0 and was
+restored to the score it had. The frame showing 0:0 is identical in both cases,
+so **a candidate waits**: the old score coming back exactly cancels it, and
+nothing coming back for `RESET_CONFIRM_SECONDS` confirms it. The real map
+cannot counterfeit the cancel inside that window — its first round carries a
+freeze period and a restart ceremony and cannot be decided in under a minute.
+The confirmation is therefore late by design, which is why the line to roll
+back to is taken when the 0:0 is *first seen* rather than when it is believed:
+by the time it is believed the real map is running and its kills are in the
+same counters.
+
+A message already sent about rolled-back rounds is **edited into a
+struck-through line with a ❌**, never deleted. A message that vanishes leaves
+the reader remembering something that never happened with nothing to tell them
+otherwise. The outbox row keeps its `sent` status and its journal key — a row
+that looked unsent would be delivered a second time — and gains a `retracted`
+flag. The machine only records that a retraction is due; the worker asks the
+queue to make it, because a notification sent from inside a state machine is
+the one shape this project refuses by rule.
+
+### Where each square comes from
+
+| Square | Source |
+|---|---|
+| through smoke, through a wall, grenade, knife | the feed's `log`, `Kill` entries |
+| an ace | `RoundTracker` with its bar at five — the same machinery as the multikill, which already solves "a round is credited only with what was seen inside it" |
+| pistol rounds, four in a row | `ctMatchHistory` in the frame, recomputed every time rather than accumulated: the feed skips rounds, and a count built by adding one per observed win would miss every round it never saw |
+| overtime | both teams at `regulation` on the score. Never the sum — at 13:11 that is also 24 |
+| the match | E7's series score |
+
+The last two are deliberately *not* read off E13 and E7 as events: both are
+gated on per-subscriber settings that are off by default, so a square waiting
+for them would stay empty for most readers.
+
+**The summary is built by whichever machine reaches the end first.** The feed
+knows the match is over at the winning round when it knows the format; the page
+knows when it notices the status. `bingo.summary_events` is shared by both, and
+the key is the same from either side, so when both get there the unique index
+swallows the second — as it already does for E6 and E7 themselves.
+
 ## The daily digest (E14)
 
 A reminder answers "this match starts soon". The digest answers a different
@@ -989,6 +1103,8 @@ queue rows are in the database and go out on the next start.
 | `sent_events` | **the journal of what was sent, unique index on the key** |
 | `outbox` | the outgoing queue with retries |
 | `live_messages` | the id of the live message per map |
+| `bingo_counters` | the bingo card, per match **per map per team** |
+| `bingo_watermark` | the last kill of a match already counted; the row existing is also what says the match has been seeded |
 | `raw_log` | raw responses for debugging, pruned by age |
 | `meta` | the first-run flag, a match's map lineup, the last poll time |
 

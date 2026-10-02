@@ -481,3 +481,54 @@ kill of a 4k and comes back on the following map, that round is never resolved
 and no message goes out. The alternative — carrying it across the boundary —
 was tried and was worse: it announced the highlight against the new map's name
 and round number, pointing the reader at a map the moment did not happen on.
+
+## The bingo card starts from the moment the feed connects
+
+On connecting, the feed replays its whole log backlog — in the forze recording
+406 kills in the first batch, reaching back to a map played before we were
+watching — and nothing in a `Kill` says which map it belongs to. So the first
+batch of a match is recorded as seen and **counted as nothing**: a service
+started in the middle of a match reports the part it watched rather than
+guessing at the part it did not. The alternative, placing those kills on
+whatever map the next frame happens to show, puts map one's kills on map two.
+
+The same applies after a long disconnect, in a smaller way: kills that happened
+while the service was down arrive in the next backlog and are counted, but they
+are placed on the map the feed is showing now. Across a map boundary that is
+the wrong map. Short disconnects — which is what they are, measured at 14 over
+an hour — do not cross one.
+
+## A score reset is believed three minutes late, and a restored one is not seen at all
+
+A map's score dropping to 0:0 can be the real map starting after a knife round,
+or a crashed server before it is restored. The two are identical in the frame,
+so the candidate waits `RESET_CONFIRM_SECONDS` and is cancelled if the old
+score comes back exactly. Two costs follow.
+
+A server restored *later* than that window is read as a reset, and the map's
+counts are rolled back when they should not have been. The direction is
+deliberate — undercounting is this project's preferred failure — but the
+rollback is visible, because messages already sent are struck through in the
+chat.
+
+And the roll-back line is taken when the 0:0 is first seen rather than when it
+is believed, so a kill made in the three minutes between the two is kept. That
+is right for the usual case (the real map is already running by then) and wrong
+for a map that is reset twice inside three minutes, where the middle attempt's
+kills survive.
+
+## A retraction older than Telegram's edit window stays in the chat
+
+Striking a message through is an `editMessageText`, which Telegram refuses
+after 48 hours. A reset confirmed that long after the message went out — which
+would mean a map running for two days — leaves it standing. The failure is
+logged and swallowed rather than retried: a retraction that cannot be made must
+not stall the feed behind it.
+
+## A knife kill in a round whose other kills we never saw is dropped
+
+A knife kill is held until its round is over and released only if that round
+also had a real weapon in it, because a round of nothing but knives is the
+knife round before the map. If the feed drops for the part of a round that
+held the other kills, a genuine knife frag is read as a knife round and lost.
+Missed, never invented — the same trade as the highlights.

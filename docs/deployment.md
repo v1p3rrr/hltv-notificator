@@ -183,10 +183,30 @@ That is a built-in check, not a breakage.
 |---|---|
 | push to `main` | `<version>-build.<run number>`, `sha-<commit>`, `latest` |
 | tag `vX.Y.Z` | `X.Y.Z`, `X.Y` |
+| push to any other branch | `<prefix><version>`, `<prefix><version>-build.<run number>` |
 
 The version lives in `src/hltv_notify/__init__.py`. When a tag is released, CI
 checks it against that version and fails on a mismatch: otherwise an image
 numbered 1.2.3 would report somebody else's number.
+
+**A branch build never writes `latest` and never writes a bare version.** That
+is the whole point of it: a feature that is not on main yet should be
+installable on the server without becoming what an ordinary `docker compose
+pull` brings down. The prefix comes from the branch's last path segment —
+`feature/bingo-card` publishes `bingo-card-0.1.0` — or from the input when the
+workflow is started by hand:
+
+> Actions → CI → **Run workflow**, pick the branch, leave `tag_prefix` as
+> `bingo`, and the image is published as `vprlol/hltv-notificator:bingo0.1.0`.
+
+To run it on the server, point `IMAGE` at that tag instead of `latest`:
+
+```bash
+IMAGE=vprlol/hltv-notificator:bingo0.1.0 docker compose up -d
+```
+
+Going back is `IMAGE=vprlol/hltv-notificator:latest`; nothing in the database
+is specific to a branch build, and the schema only ever gains tables.
 
 The image is signed with keyless `cosign` — the certificate is issued by GitHub
 itself for the duration of the step. Verifying the signature:

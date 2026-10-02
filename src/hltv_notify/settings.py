@@ -179,6 +179,29 @@ SETTINGS: Tuple[Setting, ...] = (
         default=lambda c: 1 if c.overtime_alerts else 0,
         kind=BOOLEAN, maximum=1, presets=(0, 1),
     ),
+    # Two knobs and not one, because they answer different questions. The
+    # first is whether the card is kept at all — the counting is passive and
+    # costs one comparison per kill, and with it off the log is not even
+    # parsed. The second is whether every single moment is worth its own
+    # message, and it is off by default for a measured reason: a team produces
+    # some seven kills through smoke and six through a wall PER MAP, so the
+    # per-moment stream is around fifteen messages a map on top of the
+    # multikills. The summaries after a map and after a match are what the
+    # first knob is really for.
+    Setting(
+        name="bingo",
+        label="Bingo card",
+        summary="Count the bingo card and report it after every map and match",
+        default=lambda c: 1 if c.bingo else 0,
+        kind=BOOLEAN, maximum=1, presets=(0, 1),
+    ),
+    Setting(
+        name="bingo_live",
+        label="Bingo moments",
+        summary="A message for every bingo moment as it happens, not just the summary",
+        default=lambda c: 1 if c.bingo_live else 0,
+        kind=BOOLEAN, maximum=1, presets=(0, 1),
+    ),
     Setting(
         name="card",
         label="Live score card",

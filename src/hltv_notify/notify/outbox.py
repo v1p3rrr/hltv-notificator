@@ -33,12 +33,24 @@ log = logging.getLogger(__name__)
 # where rebuilding this card would be noise, or already lives in the card itself
 # (E5) or ends it (E6).
 
-# Events about ONE player of one team, rather than about the match. They go to
-# the people following that player's team and nobody else, and they are the two
-# that carry a per-round kill count. One frozenset because the two questions —
-# who it is addressed to, and whose bar it has to clear — must not drift apart
-# by one type.
-PLAYER_EVENTS = frozenset({"E9", "E15"})
+# Events about ONE team's own doings rather than about the match: a highlight
+# by one of its players, a bingo moment, a bingo card. They go to the people
+# following THAT team and nobody else.
+#
+# This is not tidiness. A match can have two tracked teams in it, and none of
+# these can be turned round for the other side the way a score can: a count of
+# kills through smoke belongs to whoever made them, and shown to the opponent's
+# follower it is simply wrong. `format.orient` cannot help — it sees the
+# payload's team_id, finds it is not the reader's, and has nothing to flip.
+TEAM_EVENTS = frozenset({"E9", "E15", "E16", "E17", "E18"})
+
+# Types that can turn out to have been about rounds the server threw away, and
+# are therefore sent carrying the map they belong to so they can be found
+# again. Only the bingo moment: it is the only message this service sends about
+# a single round of a map whose score can still be reset under it. A map result
+# or a highlight is announced from a score the reset watch has already
+# believed.
+RETRACTABLE = frozenset({"E16"})
 
 # Telegram's two limits are different in kind and are answered in two
 # different places. Roughly one message per second into ONE chat is this
@@ -125,6 +137,13 @@ class Notifier:
                     event, team_name=self.config.team_name,
                     for_team_id=for_team_id, stream_prefs=stream_prefs)
                 map_number = event.payload.get("map_number")
+            elif event.type in RETRACTABLE:
+                # No banner — this one is never absorbed by the card — but the
+                # map has to be on the row all the same: it is what a reset
+                # score looks the message up by when it has to be struck
+                # through. A NULL banner is still what says "deliver it as its
+                # own message", so the two do not collide.
+                map_number = event.payload.get("map_number")
             if self.storage.record_event(
                     idempotency_key=event.idempotency_key,
                     event_type=event.type,
@@ -193,6 +212,16 @@ class Notifier:
             return self._threshold(chat_id, "half") > 0
         if event.type == "E13":
             return self._threshold(chat_id, "overtime") > 0
+        if event.type in ("E17", "E18"):
+            return self._threshold(chat_id, "bingo") > 0
+        if event.type == "E16":
+            # BOTH, and in this order. `bingo_live` is the per-moment stream
+            # and `bingo` is the card itself; somebody who turned the card off
+            # has not asked to keep receiving its moments, and a reader who
+            # only ever set `bingo_live` would otherwise get them with no
+            # summary to put them in.
+            return (self._threshold(chat_id, "bingo") > 0
+                    and self._threshold(chat_id, "bingo_live") > 0)
         return True
 
     def _recipients(self, event: Event):
@@ -212,8 +241,8 @@ class Notifier:
         else:
             teams = self.storage.match_team_ids(event.match_id)
             player_team = event.payload.get("team_id")
-            if event.type in PLAYER_EVENTS and player_team:
-                # A highlight is addressed to those following THIS player's team.
+            if event.type in TEAM_EVENTS and player_team:
+                # Addressed to those following THIS team — see TEAM_EVENTS.
                 teams = [player_team]
             rows = audience.match_audience(self.storage, self.config,
                                            event.match_id, teams=teams)
@@ -276,6 +305,51 @@ class Notifier:
             await self._drain(deadline=time.monotonic() + FINAL_DRAIN_SECONDS)
         except Exception:  # noqa: BLE001 - shutdown must not crash
             log.exception("failed to flush the queue on shutdown")
+
+    async def retract(self, match_id: int, map_number: int,
+                      sent_before: str) -> int:
+        """Strike through what a map announced before its score was reset.
+
+        Edited rather than deleted, and that is the whole point: the reader
+        saw "Lack1 killed with a knife" go by and a message that quietly
+        vanishes leaves them remembering something that never happened. A
+        struck-through line with a ❌ on it says what the service now believes.
+
+        The journal is not touched. The row stays 'sent' with its key in
+        `sent_events`, because it WAS sent — anything that made it look unsent
+        would have the queue deliver it again, which is the one failure this
+        queue exists to prevent.
+
+        Failures are logged and swallowed: a message the reader deleted, or one
+        older than Telegram's 48-hour edit window, answers 400 forever, and a
+        retraction that could not be made must not stall the feed behind it.
+        """
+        rows = self.storage.sent_before(
+            event_type="E16", match_id=match_id, map_number=map_number,
+            created_before=sent_before)
+        if not rows:
+            return 0
+        done = 0
+        for row in rows:
+            if self.config.dry_run or self.telegram is None:
+                log.info("[retracted] %s", row["body"])
+                self.storage.mark_retracted(row["id"])
+                done += 1
+                continue
+            chat_id = row["chat_id"] or self.config.main_chat_id
+            try:
+                await self.telegram.edit_message_text(
+                    chat_id, int(row["telegram_message_id"]),
+                    fmt.strike(row["body"]))
+            except TelegramError as exc:
+                log.warning("could not strike through message %s: %s", row["id"], exc)
+                continue
+            self.storage.mark_retracted(row["id"])
+            done += 1
+        if done:
+            log.info("struck through %d message(s) about map %s of match %s",
+                     done, map_number, match_id)
+        return done
 
     async def _drain(self, deadline: Optional[float] = None) -> None:
         """Send everything that is due.

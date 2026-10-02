@@ -38,6 +38,9 @@ MUTABLE = (
     ("E7", "match end"),
     ("E9", "multikill"),
     ("E15", "clutch"),
+    ("E16", "bingo moment"),
+    ("E17", "bingo after a map"),
+    ("E18", "bingo after a match"),
 )
 
 REMINDER_PRESETS = (10, 15, 30, 60, 120)

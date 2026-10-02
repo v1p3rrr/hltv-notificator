@@ -149,6 +149,11 @@ CREATE TABLE IF NOT EXISTS outbox (
     -- row queued before the column existed gets.
     banner              TEXT,
     map_number          INTEGER,
+    -- Set once a message has been struck through in the chat because what it
+    -- announced was undone (a map's score reset). The row keeps its 'sent'
+    -- status: it was sent, and the journal saying otherwise would send it
+    -- again.
+    retracted           INTEGER NOT NULL DEFAULT 0,
     status              TEXT NOT NULL DEFAULT 'pending',
     attempts            INTEGER NOT NULL DEFAULT 0,
     next_attempt_utc    TEXT NOT NULL,
@@ -199,6 +204,51 @@ CREATE TABLE IF NOT EXISTS subscriber_settings (
     value      INTEGER NOT NULL,
     text_value TEXT,
     PRIMARY KEY (chat_id, name)
+);
+
+-- The bingo card's counts. Per MAP and per TEAM, neither of which is
+-- decoration:
+--
+--   * per map, because the map summary has to be exact and the match total is
+--     an aggregate of these — and how they aggregate differs per square (kills
+--     add up over the series, a streak does not), which `state.bingo` decides;
+--   * per team, because two tracked teams can play each other and the card is
+--     about one team's own doings. Counted for the match as a whole it would
+--     credit a subscriber's team with the opponent's grenade kills, which is
+--     the same mistake this project has already made with the score, the
+--     highlight and the schedule events.
+--
+-- In the database and not in the worker's memory, unlike every other tracker
+-- here, because the summary is sent at the END of a map and of the match —
+-- hours after the kills — and a restart in between must not silently report
+-- half a match as the whole of it.
+CREATE TABLE IF NOT EXISTS bingo_counters (
+    match_id   INTEGER NOT NULL,
+    map_number INTEGER NOT NULL,
+    team_id    INTEGER NOT NULL,
+    square     TEXT NOT NULL,
+    value      INTEGER NOT NULL,
+    PRIMARY KEY (match_id, map_number, team_id, square)
+);
+
+-- The last kill of a match that has already been counted.
+--
+-- The feed replays its ENTIRE log backlog on every connect — 8255 `Kill`
+-- entries for 543 real kills in the forze recording, and the backlog reaches
+-- back to the first map of the series — so something has to tell a kill from
+-- the copy of it the next connect will bring. `eventId` does: measured
+-- strictly increasing in arrival order across all 731 recorded kills, so the
+-- largest one counted is the whole test, and unlike a set of ids it survives a
+-- restart.
+--
+-- The row existing is also what says the match has been SEEDED. The first
+-- batch after connecting carries the whole match's history with no way to tell
+-- which map each kill belongs to, so it sets the mark and counts nothing: a
+-- service that started mid-match reports the part it watched rather than
+-- guessing at the part it did not.
+CREATE TABLE IF NOT EXISTS bingo_watermark (
+    match_id INTEGER PRIMARY KEY,
+    event_id INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -294,6 +344,13 @@ class Storage:
                 # own beats a card rebuilt for the wrong reason.
                 "banner": "TEXT",
                 "map_number": "INTEGER",
+                # A message that turned out to be about a map the server threw
+                # away. It stays in the table — it WAS sent, and the journal
+                # must keep saying so, or the next frame would send it again —
+                # with the flag saying its text has been struck through in the
+                # chat. Rows written before the column existed read as 0,
+                # which is what they are: nothing has been retracted.
+                "retracted": "INTEGER NOT NULL DEFAULT 0",
             },
             "live_messages": {
                 "banner": "TEXT",
@@ -1269,9 +1326,114 @@ class Storage:
             "LIMIT 1", (f"%{idempotency_key}",)).fetchone()
         return row is not None
 
+    def sent_before(self, *, event_type: str, match_id: int, map_number: int,
+                    created_before: str) -> List[sqlite3.Row]:
+        """Delivered messages of one type about one map, sent before a moment.
+
+        What a confirmed score reset has to strike through: it says the map
+        started over, so everything announced about the map BEFORE it was
+        about rounds the server threw away. Only rows that actually reached
+        Telegram (a message id) and have not been struck through already.
+        """
+        return list(self.conn.execute(
+            "SELECT * FROM outbox WHERE event_type = ? AND match_id = ? "
+            "AND map_number = ? AND status = 'sent' AND retracted = 0 "
+            "AND telegram_message_id IS NOT NULL AND created_utc < ? ORDER BY id",
+            (event_type, match_id, map_number, created_before)))
+
+    def mark_retracted(self, outbox_id: int) -> None:
+        """The message has been struck through in the chat.
+
+        The status stays 'sent'. It was sent, the journal key is still there,
+        and anything that made this row look unsent would have the queue
+        deliver it a second time.
+        """
+        self.conn.execute("UPDATE outbox SET retracted = 1 WHERE id = ?", (outbox_id,))
+
     def pending_count(self) -> int:
         return self.conn.execute(
             "SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0]
+
+    # ---------- the bingo card ----------
+
+    def bingo_watermark(self, match_id: int) -> Optional[int]:
+        """The last kill of this match already counted, or None if the match
+        has never been seeded. See the table's comment for why that difference
+        is the whole handling of the feed's replayed backlog."""
+        row = self.conn.execute(
+            "SELECT event_id FROM bingo_watermark WHERE match_id = ?",
+            (match_id,)).fetchone()
+        return int(row["event_id"]) if row else None
+
+    def set_bingo_watermark(self, match_id: int, event_id: int) -> None:
+        """Move the mark forward. Never backwards: a reconnect replays older
+        kills, and a mark that followed them down would count them again."""
+        self.conn.execute(
+            "INSERT INTO bingo_watermark (match_id, event_id) VALUES (?, ?) "
+            "ON CONFLICT(match_id) DO UPDATE SET event_id = MAX(event_id, excluded.event_id)",
+            (match_id, int(event_id)))
+
+    def add_bingo(self, match_id: int, map_number: int, team_id: int,
+                  square: str, amount: int) -> int:
+        """Add to a counted square and return what it now stands at."""
+        self.conn.execute(
+            "INSERT INTO bingo_counters (match_id, map_number, team_id, square, value) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(match_id, map_number, team_id, square) "
+            "DO UPDATE SET value = value + excluded.value",
+            (match_id, map_number, team_id, square, int(amount)))
+        return self.bingo_value(match_id, map_number, team_id, square)
+
+    def raise_bingo(self, match_id: int, map_number: int, team_id: int,
+                    square: str, value: int) -> int:
+        """Set a square to `value` if that is more than it holds.
+
+        For the squares whose match answer is the best map's rather than the
+        sum of them — a run of rounds won, a flag. Written with MAX so a
+        reconnect that recomputes a smaller number from a shorter history
+        cannot take the real one away.
+        """
+        self.conn.execute(
+            "INSERT INTO bingo_counters (match_id, map_number, team_id, square, value) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(match_id, map_number, team_id, square) "
+            "DO UPDATE SET value = MAX(value, excluded.value)",
+            (match_id, map_number, team_id, square, int(value)))
+        return self.bingo_value(match_id, map_number, team_id, square)
+
+    def set_bingo(self, match_id: int, map_number: int, team_id: int,
+                  square: str, value: int) -> None:
+        """Put a square at exactly this value — what a confirmed score reset
+        needs, and the one writer that is allowed to move a count DOWN."""
+        self.conn.execute(
+            "INSERT INTO bingo_counters (match_id, map_number, team_id, square, value) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(match_id, map_number, team_id, square) "
+            "DO UPDATE SET value = excluded.value",
+            (match_id, map_number, team_id, square, max(0, int(value))))
+
+    def bingo_value(self, match_id: int, map_number: int, team_id: int,
+                    square: str) -> int:
+        row = self.conn.execute(
+            "SELECT value FROM bingo_counters WHERE match_id = ? AND map_number = ? "
+            "AND team_id = ? AND square = ?",
+            (match_id, map_number, team_id, square)).fetchone()
+        return int(row["value"]) if row else 0
+
+    def bingo_rows(self, match_id: int, team_id: int,
+                   map_number: Optional[int] = None) -> List[sqlite3.Row]:
+        """One team's squares, for the whole match or for one map.
+
+        Rows and not a total: how several maps become one number is the
+        square's business (`state.bingo`), and deciding it in SQL would put
+        that rule in a second place.
+        """
+        if map_number is None:
+            return list(self.conn.execute(
+                "SELECT map_number, square, value FROM bingo_counters "
+                "WHERE match_id = ? AND team_id = ? ORDER BY map_number",
+                (match_id, team_id)))
+        return list(self.conn.execute(
+            "SELECT map_number, square, value FROM bingo_counters "
+            "WHERE match_id = ? AND team_id = ? AND map_number = ?",
+            (match_id, team_id, map_number)))
 
     def sent_event_count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM sent_events").fetchone()[0]

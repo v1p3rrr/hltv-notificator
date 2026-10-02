@@ -86,6 +86,30 @@ class PlayerLine:
     # not ours: it also covers the round taken on the bomb or the clock, which
     # no reading of the alive counts can tell from a round simply running out.
     clutches: int = 0
+    # HLTV's own player id (`dbId`), and the ONE field that joins a scoreboard
+    # row to a `Kill` in the log: measured on the forze recording, the set of
+    # `dbId` in the frames and the set of `killerId` in the log are the same
+    # ten numbers. The nick cannot do this job — the log carries BOTH a nick
+    # and an in-game name and swaps which is which between players (`nick`
+    # "reyoz" with `name` "chronic111") — and the SIDE cannot either, because
+    # the sides swap at the break while the backlog replays kills from before
+    # it. None when the frame did not carry it.
+    player_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class RoundOutcome:
+    """One decided round, from one team's point of view.
+
+    Read off `ctMatchHistory` / `terroristMatchHistory`, which carry only
+    rounds that have been DECIDED — measured on the forze recording, 12 + 11
+    entries at round 23. So the list is the map's round-by-round result and
+    nothing else, and `roundOrdinal` numbers it across the map rather than
+    within the half.
+    """
+
+    ordinal: int
+    won: bool
 
 
 @dataclass(frozen=True)
@@ -106,6 +130,12 @@ class LiveFrame:
     overtime: int
     ct_players: Tuple["PlayerLine", ...] = ()
     t_players: Tuple["PlayerLine", ...] = ()
+    # The round-by-round result of the map, per side. Tied to ctTeamId/tTeamId
+    # like the score and for the same reason: the histories swap hands at the
+    # break, so the one read off the side alone belongs to the other team for
+    # the whole second half.
+    ct_history: Tuple["RoundOutcome", ...] = ()
+    t_history: Tuple["RoundOutcome", ...] = ()
 
     def our_players(self, team_id: int) -> Tuple["PlayerLine", ...]:
         """Our team's roster. Sides swap after the break, so we go by id rather
@@ -141,6 +171,18 @@ class LiveFrame:
         if self.t_team_id == team_id:
             return self.t_score, self.ct_score
         return None, None
+
+    def our_history(self, team_id: int) -> Tuple["RoundOutcome", ...]:
+        """This team's round-by-round result on the map.
+
+        By id, never by side: `ctMatchHistory` belongs to whoever is on CT in
+        THIS frame, and that is the other team for the whole second half.
+        """
+        if self.ct_team_id == team_id:
+            return self.ct_history
+        if self.t_team_id == team_id:
+            return self.t_history
+        return ()
 
     def opponent_name(self, team_id: int) -> str:
         if self.ct_team_id == team_id:
@@ -182,6 +224,42 @@ class LiveFrame:
         return self.ct_score + self.t_score <= self.current_round
 
 
+@dataclass(frozen=True)
+class KillEvent:
+    """One kill out of the feed's `log`.
+
+    The log was unused by this service for a long time and for a good reason:
+    on every connect the server replays the whole backlog, so anything built
+    on "an entry arrived" is a barrage of duplicates (8255 `Kill` entries for
+    543 real kills in the forze recording). What makes it usable at all is
+    `eventId` — unique per kill, and measured STRICTLY INCREASING in arrival
+    order across both recordings, all 731 kills, with no exception. So one
+    number per match is the whole protection against counting a kill twice,
+    and unlike a set of ids it survives a restart.
+
+    Only the fields something reads are here. `headShot`, `noScope`,
+    `killerBlind`, `attackerInAir`, the coordinates and the flash assist are
+    all in the frame and all deliberately absent: a field nothing reads is a
+    trap this project has already been caught by twice.
+    """
+
+    event_id: int
+    # HLTV's player id, the join to `PlayerLine.player_id`. None means the
+    # kill cannot be attributed to a team and is dropped.
+    killer_id: Optional[int]
+    killer_nick: str
+    weapon: str
+    through_smoke: bool
+    penetrated: bool
+
+    @property
+    def is_knife(self) -> bool:
+        """Every knife is a `knife_*`, skins included — `knife_butterfly`,
+        `knife_karambit`, `knife_m9_bayonet`, and the default T knife
+        `knife_t`, which is the one that does not read like a skin."""
+        return self.weapon.startswith("knife")
+
+
 def _players(raw) -> Tuple[PlayerLine, ...]:
     """One side's players. `score` in the frame means kills for the map."""
     if not isinstance(raw, list):
@@ -201,11 +279,53 @@ def _players(raw) -> Tuple[PlayerLine, ...]:
         advanced = item.get("advancedStats")
         if not isinstance(advanced, dict):
             advanced = {}
+        try:
+            player_id = int(item["dbId"])
+        except (KeyError, TypeError, ValueError):
+            # The join to the log is lost for this player, nothing more. Every
+            # recorded frame carried it; a frame that does not is not a reason
+            # to drop the player from the scoreboard.
+            player_id = None
         lines.append(PlayerLine(steam_id=steam_id, nick=nick,
                                 kills=int(item.get("score") or 0),
                                 alive=bool(item.get("alive", True)),
-                                clutches=int(advanced.get("oneOnXWins") or 0)))
+                                clutches=int(advanced.get("oneOnXWins") or 0),
+                                player_id=player_id))
     return tuple(lines)
+
+
+def _history(raw) -> Tuple[RoundOutcome, ...]:
+    """One side's round-by-round result, both halves in one ordered list.
+
+    The feed splits it into `firstHalf` and `secondHalf`; `roundOrdinal`
+    numbers the rounds across the whole map, so the halves are concatenated
+    and sorted rather than kept apart — a run of won rounds does not stop at
+    the break, and neither does the numbering.
+
+    `type` is the outcome from THIS side's point of view, and the only value
+    that means a loss is the literal `lost`; the rest (`CTs_Win`,
+    `Terrorists_Win`, `Target_Bombed`, `Target_Saved`, `Bomb_Defused`) are all
+    wins. A round with no readable ordinal is dropped: a round we cannot place
+    cannot be part of a streak, and placing it by position would renumber
+    every round after it.
+    """
+    if not isinstance(raw, dict):
+        return ()
+    outcomes = []
+    for half in ("firstHalf", "secondHalf"):
+        for item in raw.get(half) or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                ordinal = int(item["roundOrdinal"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            outcome = str(item.get("type") or "").strip()
+            if not outcome:
+                continue
+            outcomes.append(RoundOutcome(ordinal=ordinal, won=outcome != "lost"))
+    outcomes.sort(key=lambda item: item.ordinal)
+    return tuple(outcomes)
 
 
 def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
@@ -234,6 +354,8 @@ def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
         overtime=int(payload.get("overtimeHalfLength") or 3),
         ct_players=_players(payload.get("CT")),
         t_players=_players(payload.get("TERRORIST")),
+        ct_history=_history(payload.get("ctMatchHistory")),
+        t_history=_history(payload.get("terroristMatchHistory")),
     )
 
 
@@ -410,15 +532,71 @@ class ScorebotClient:
             self._session = None
 
 
-def frames_from_packets(packets: List[str]) -> List[LiveFrame]:
-    """Scoreboard frames out of a batch of packets. The log event is not needed.
+def parse_kills(payload: str) -> Tuple[KillEvent, ...]:
+    """The `Kill` entries of one log event, OLDEST FIRST.
 
-    Decisions are made from scoreboard and not from log deliberately: on every
-    connect the feed replays the whole event backlog (150 MatchStarted events
-    were counted over a two-map series), so building transitions on it means
-    guaranteed duplicates.
+    The feed sends them newest first — measured, every packet of both
+    recordings is in descending `eventId` — and everything downstream reads
+    them as a stream in time order: the round a kill belongs to, the running
+    count, the high-water mark. So they are turned round here, once, rather
+    than at each of those places.
+
+    The payload is a JSON STRING holding `{"log": [{"<Type>": {...}}, ...]}`,
+    not an object. The other types (`RoundStart`, `MatchStarted`, `Assist`,
+    `BombPlanted`, …) are skipped: `MatchStarted` in particular arrives 150
+    times over a two-map series and says nothing a scoreboard frame does not.
     """
-    frames: List[LiveFrame] = []
+    try:
+        body = json.loads(payload)
+    except (ValueError, TypeError):
+        return ()
+    if not isinstance(body, dict):
+        return ()
+    kills: List[KillEvent] = []
+    for item in body.get("log") or []:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("Kill")
+        if not isinstance(raw, dict):
+            continue
+        try:
+            event_id = int(raw["eventId"])
+        except (KeyError, TypeError, ValueError):
+            # Without an id there is no way to tell this kill from the copy of
+            # it the next connect will replay. Dropping is the only safe read.
+            continue
+        try:
+            killer_id = int(raw["killerId"])
+        except (KeyError, TypeError, ValueError):
+            killer_id = None
+        kills.append(KillEvent(
+            event_id=event_id,
+            killer_id=killer_id,
+            killer_nick=str(raw.get("killerNick") or raw.get("killerName") or ""),
+            weapon=str(raw.get("weapon") or ""),
+            through_smoke=bool(raw.get("throughSmoke")),
+            penetrated=bool(raw.get("penetrated")),
+        ))
+    kills.reverse()
+    return tuple(kills)
+
+
+def feed_items(packets: List[str]) -> List[Tuple[str, object]]:
+    """Everything usable in a batch, IN THE ORDER THE FEED SENT IT.
+
+    `("frame", LiveFrame)` and `("kills", (KillEvent, ...))`. The order is the
+    point: a kill carries no map and no round of its own, so it is placed by
+    the last frame seen before it. Sorting the frames out first and the kills
+    afterwards would hand every kill of the batch the round the batch ENDED
+    in, which across a round boundary is the wrong round and across a map
+    boundary the wrong map.
+
+    Scoreboard frames stay the only thing decisions are made from — the log is
+    read for what a frame cannot say (which weapon, through what) and for
+    nothing else. Transitions are still born on comparison with stored state,
+    because the log replays its whole backlog on every connect.
+    """
+    items: List[Tuple[str, object]] = []
     for packet in packets:
         if not packet.startswith("42"):
             continue
@@ -426,9 +604,17 @@ def frames_from_packets(packets: List[str]) -> List[LiveFrame]:
             name, payload = json.loads(packet[2:])
         except (ValueError, TypeError):
             continue
-        if name != "scoreboard" or not isinstance(payload, dict):
-            continue
-        frame = parse_scoreboard(payload)
-        if frame is not None:
-            frames.append(frame)
-    return frames
+        if name == "scoreboard" and isinstance(payload, dict):
+            frame = parse_scoreboard(payload)
+            if frame is not None:
+                items.append(("frame", frame))
+        elif name == "log" and isinstance(payload, str):
+            kills = parse_kills(payload)
+            if kills:
+                items.append(("kills", kills))
+    return items
+
+
+def frames_from_packets(packets: List[str]) -> List[LiveFrame]:
+    """Scoreboard frames alone, for callers that have no use for the log."""
+    return [item for kind, item in feed_items(packets) if kind == "frame"]

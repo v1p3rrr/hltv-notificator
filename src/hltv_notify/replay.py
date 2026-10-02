@@ -25,7 +25,7 @@ from typing import Iterator, List, Optional
 
 from .config import Config
 from .models import Event
-from .sources.scorebot import LiveFrame, frames_from_packets
+from .sources.scorebot import LiveFrame, feed_items
 from .state.db import Storage, utcnow
 from .state.live_machine import LiveMachine
 
@@ -45,19 +45,37 @@ def read_records(path: Path) -> Iterator[dict]:
         return
 
 
-def frames(path: Path) -> Iterator[LiveFrame]:
+def items(path: Path) -> Iterator[tuple]:
+    """Frames and the log's kills, in the order the recording holds them.
+
+    Both, and interleaved, because that is how the live worker reads them: a
+    kill carries no map and no round of its own and is placed by the frame
+    before it. Replaying the frames first and the kills afterwards would hand
+    every kill of the match the LAST round of it.
+    """
     for record in read_records(path):
         if record.get("kind") != "frame":
             continue
-        for frame in frames_from_packets([record["raw"]]):
-            yield frame
+        for item in feed_items([record["raw"]]):
+            yield item
+
+
+def frames(path: Path) -> Iterator[LiveFrame]:
+    """The dump's scoreboard frames alone, for callers with no use for the
+    log — the coherence and comeback checks read the score and nothing else."""
+    for kind, item in items(path):
+        if kind == "frame":
+            yield item
 
 
 def replay(path: Path, storage: Storage, config: Config, match_id: int) -> List[Event]:
     machine = LiveMachine(storage, config)
     produced: List[Event] = []
-    for frame in frames(path):
-        produced.extend(machine.apply(match_id, frame))
+    for kind, item in items(path):
+        if kind == "kills":
+            produced.extend(machine.observe_kills(match_id, item))
+        else:
+            produced.extend(machine.apply(match_id, item))
     return produced
 
 

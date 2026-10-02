@@ -206,6 +206,57 @@ two slots it costs more than it gives.
                               preference, "default" or "on" to go back
 ```
 
+### The bingo card
+
+Nine things worth noticing over a match, counted as it runs and reported when
+it is over:
+
+```
+🎯 Bingo for the match — 4 of 9
+FORZE Reload — Color
+✅ Win 2 pistol rounds — 2 pistol rounds
+✅ 4 kills through smoke — 7 kills
+⬜ 2 kills with a HE grenade — 1 kill
+✅ Win 4 rounds in a row — 5 rounds in a row
+✅ Win the match — 1
+⬜ 3 kills through a wall — 2 kills
+⬜ A knife kill — 0
+⬜ An ace — 0
+⬜ Overtime on any map — 0
+```
+
+The card is **for the match**, not for a map: "overtime on any map" and "win
+the match" only mean anything over the series. A shorter version arrives after
+every map with that map's contribution marked, so you can follow it as it
+fills.
+
+Four of the squares — through smoke, through a wall, with a grenade, with a
+knife — come from the part of HLTV's live feed this service had never read.
+They cannot be seen in the scoreboard: it says who has how many kills, never
+how any of them happened.
+
+Two switches, both per subscriber:
+
+```
+/settings bingo off           stop counting it altogether
+/settings bingo_live on       a message for every moment, not only the card
+```
+
+The second is **off by default** on measured grounds: a team makes some seven
+kills through smoke and six through a wall *per map*, so the per-moment stream
+is around fifteen messages a map on top of the multikills.
+
+**What is deliberately not counted.** The knife round before a map scores on
+the board like a real round, and nothing in the feed marks it as the warmup.
+Two things keep it off the card. A round in which *nobody used anything but a
+knife* is a knife round, so its kills are dropped. And when the server resets a
+map's score back to 0:0 and leaves it there, everything counted on that map
+before the reset goes with it — the knife round, the idle rounds, an ace, a
+grenade kill, all of it. Anything already sent about those rounds is edited in
+the chat into a struck-through line with a ❌ on it rather than quietly
+deleted. A score that drops to 0:0 and then comes *back* is a server that
+crashed and was restored, not a reset, and nothing is thrown away.
+
 ### The morning digest
 
 A reminder tells you a match is about to start. This tells you whether the day
@@ -311,6 +362,9 @@ documentation, and in the text `/mute` command, so here is the whole list:
 | `E13` | a new overtime begins |
 | `E14` | the daily digest: what is on in the next 24 hours |
 | `E15` | a clutch: a round won as the last player alive |
+| `E16` | a bingo moment: one square of the card filled a little further |
+| `E17` | the bingo card after a map |
+| `E18` | the bingo card at the end of the match |
 
 (The table above is in the order things happen; this one is by number, because
 that is how you look a code up.)
@@ -518,7 +572,7 @@ Not everything has a button: a few commands carry a value that has to be typed
 | `/remind 15m` | remind 15 min before a match; `/remind rm 15m` removes it | partly — 10, 15, 30 min, 1 h and 2 h are buttons, any other interval is typed |
 | `/digest 9:00` | a daily list of the next 24 hours at 09:00 your time; `/digest rm 9:00` removes it | partly — 08:00, 09:00, 10:00, 12:00, 18:00 and 20:00 are buttons, any other time is typed |
 | `/tz Europe/Berlin` | your timezone | **no** |
-| `/settings` | your own thresholds — multikill, clutch, comeback, half, overtime, the live card, the stream links. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
+| `/settings` | your own thresholds — multikill, clutch, comeback, half, overtime, the live card, the bingo card, the stream links. `/settings multikill 3` changes one, `/settings multikill default` gives it back to the service | yes |
 | `/pause`, `/resume` | go completely quiet / start receiving again | yes |
 | `/check` | read the schedule now instead of waiting for the next cycle, which is up to 30 min when nothing is due | **no** |
 | `/whoami` | your numeric `chat_id` — the value that goes into `TELEGRAM_CHAT_ID` | **no** |
@@ -545,6 +599,8 @@ in `.env`:
 /settings card off            no live score card, just the milestones
 /settings streams_count 4     four broadcast links under a multikill, not three
 /settings streams_langs en,ru which languages are worth a tap
+/settings bingo off           stop counting the bingo card altogether
+/settings bingo_live on       a message for every bingo moment, not just the card
 /settings multikill default   back to whatever the service is configured with
 ```
 
@@ -659,6 +715,8 @@ are most likely to touch:
 | `HALF_ALERTS` | = `PHASE_ALERTS` | alert at half time — the **default** for `/settings half` |
 | `OVERTIME_ALERTS` | = `PHASE_ALERTS` | alert at each new overtime — the **default** for `/settings overtime` |
 | `COMEBACK_ROUNDS` | `9` | swing that counts as a comeback; `0` removes the line — the **default** for `/settings comeback` |
+| `BINGO` | `true` | count the bingo card and report it after every map and match — the **default** for `/settings bingo` |
+| `BINGO_LIVE` | `false` | a message for every bingo moment as it happens — the **default** for `/settings bingo_live` |
 | `STREAM_LINKS` | `true` | broadcast links under a multikill — the **default** for `/settings streams` |
 | `STREAM_LINKS_MAX` | `3` | how many to list; `0` means **all** — the **default** for `/settings streams_count` |
 | `STREAM_LANGUAGES` | `en,ru` | languages worth a tap — the **default** for `/settings streams_langs` |

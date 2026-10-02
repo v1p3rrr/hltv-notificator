@@ -39,18 +39,21 @@ def test_replay_produces_the_expected_events(prepared, config):
     """A recorded match always yields one and the same list of events."""
     events = replay(DUMP, prepared, config, MATCH_ID)
     # The map went 10:13, so the map point on this dump belongs to the opponent.
-    assert [e.type for e in events] == ["E5", "E11", "E6"]
+    # E17 is the bingo card after the map: the card is kept by default, its
+    # per-moment stream is not, so the summary arrives and the moments do not.
+    assert [e.type for e in events] == ["E5", "E11", "E6", "E17"]
     assert [e.idempotency_key for e in events] == [
         "E5:2397053:map:2:started:Dust2",
         "E11:2397053:map:2:point:them:13",
         "E6:2397053:map:2:result:10-13",
+        "E17:2397053:map:2:bingo",
     ]
 
 
 def test_replayed_score_matches_the_site(prepared, config):
     """On the site this map ended 10:13, not in our favour."""
     events = replay(DUMP, prepared, config, MATCH_ID)
-    e6 = events[-1]
+    e6 = [e for e in events if e.type == "E6"][0]
     assert (e6.payload["score_team"], e6.payload["score_opponent"]) == (10, 13)
     assert (e6.payload["series_team"], e6.payload["series_opponent"]) == (0, 1)
     assert e6.payload["map_name"] == "Dust2"
@@ -61,7 +64,7 @@ def test_running_the_same_dump_twice_adds_nothing(prepared, config):
     """The project's main trap: the feed sends the full state all over again."""
     first = replay(DUMP, prepared, config, MATCH_ID)
     second = replay(DUMP, prepared, config, MATCH_ID)
-    assert len(first) == 3
+    assert len(first) == 4
     assert second == []
 
 
@@ -79,6 +82,9 @@ def test_break_in_the_middle_and_full_state_again(prepared, config):
     for frame in all_frames:
         produced += machine.apply(MATCH_ID, frame)
 
+    # No E17 here, and that is the guard rather than an omission: this pass
+    # feeds the FRAMES alone, so the log was never read, nothing was counted,
+    # and a bingo card of nine zeroes is not a summary of the match.
     assert [e.type for e in produced] == ["E5", "E11", "E6"]
 
 
@@ -93,8 +99,8 @@ def test_notifications_are_not_duplicated_across_replays(tmp_path, config):
         for event in replay(DUMP, storage, config, MATCH_ID):
             notifier.enqueue(event)
 
-    assert storage.sent_event_count() == 3
-    assert storage.pending_count() == 3
+    assert storage.sent_event_count() == 4
+    assert storage.pending_count() == 4
     storage.close()
 
 
@@ -132,7 +138,7 @@ def mouz_config():
 def test_boundary_dump_gives_map_start_multikill_and_map_end(mouz, mouz_config):
     """Recorded from a live BLAST match: the map Ancient from start to finish."""
     events = replay(BOUNDARY, mouz, mouz_config, MOUZ_MATCH)
-    assert [e.type for e in events] == ["E5", "E9", "E11", "E6"]
+    assert [e.type for e in events] == ["E5", "E9", "E11", "E6", "E17"]
 
 
 def test_real_multikill_is_detected(mouz, mouz_config):

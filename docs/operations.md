@@ -24,6 +24,8 @@
 | E15 a clutch by a player of our team | done, `/settings clutch` (default `CLUTCH_THRESHOLD`); the bar counts OPPONENTS, and a round that is also a multikill says both in one message |
 | E14 the daily digest | done, at times set with `/digest`, in the subscriber's own zone; matches STARTING within a rolling 24 h, so neither the running match nor a finished one, and nothing at all on a day with none |
 | Broadcast links under a multikill | done, a quoted block on E9, `/settings streams` (default `STREAM_LINKS`); read off the match page we already poll, Twitch and Kick only |
+| E17 / E18 the bingo card after a map and after the match | done, `/settings bingo` (default `BINGO`), **on by default**; nine fixed squares counted over the whole match, built by whichever of the two machines reaches the end first |
+| E16 a bingo moment | done, `/settings bingo_live` (default `BINGO_LIVE`), **off by default**; needs `bingo` on as well |
 
 ## Starting up
 
@@ -170,6 +172,8 @@ way; the log says which happened.
 | `streams` | the block of broadcast links under E9 | `STREAM_LINKS` |
 | `streams_count` | how many to list; `0` is **all**, not "none" | `STREAM_LINKS_MAX` |
 | `streams_langs` | languages worth a tap; `any` (or `off`) for no preference | `STREAM_LANGUAGES` |
+| `bingo` | count the bingo card and send it after every map and match | `BINGO` |
+| `bingo_live` | a message for every bingo moment, not only the card | `BINGO_LIVE` |
 
 A row is written only when somebody changes something, so raising a default in
 `.env` still reaches everyone who never touched it, and `/settings <name>
@@ -215,6 +219,16 @@ Two consequences worth knowing:
   stops watching a match's rounds when **both** are off for everybody;
 * one person setting `multikill 3` makes the service track 3k rounds for
   everybody. That is work, not messages — nobody else receives them.
+
+`bingo` is the one setting that turns off **work** and not only messages: with
+nobody keeping the card, the feed's `log` is not parsed, no kill is classified
+and no counter is written. Everything else in this table is a filter on
+messages that were going to be computed anyway.
+
+`bingo_live` is asked **together with** `bingo` rather than on its own: somebody
+who turned the card off has not asked to keep receiving its moments, and a
+reader who had only ever set `bingo_live` would otherwise get a stream of
+moments with no summary to put them in.
 
 ## Several users
 

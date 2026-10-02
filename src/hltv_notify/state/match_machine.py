@@ -17,6 +17,7 @@ from ..config import Config
 from ..models import Event, MatchState
 from ..sources import match_page, scorebot
 from ..sources.match_page import MapLine, MatchObservation
+from . import bingo
 from .db import Storage, parse_iso, utcnow
 
 log = logging.getLogger(__name__)
@@ -161,7 +162,15 @@ class MatchMachine:
                 # to the result.
                 log.info("match %s discovered already finished, E4 and E6 skipped",
                          match_id)
-            events.append(self._event_e7(observation, row, team_id, ours, theirs))
+            finished = self._event_e7(observation, row, team_id, ours, theirs)
+            events.append(finished)
+            # The bingo card, from whichever machine gets to the end of the
+            # match first. The feed does when it knows the format; it does not
+            # when the page never reported one, and a card that only the feed
+            # could send would then simply never arrive. The key is the same
+            # from either side, so when both get there the unique index
+            # swallows the second — as it already does for E7 itself.
+            events.extend(self._bingo_summary(observation, row, team_id, finished))
 
         events.extend(self._check_stall(observation, team_id, target, now,
                                         feed_connected=feed_connected))
@@ -372,6 +381,40 @@ class MatchMachine:
                 "url": row["url"] if row else "",
             },
         )
+
+    def _bingo_summary(self, observation: MatchObservation, row, team_id: int,
+                       finished: Event) -> List[Event]:
+        """The card at the end of the match, built the same way the feed
+        builds it. The header comes off E7's own payload — the page knows the
+        two teams and the link, and copying them is what keeps this from
+        growing a second idea of whose match it is.
+        """
+        payload = finished.payload
+        return bingo.summary_events(
+            self.storage, self.config, observation.match_id,
+            context_for=lambda side: self._bingo_context(observation, row, side,
+                                                         payload),
+            map_number=None, map_name="")
+
+    def _bingo_context(self, observation: MatchObservation, row, side: int,
+                       payload: dict) -> dict:
+        """One team's header for the card.
+
+        The opponent is asked for PER SIDE and not copied from E7's payload.
+        E7 is written from one team's point of view, and in a match between
+        two tracked teams the second one would read its own opponent as
+        itself — the same mistake the live machine's `_highlights_for_team`
+        exists to avoid.
+        """
+        opponent_id, opponent_name = observation.opponent(side)
+        return {
+            "team_name": self.storage.team_name(side, self.config.team_name),
+            "team_id": side,
+            "opponent": opponent_name or (row["opponent_name"] if row else ""),
+            "opponent_id": opponent_id,
+            "event_name": payload.get("event_name", ""),
+            "url": payload.get("url", ""),
+        }
 
     def _event_e7(self, observation: MatchObservation, row, team_id: int,
                   ours: int, theirs: int) -> Event:

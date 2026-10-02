@@ -17,15 +17,17 @@ that a frame arrived. And that is also why the log is not used at all.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .. import settings
 from ..config import Config
 from ..models import Event, MatchState
 from ..scoring import map_completed, rounds_to_win, series_decided
-from ..sources.scorebot import ROUND_WARMUP, LiveFrame
+from ..sources.scorebot import ROUND_WARMUP, KillEvent, LiveFrame
+from . import bingo
+from .bingo import BingoTracker
 from .comeback import ComebackTracker
-from .db import Storage
+from .db import Storage, iso, utcnow
 from .highlights import RoundTracker
 
 log = logging.getLogger(__name__)
@@ -82,6 +84,33 @@ class LiveMachine:
         # first one is a WARNING with the numbers; the hundreds that repeat
         # the same score are not worth a line each.
         self._incoherent: set = set()
+        # The bingo card's bookkeeping, one per match. It holds the roster
+        # mapping the feed's kills to teams, the knife-round hold and the
+        # score-reset watch; the counts themselves are in the database,
+        # because the summary is sent hours after the kills.
+        self._bingo: Dict[int, BingoTracker] = {}
+        # An ace is a five-kill round, so it is the SAME question the
+        # multikill asks with the bar moved — and `RoundTracker` already
+        # answers it correctly in the one place that is hard (a round is
+        # credited only with what was seen inside it, because the feed skips
+        # rounds). A tracker of its own per team per map, because the card's
+        # five is fixed while the subscribers' multikill bar is not.
+        self._aces: Dict[Tuple[int, str], RoundTracker] = {}
+        # What the counts stood at when a map's score was last seen to drop to
+        # 0:0 — the line a confirmed reset rolls back to. Per (match, map),
+        # with the moment it was taken, because everything SENT about the map
+        # before that moment has to be struck through too.
+        self._bingo_cut: Dict[Tuple[int, str], Tuple[str, Dict[Tuple[int, str], int]]] = {}
+        # Retractions the worker has to carry out: (match_id, map_number,
+        # sent_before). Collected here rather than sent from the machine,
+        # because a machine that wrote to Telegram would be a notification
+        # around the state machine.
+        self._retractions: List[Tuple[int, int, str]] = []
+        # The map the kills arriving now belong to. A `Kill` carries no map and
+        # no round of its own, so it is placed by the last frame — which is
+        # also why the worker feeds frames and kills in the order the feed sent
+        # them rather than all the frames first.
+        self._where: Dict[int, Tuple[int, str, bool]] = {}
 
     def _threshold(self, name: str) -> int:
         """The lowest threshold any subscriber is waiting for.
@@ -166,6 +195,8 @@ class LiveMachine:
         if started is not None:
             events.append(started)
         events.extend(self._highlight_events(match_id, frame, map_number, map_name))
+        events.extend(self._bingo_events(match_id, frame, map_number, map_name,
+                                         ours, theirs))
         if self._is_new_map(previous_map, map_name, frame):
             events.append(self._event_e5(match_id, frame, map_number, map_name, len(recorded)))
 
@@ -181,9 +212,17 @@ class LiveMachine:
                 overtime=verdict.overtime_number > 0)
             log.info("match %s: map %d (%s) taken at %d:%d, overtime #%d",
                      match_id, map_number, map_name, ours, theirs, verdict.overtime_number)
+            # Before the summary: the last round of the map may still be
+            # holding a knife kill, and the round it waits on never turns over.
+            events.extend(self._closing_bingo(match_id, frame, map_number, map_name))
+            events.extend(self._bingo_summary(match_id, frame,
+                                              map_number=map_number, map_name=map_name))
             finished = self._event_e7(match_id, frame, team_id)
             if finished is not None:
                 events.append(finished)
+                self._record_bingo_win(match_id, finished)
+                events.extend(self._bingo_summary(match_id, frame,
+                                                  map_number=None, map_name=map_name))
         else:
             phase = self._event_e12(match_id, frame, map_number, map_name, ours, theirs)
             if phase is not None:
@@ -372,6 +411,327 @@ class LiveMachine:
                 },
             ))
         return events
+
+    # ------------------------------------------------------------------
+    # The bingo card.
+
+    def _bingo_on(self) -> bool:
+        """Is anybody keeping the card at all.
+
+        With nobody keeping it the feed's log is not parsed, no kill is
+        classified and no counter is written — which is the point of asking
+        here rather than per reader: this is the only part of the service that
+        reads the log, and it may cost nothing when it is off.
+        """
+        return self._threshold("bingo") > 0
+
+    def _bingo_tracker(self, match_id: int) -> BingoTracker:
+        if match_id not in self._bingo:
+            self._bingo[match_id] = BingoTracker()
+        return self._bingo[match_id]
+
+    def _ace_tracker(self, team_id: int, map_name: str) -> RoundTracker:
+        key = (team_id, map_name)
+        if key not in self._aces:
+            # Clutches off: a clutch is its own event (E15) with its own bar,
+            # and a tracker that reported them here would produce a second
+            # message about a round that already has one. The ace bar is the
+            # card's and does not move.
+            self._aces[key] = RoundTracker(multikill=bingo.ACE_KILLS, clutch=0)
+        return self._aces[key]
+
+    def take_retractions(self) -> List[Tuple[int, int, str]]:
+        """Messages a confirmed score reset has invalidated, for the worker.
+
+        Handed over rather than acted on: writing to Telegram from the state
+        machine is the one thing this project does not do, and the queue is
+        where the Telegram budget is accounted for.
+        """
+        found, self._retractions = self._retractions, []
+        return found
+
+    def _bingo_events(self, match_id: int, frame: LiveFrame, map_number: int,
+                      map_name: str, ours: int, theirs: int) -> List[Event]:
+        """The card, driven by one frame.
+
+        `in_play` is "not warming up" and deliberately NOT `frame.in_play`:
+        the `live` flag only turns true once the first round has been played,
+        so a card gated on it would miss the whole of round one. The knife
+        round is not `warmup` either — nothing in the frame says it is — which
+        is what the score-reset watch below exists for.
+        """
+        if not self._bingo_on():
+            return []
+        canonical = self.storage.canonical_team(match_id) or self.config.team_id
+        tracked = self.storage.match_team_ids(match_id) or [canonical]
+        tracker = self._bingo_tracker(match_id)
+        in_play = not self._warming_up(frame)
+        self._where[match_id] = (map_number, map_name, in_play)
+
+        found, reset = tracker.observe_frame(
+            map_name, frame, tracked, ours, theirs, in_play)
+        if reset:
+            self._rewind_bingo(match_id, map_number, map_name, tracked)
+        else:
+            self._watch_cut(match_id, map_number, map_name, tracked, tracker)
+        if in_play:
+            found.extend(self._ace_occurrences(match_id, frame, map_name, tracked))
+        return self._bingo_occurrence_events(match_id, frame, map_number,
+                                             map_name, found)
+
+    def _ace_occurrences(self, match_id: int, frame: LiveFrame, map_name: str,
+                         tracked: List[int]) -> List[bingo.Occurrence]:
+        found: List[bingo.Occurrence] = []
+        for team_id in tracked:
+            ours, theirs = frame.our_score(team_id)
+            if ours is None:
+                continue
+            for taken in self._ace_tracker(team_id, map_name).observe(
+                    map_name, frame.current_round, frame.round_state,
+                    frame.our_players(team_id), frame.their_players(team_id),
+                    score=(ours, theirs)):
+                found.append(bingo.Occurrence(
+                    square="ace", team_id=team_id,
+                    anchor=f"ace:{taken.round_number}:{taken.player.steam_id}",
+                    nick=taken.player.nick, round_number=taken.round_number))
+        return found
+
+    def _watch_cut(self, match_id: int, map_number: int, map_name: str,
+                   tracked: List[int], tracker: BingoTracker) -> None:
+        """Keep a line to roll back to while a score reset is undecided.
+
+        Taken the moment the score is first seen at 0:0 and thrown away if the
+        old score comes back. It cannot be taken when the reset is CONFIRMED,
+        three minutes later: by then the real map has been running and its
+        kills are in the same counters, and rolling those back would punish
+        the map for the warmup's sins.
+        """
+        key = (match_id, map_name)
+        pending = tracker.reset_pending_since(map_name)
+        if pending is None:
+            self._bingo_cut.pop(key, None)
+            return
+        if key in self._bingo_cut:
+            return
+        self._bingo_cut[key] = (iso(utcnow()), {
+            (team_id, square.key): self.storage.bingo_value(
+                match_id, map_number, team_id, square.key)
+            for team_id in tracked for square in bingo.SQUARES})
+
+    def _rewind_bingo(self, match_id: int, map_number: int, map_name: str,
+                      tracked: List[int]) -> None:
+        """A confirmed reset: the map starts over and so does its card.
+
+        Everything is rolled back, not just the knife kills — the rounds
+        before the reset can carry an ace, a grenade kill, anything, and they
+        all happened on a map the server threw away. A counted square loses
+        exactly what it gained before the cut; a square that is recomputed
+        from the frame's own history goes to zero, because that history has
+        been emptied too and will fill back up on its own.
+        """
+        cut_utc, cut = self._bingo_cut.pop((match_id, map_name), (None, {}))
+        for team_id in tracked:
+            for square in bingo.SQUARES:
+                if square.aggregate == bingo.MAX:
+                    self.storage.set_bingo(match_id, map_number, team_id, square.key, 0)
+                    continue
+                current = self.storage.bingo_value(match_id, map_number, team_id,
+                                                   square.key)
+                self.storage.set_bingo(match_id, map_number, team_id, square.key,
+                                       current - cut.get((team_id, square.key), 0))
+        self._retractions.append((match_id, map_number, cut_utc or iso(utcnow())))
+        log.warning("match %s: the score on %s reset — the bingo card for that "
+                    "map rolled back and anything already sent about it retracted",
+                    match_id, map_name)
+
+    def _bingo_occurrence_events(self, match_id: int, frame: LiveFrame,
+                                 map_number: int, map_name: str,
+                                 found: List[bingo.Occurrence]) -> List[Event]:
+        """Count what happened, and build a message for it where one is wanted.
+
+        The counting happens whatever anybody's settings say — that is what
+        the summary is built from. Only the MESSAGE is conditional, and it is
+        born at the lowest bar in use like every other per-reader thing here:
+        if nobody has the per-moment stream on, no event is written at all.
+        """
+        announce = self._threshold("bingo_live") > 0
+        events: List[Event] = []
+        for occurrence in found:
+            square = bingo.BY_KEY[occurrence.square]
+            before = bingo.totals(self.storage.bingo_rows(
+                match_id, occurrence.team_id)).get(square.key, 0)
+            if square.aggregate == bingo.MAX:
+                value = self.storage.raise_bingo(match_id, map_number,
+                                                 occurrence.team_id, square.key,
+                                                 occurrence.amount)
+            else:
+                value = self.storage.add_bingo(match_id, map_number,
+                                               occurrence.team_id, square.key,
+                                               occurrence.amount)
+            total = bingo.totals(self.storage.bingo_rows(
+                match_id, occurrence.team_id)).get(square.key, value)
+            log.info("match %s: bingo %s for team %s — %d on %s, %d over the match",
+                     match_id, square.key, occurrence.team_id, value, map_name, total)
+            if not announce or not self._worth_announcing(square, before, total):
+                continue
+            events.append(Event(
+                type="E16",
+                # The anchor and nothing counted: a reconnect can recompute a
+                # smaller number from a shorter history, and a key carrying
+                # the count would then be a new key and a second message about
+                # the same moment. Same reasoning as E9's key.
+                idempotency_key=(f"E16:{match_id}:map:{map_number}"
+                                 f":{occurrence.team_id}:{occurrence.anchor}"),
+                match_id=match_id,
+                payload={
+                    **self._context(match_id, frame, occurrence.team_id),
+                    "square": square.key,
+                    "label": square.label,
+                    "moment": square.moment,
+                    "nick": occurrence.nick,
+                    "weapon": occurrence.weapon,
+                    "round": occurrence.round_number,
+                    "map_number": map_number,
+                    "map_name": map_name,
+                    "count": total,
+                    "target": square.target,
+                    "closed": square.closed(total),
+                },
+            ))
+        return events
+
+    @staticmethod
+    def _worth_announcing(square: bingo.Square, before: int, total: int) -> bool:
+        """Is this occurrence a moment, or only a number moving.
+
+        A counted square is a moment every time: every kill through smoke is
+        its own thing that happened, and the card's reader asked for each of
+        them.
+
+        A square whose match answer is the BEST map's is not. "Two rounds in a
+        row" is not news on the way to four, it is the same run still going —
+        and neither is the fifth, which is the same run having already said
+        what it had to say. So it speaks exactly once, on the step that takes
+        the MATCH from open to closed. The match and not the map, or a second
+        map with four in a row would announce a square that was ticked an hour
+        ago.
+        """
+        if square.aggregate == bingo.MAX:
+            return square.closed(total) and not square.closed(before)
+        return True
+
+    def _closing_bingo(self, match_id: int, frame: LiveFrame, map_number: int,
+                       map_name: str) -> List[Event]:
+        """Whatever the map's last round was still holding."""
+        if not self._bingo_on():
+            return []
+        found = self._bingo_tracker(match_id).close_map(map_name)
+        if not found:
+            return []
+        return self._bingo_occurrence_events(match_id, frame, map_number,
+                                             map_name, found)
+
+    # The match as a whole rather than any of its maps. Taking the match is
+    # the one square no map can answer, and giving it a map's number would put
+    # it into that map's summary, where it would be a claim about a series
+    # that was still running.
+    MATCH_WIDE = 0
+
+    def _record_bingo_win(self, match_id: int, finished: Event) -> None:
+        """Tick "win the match" for whoever took it.
+
+        Read off the series score in E7's payload rather than counted, and
+        written for the WINNER only: the card is each team's own, and a
+        subscriber following the losing side has a square that stays open.
+        """
+        if not self._bingo_on():
+            return
+        ours = int(finished.payload.get("series_team") or 0)
+        theirs = int(finished.payload.get("series_opponent") or 0)
+        if ours == theirs:
+            return
+        winner = finished.payload.get("team_id") if ours > theirs else \
+            finished.payload.get("opponent_id")
+        if not winner:
+            return
+        tracked = self.storage.match_team_ids(match_id)
+        if tracked and winner not in tracked:
+            # The match was taken by a team nobody follows. Nothing to tick.
+            return
+        self.storage.raise_bingo(match_id, self.MATCH_WIDE, int(winner), "win", 1)
+
+    def _bingo_summary(self, match_id: int, frame: LiveFrame, *,
+                       map_number: Optional[int], map_name: str) -> List[Event]:
+        """The card after a map (E17) and after the match (E18).
+
+        One per tracked team, each from that team's own side, for the reason
+        every other event here is: a card built once for the match and shown
+        to both sides credits a subscriber with the opponent's kills, and
+        `format.orient` cannot turn a count around the way it turns a score.
+        The building itself is shared with the page machine — see
+        `bingo.summary_events`.
+        """
+        return bingo.summary_events(
+            self.storage, self.config, match_id,
+            context_for=lambda team_id: self._context(match_id, frame, team_id),
+            map_number=map_number, map_name=map_name)
+
+    def observe_kills(self, match_id: int, kills: Sequence[KillEvent]) -> List[Event]:
+        """Kills out of the feed's log, in arrival order.
+
+        The whole defence against the replayed backlog is here, and it is two
+        rules. A match with no watermark is SEEDED — the first batch after
+        connecting carries the series from its first map with nothing saying
+        which kill belongs to which, so it sets the mark and counts none of
+        it. After that, only kills past the mark are new, because `eventId`
+        rises with time.
+        """
+        if not kills or not self._bingo_on():
+            return []
+        watermark = self.storage.bingo_watermark(match_id)
+        newest = max(kill.event_id for kill in kills)
+        if watermark is None:
+            self.storage.set_bingo_watermark(match_id, newest)
+            log.info("match %s: the feed's backlog of %d kills is the state "
+                     "before we connected — recorded as seen, not counted",
+                     match_id, len(kills))
+            return []
+
+        fresh = [kill for kill in kills if kill.event_id > watermark]
+        self.storage.set_bingo_watermark(match_id, newest)
+        if not fresh:
+            return []
+        where = self._where.get(match_id)
+        if where is None:
+            # No frame has been seen yet, so there is no map to put these on.
+            # Dropping is the only honest read: placing them on the map the
+            # next frame happens to show is how a kill from map one ends up
+            # counted on map two.
+            log.debug("match %s: %d kills arrived before any frame — dropped",
+                      match_id, len(fresh))
+            return []
+        map_number, map_name, in_play = where
+        canonical = self.storage.canonical_team(match_id) or self.config.team_id
+        tracked = self.storage.match_team_ids(match_id) or [canonical]
+        found = self._bingo_tracker(match_id).observe_kills(
+            map_name, fresh, tracked, in_play)
+        if not found:
+            return []
+        return self._bingo_occurrence_events(match_id, self._last_frame(match_id),
+                                             map_number, map_name, found)
+
+    def _last_frame(self, match_id: int) -> LiveFrame:
+        """A frame for the event header when only kills are in hand.
+
+        The context (team names, the opponent, the url) comes from the
+        database; the frame is consulted for the opponent's name and falls
+        back to the match row when it cannot supply one. So an empty one is
+        enough and is better than keeping a real frame alive for it.
+        """
+        return LiveFrame(map_name="", current_round=0, round_state="", live=False,
+                         ct_team_id=None, ct_team_name="", ct_score=0,
+                         t_team_id=None, t_team_name="", t_score=0,
+                         regulation=12, overtime=3)
 
     def _opponent_id(self, match_id: int, team_id: int):
         """The opponent according to the match data: needed to turn the score

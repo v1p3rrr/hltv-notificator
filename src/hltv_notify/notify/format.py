@@ -49,6 +49,35 @@ def _link(url: str, title: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{_esc(title)}</a>'
 
 
+# Telegram's HTML is a short list of tags, and `<s>` may not contain a block of
+# other tags in every client — but line by line it is safe, and that is also
+# how it reads: a struck-through paragraph with the link still tappable.
+RETRACTED_MARK = "❌"
+
+
+def strike(body: str) -> str:
+    """The same message, struck through and marked as withdrawn.
+
+    Edited into place rather than deleted. A message that vanishes leaves the
+    reader remembering a thing that never happened and with nothing to tell
+    them otherwise; a struck-through one says the service changed its mind.
+
+    Each line is wrapped on its own because Telegram's HTML has no block
+    elements — one `<s>` around text containing `<a href>` and `<b>` is
+    accepted, but around several lines of them the clients disagree, and a
+    message that 400s is a retraction that never happens. An already struck
+    line is left alone, so a second pass cannot nest the tag.
+    """
+    lines = []
+    for line in (body or "").split("\n"):
+        if not line.strip() or line.startswith("<s>"):
+            lines.append(line)
+        else:
+            lines.append(f"<s>{line}</s>")
+    return "\n".join(lines + [f"{RETRACTED_MARK} <i>the map's score was reset — "
+                              f"this did not count</i>"])
+
+
 SWAPPED_PAIRS = (
     ("team_name", "opponent"),
     ("team_id", "opponent_id"),
@@ -463,6 +492,57 @@ def render(event: Event, *, team_name: str, tz_name: str,
         if block:
             lines.append(block)
         lines.append(_link(url, "Watch the match"))
+        return "\n".join(lines)
+
+    if event.type == "E16":
+        nick = _esc(payload.get("nick"))
+        moment = _esc(payload.get("moment"))
+        # Not named `count`: that is a helper of this module, and `render` is
+        # one long function — a local of the same name takes it away from
+        # every branch below, which is exactly what it did to E14's "3
+        # matches".
+        so_far = payload.get("count", 0)
+        target = payload.get("target", 0)
+        closed = bool(payload.get("closed"))
+        # A square that has just closed gets its own mark: the whole shape of
+        # the card is nine things to tick off, and "3/4" reading the same as
+        # "4/4" would hide the only moment that is actually news.
+        lines = [f"{'🎯' if closed else '🔸'} <b>Bingo — "
+                 f"{_esc(payload.get('label'))}</b>",
+                 f"{nick} {moment}".strip() if nick else moment,
+                 f"{so_far}/{target} over the match"
+                 + (" — square closed" if closed else "")]
+        where = _esc(payload.get("map_name"))
+        if where and payload.get("round"):
+            lines.append(f"{where}, round {payload.get('round')} · {team} — {opponent}")
+        elif where:
+            lines.append(f"{where} · {team} — {opponent}")
+        else:
+            lines.append(f"{team} — {opponent}")
+        lines.append(_link(url, "Match page"))
+        return "\n".join(line for line in lines if line)
+
+    if event.type in ("E17", "E18"):
+        squares = payload.get("squares") or []
+        closed = payload.get("closed", 0)
+        on_map = payload.get("map_squares") or {}
+        if event.type == "E18":
+            lines = [f"🎯 <b>Bingo for the match — {closed} of {len(squares)}</b>",
+                     f"{team} — {opponent}"]
+        else:
+            lines = [f"🎯 <b>Bingo after map {payload.get('map_number')} — "
+                     f"{closed} of {len(squares)}</b>",
+                     f"{_esc(payload.get('map_name'))} · {team} — {opponent}"]
+        for square in squares:
+            mark = "✅" if square.get("done") else "⬜"
+            line = f"{mark} {_esc(square.get('label'))} — {_esc(square.get('text'))}"
+            # On a map summary the map's own contribution is the new
+            # information; the running total is what the line already says.
+            gained = int(on_map.get(square.get("key"), 0) or 0)
+            if gained and event.type == "E17":
+                line += f" (+{gained} here)"
+            lines.append(line)
+        lines.append(_link(url, "Match page"))
         return "\n".join(lines)
 
     if event.type == "E8R":

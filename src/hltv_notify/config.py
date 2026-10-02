@@ -180,6 +180,18 @@ class Config:
     # the first is a streak. 0 switches the line off entirely.
     comeback_rounds: int = field(default_factory=lambda: _int("COMEBACK_ROUNDS", 9))
 
+    # The bingo card: nine things worth noticing over a match, counted
+    # passively and reported after every map and at the end of the match. On
+    # by default — the counting is what the feature IS, and with it off the
+    # feed's log is not even parsed.
+    bingo: bool = field(default_factory=lambda: _bool("BINGO", True))
+    # And a message for each moment as it happens. Off by default, and
+    # measured rather than guessed: a team produces some seven kills through
+    # smoke and six through a wall per map, so this is around fifteen extra
+    # messages a map on top of the multikills. Both are DEFAULTS behind
+    # /settings knobs, not overrides.
+    bingo_live: bool = field(default_factory=lambda: _bool("BINGO_LIVE", False))
+
     # Broadcast links under a multikill, so the moment can be clipped by hand
     # before it scrolls off the stream. All three are DEFAULTS: each is a knob
     # in /settings, and a row exists there only once somebody changes it.

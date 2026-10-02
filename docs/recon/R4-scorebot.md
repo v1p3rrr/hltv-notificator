@@ -177,6 +177,58 @@ The payload is a JSON **string** with `{"log":[ {<Type>: {...}}, … ]}`. The
 types observed: `MatchStarted`, `RoundStart`, `RoundEnd`, `Restart`, `Kill`,
 `Assist`, `BombPlanted`, `Suicide`, `PlayerJoin`, `PlayerQuit`.
 
+#### `Kill` — measured 2026-10-02, and the only reason the log is read at all
+
+```json
+{"Kill": {
+  "killerName": "-Lack1", "killerNick": "Lack1", "killerSide": "TERRORIST",
+  "victimNick": "reyoz", "victimName": "chronic111", "victimSide": "CT",
+  "weapon": "usp_silencer", "headShot": true, "eventId": 3943698493,
+  "flasherNick": "YumsaN", "flasherSide": "CT",
+  "victimX": -779, "victimY": 1440, "killerX": -62, "killerY": 1453,
+  "killerId": 13240, "victimId": 23477,
+  "penetrated": false, "throughSmoke": true, "noScope": false,
+  "killerBlind": false, "attackerInAir": false}}
+```
+
+These are the facts no `scoreboard` frame carries: a frame says who has how
+many kills, never how any of them happened. Counted over the unique kills of
+both recordings:
+
+| | 2397053 (2 maps) | 2396936 |
+|---|---|---|
+| unique kills | 543 | 188 |
+| `headShot` | 285 | 136 |
+| `throughSmoke` | 30 | 10 |
+| `penetrated` (a wallbang) | 24 | 4 |
+| `weapon == "hegrenade"` | 3 | 1 |
+| `weapon` a `knife_*` | 16 | 0 |
+| `weapon == "inferno"` (molotov) | 1 | 0 |
+
+Four measurements matter more than the rest.
+
+**`eventId` is unique per kill and STRICTLY INCREASING in arrival order.**
+Checked over all 731 unique kills of both recordings, with no exception. That
+is what makes the log usable despite the replayed backlog: one high-water mark
+per match deduplicates it, and unlike a set of ids it survives a restart.
+
+**`killerId` is the scoreboard's `dbId`.** On 2397053 the set of `dbId` in the
+frames and the set of `killerId` in the log are the same ten numbers. This is
+the only safe way to attribute a kill to a team. `killerSide` is the side at
+the time of the kill and the backlog replays kills from before the break, so
+reading it credits half the match to the wrong team. The nicks cannot do it
+either: the log carries both a nick and an in-game name and swaps which is
+which between players (`killerNick` "reyoz" with `killerName` "chronic111").
+
+**The log is newest-first.** Every packet of both recordings is in descending
+`eventId`. Anything reading them as a stream in time order has to reverse them.
+
+**All 16 knife kills are from the knife rounds before the two maps.** They
+arrived in the very first log packet, before any scoreboard frame — i.e. in
+the backlog, from before the connection. A knife round is not marked `warmup`
+by the time it is played: it scores on the board like any other round and the
+server resets the score afterwards.
+
 **`MatchStarted` carries the map name and fires at the start of every map in the
 series**, not once per match. Caught on FORZE's match moving to its second map:
 

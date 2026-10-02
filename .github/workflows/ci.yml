@@ -10,12 +10,26 @@ name: CI
 # token and travels onward as an archive. The job that does have the token does
 # not even check the repository out — it unpacks the ready archive and pushes
 # the layers to the registry.
+#
+# A branch other than main publishes too, but ONLY under a tag of its own
+# (`<prefix><version>`) and never as `latest`: a feature that is not on main
+# yet must be installable on the server without becoming what everybody pulls.
+# Pushing a branch needs write access to the repository, which is the same
+# trust `main` already carries — unlike a pull request, which can come from
+# anyone and is still kept away from the token.
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/**', 'claude/**']
     tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag_prefix:
+        description: >-
+          Publish under <prefix><version> instead of latest, e.g. bingo -> bingo0.1.0
+        required: false
+        default: bingo
 
 # The default token permissions are read-only on the repository. Jobs that need
 # more are granted it by name and in the smallest amount.
@@ -140,7 +154,7 @@ jobs:
       # On a pull request there is nothing to publish and no point in moving
       # the archive around.
       - name: Pass the archive on
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image
@@ -155,7 +169,7 @@ jobs:
     name: Publish to Docker Hub
     needs: [image]
     # A pull request never reaches this job — see the comment on `on`.
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # The secret lives in an environment rather than in the repository
@@ -193,23 +207,45 @@ jobs:
         run: docker load --input "$RUNNER_TEMP/image.tar"
 
       # Tags:
-      #   push to main  → 0.1.0-build.<run number>, sha-<commit>, latest
-      #   tag vX.Y.Z    → X.Y.Z, X.Y
-      # The first is unique and grows monotonically — that is the "new version"
-      # for every commit; the second lets you get from an image back to the code.
+      #   push to main    → 0.1.0-build.<run number>, sha-<commit>, latest
+      #   tag vX.Y.Z      → X.Y.Z, X.Y
+      #   any other branch → <prefix>0.1.0, <prefix>0.1.0-build.<run number>
+      # The build-numbered tag is unique and grows monotonically — that is the
+      # "new version" for every commit; sha- lets you get from an image back to
+      # the code.
+      #
+      # A branch build NEVER writes `latest` and never writes a bare version:
+      # the whole point of it is to be installable on the server (`image:
+      # vprlol/hltv-notificator:bingo0.1.0` in docker-compose.yml) without
+      # becoming what an ordinary `docker compose pull` brings down.
+      #
+      # The prefix comes from the manual run's input when there is one, and
+      # otherwise from the branch's last path segment, lowercased and with
+      # anything Docker will not accept in a tag replaced by a dash.
       - name: Tags
         id: tags
         env:
           VERSION: ${{ needs.image.outputs.version }}
+          INPUT_PREFIX: ${{ inputs.tag_prefix }}
         run: |
+          set -euo pipefail
           if [ "$GITHUB_REF" = "refs/heads/main" ]; then
             list="$VERSION-build.$GITHUB_RUN_NUMBER sha-$(echo "$GITHUB_SHA" | cut -c1-7) latest"
           elif [ "$GITHUB_REF_TYPE" = tag ]; then
             plain="${GITHUB_REF_NAME#v}"
             list="$plain ${plain%.*}"
           else
-            echo "::error::I do not know which tags to apply for $GITHUB_REF"
-            exit 1
+            prefix="${INPUT_PREFIX:-}"
+            if [ -z "$prefix" ]; then
+              prefix=$(echo "${GITHUB_REF_NAME##*/}" | tr '[:upper:]' '[:lower:]' \
+                       | sed 's/[^a-z0-9._-]/-/g')
+              prefix="$prefix-"
+            fi
+            # A Docker tag is at most 128 characters and may not start with a
+            # separator; a branch name can break both.
+            prefix=$(echo "$prefix" | sed 's/^[._-]*//' | cut -c1-80)
+            test -n "$prefix" || { echo "::error::Could not derive a tag prefix from $GITHUB_REF_NAME"; exit 1; }
+            list="$prefix$VERSION $prefix$VERSION-build.$GITHUB_RUN_NUMBER"
           fi
           echo "list=$list" >> "$GITHUB_OUTPUT"
           echo "Tags: $list"

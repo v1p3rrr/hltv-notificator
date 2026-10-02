@@ -20,7 +20,8 @@ up what a message is about.
 | E1 new match | E2 reschedule | E3 cancellation | E4 match started |
 | E5 map started | E6 map finished | E7 match finished | E8 / E8R degraded / recovered |
 | E9 multikill | E10 reminder | E11 map point | E12 half time |
-| E13 new overtime | E14 daily digest | E15 clutch | |
+| E13 new overtime | E14 daily digest | E15 clutch | E16 bingo moment |
+| E17 bingo after a map | E18 bingo after a match | | |
 
 A general description is in [README.md](README.md). How it works and why is in
 [docs/architecture.md](docs/architecture.md). **Read it before making any
@@ -88,8 +89,9 @@ src/hltv_notify/
     db.py              SQLite, schema, migrations
     machine.py         E1-E3 from the schedule
     match_machine.py   E4, E6, E7, E8 from the match page
-    live_machine.py    E5, E6, E9, E15 from the live feed
+    live_machine.py    E5, E6, E9, E15, E16-E18 from the live feed
     highlights.py      what a round produced: a multikill, a clutch, both
+    bingo.py           the nine-square card: what fills it, what must not
   notify/
     audience.py        who a notification goes to (the only pause check)
     format.py          message rendering
@@ -234,6 +236,74 @@ direction: an unclaimed flag is still its own language, so dropping is right
 where guessing is wrong everywhere it is read.
 `tests/test_streams.py` now asserts every shape at once, working and broken,
 so a fourth version cannot trade one for another.
+
+**The feed's `log` is readable, but only through `eventId`.** It was unused
+for years for a good reason — every connect replays the whole backlog — and
+the bingo card needs it, because four of its squares (`throughSmoke`,
+`penetrated`, `hegrenade`, `knife_*`) are facts no scoreboard frame carries.
+What makes it safe is one measurement: `eventId` is unique per kill and
+STRICTLY INCREASING in arrival order, across all 731 kills of both recordings.
+So one high-water mark per match is the entire deduplication, and it survives a
+restart where a set of ids would not. Two more that go with it: the log is sent
+NEWEST FIRST (every packet of both recordings is descending, so `parse_kills`
+reverses once rather than each reader doing it), and `killerId` IS the
+scoreboard's `dbId` — the only safe way to attribute a kill, since `killerSide`
+is the side at the time of the kill and the backlog replays kills from before
+the break.
+
+**The first batch of a match is SEEDED, not counted.** It reaches back to maps
+played before we connected and nothing in a `Kill` says which map it belongs
+to. The mark is set and nothing is counted — a service started mid-match
+reports the part it watched. The row in `bingo_watermark` existing is what says
+"seeded"; absent is not the same as zero, and `bingo_watermark()` returns None
+rather than 0 for exactly that reason.
+
+**A knife round is not `warmup`, and it SCORES.** All 16 knife kills of the
+forze recording are from the knife rounds before its two maps. By the time one
+is played the frame says `started` like any other round, so `in_play` does not
+catch it. Two things do, and both are needed: a round in which NOBODY used
+anything but a knife is the knife round (so a knife kill is held until its
+round is over, and `BingoTracker` watches every player's kills, not only ours —
+whether a round was a knife round is a question about the ROUND), and a
+confirmed score reset throws away everything counted on the map before it.
+
+**A score reset must be CONFIRMED, never acted on.** 0:0 after a real score is
+either the map starting over or a crashed server before it is restored, and
+the frame is identical in both cases. So a candidate waits: the old score
+coming back EXACTLY cancels it, nothing for `RESET_CONFIRM_SECONDS` confirms
+it. The real recording contains one of each — a 9:5 -> 0:0 -> 9:5 on a
+reconnect, which the cancel catches. And because the confirmation is late by
+design, the line to roll back to is taken when the 0:0 is FIRST SEEN, not when
+it is believed: by then the real map is running and its kills are in the same
+counters.
+
+**A retraction is an EDIT, and the row stays sent.** A message that vanishes
+leaves the reader remembering something that never happened. `outbox.retracted`
+is a flag beside `status`, never a change to it — anything that made the row
+look unsent would have the queue deliver it a second time. And `fmt.strike`
+wraps each LINE: Telegram's HTML has no block elements, and one `<s>` around
+several lines of `<a>` and `<b>` is a 400, which is a retraction that never
+happens.
+
+**The bingo's two aggregates must not become one.** Kills and pistol rounds SUM
+over the series; a streak and the flags take the MAX. `SUM` in SQL would turn
+four rounds in a row on each of two maps into eight, so `bingo.totals` is the
+one place several maps become one number. The same split decides what is worth
+a MESSAGE: every counted occurrence is its own moment, while a MAX square
+speaks once, on the step that takes the MATCH from open to closed — not the
+map, or a second map with four in a row would announce a square ticked an hour
+ago.
+
+**`render` is one long function, so a local name takes it from every branch.**
+`count = payload.get("count")` in the E16 branch shadowed the module's
+`count()` helper and broke E14's "3 matches" — in a branch hundreds of lines
+away, which is what makes it worth writing down. Name locals in there for the
+field, not for the idea.
+
+**A public helper's MEANING is part of its signature.** `replay.frames()` was
+"the LiveFrames of a dump" and two test files read it that way; widening it to
+yield frames AND kills compiled fine and broke both. The interleaved stream is
+`replay.items()` and `frames()` still means what it meant.
 
 **A round is resolved ONCE, and only from what was seen inside it.** Two
 separate rules, both learned the hard way. The first: a clutch is only a clutch
@@ -731,7 +801,7 @@ is safer than `str.replace` from a heredoc.
 ## Commands
 
 ```bash
-python -m pytest                                    # 726 tests
+python -m pytest                                    # 777 tests
 docker run --rm -v "/d/Documents/Claude Projects/HLTV:/app" -w /app \n  python:3.12-slim sh -c "pip install -q -r requirements.txt pytest && python -m pytest"
                                                     # what CI actually runs
 PYTHONIOENCODING=utf-8 PYTHONPATH=src DRY_RUN=true python -m hltv_notify
