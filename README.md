@@ -259,9 +259,9 @@ Match page
 🔴 Match started
 Vitality — Spirit
 BLAST Premier World Final 2026 · BO3
-Nuke      our pick
-Dust2     their pick
-Inferno   decider
+Nuke (Vitality)
+Dust2 (Spirit)
+Inferno (Decider)
 Match page
 ```
 

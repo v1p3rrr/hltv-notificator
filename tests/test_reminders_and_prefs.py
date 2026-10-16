@@ -244,8 +244,29 @@ def test_match_start_message_carries_a_copyable_block():
                   {"number": 2, "name": "Dust2", "pick": "opponent"},
                   {"number": 3, "name": "Ancient", "pick": "decider"}]})
     text = fmt.render(event, team_name="FORZE Reload", tz_name="Europe/Moscow")
-    assert "<pre>" in text and "</pre>" in text
-    assert "Mirage" in text and "our pick" in text and "decider" in text
+    # Inline code, so a tap copies the whole lineup; `<pre>` was not copyable
+    # on the phone.
+    assert ("<code>Mirage (FORZE Reload)\nDust2 (Color)\nAncient (Decider)</code>"
+            in text)
+    assert "<pre>" not in text
+
+
+def test_match_start_lineup_names_the_picker_from_the_readers_side():
+    """The opponent's follower gets the same owners: names do not flip, only
+    which side of the payload holds them."""
+    from hltv_notify.notify import format as fmt
+
+    event = Event(type="E4", idempotency_key="k", match_id=1, payload={
+        "team_name": "FORZE Reload", "team_id": 12857,
+        "opponent": "Color & Co", "opponent_id": 13973,
+        "event_name": "GLuck", "best_of": 3, "url": "u",
+        "picks": [{"number": 1, "name": "Mirage", "pick": "team"},
+                  {"number": 2, "name": "Dust2", "pick": "opponent"},
+                  {"number": 3, "name": "Ancient", "pick": "decider"}]})
+    text = fmt.render(event, team_name="FORZE Reload", tz_name="Europe/Moscow",
+                      for_team_id=13973)
+    assert ("<code>Mirage (FORZE Reload)\nDust2 (Color &amp; Co)\n"
+            "Ancient (Decider)</code>") in text
 
 
 def _map_point_event():

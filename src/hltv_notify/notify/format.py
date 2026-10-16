@@ -318,13 +318,19 @@ def render(event: Event, *, team_name: str, tz_name: str,
         ]
         picks = payload.get("picks") or []
         if picks:
-            # A code block: Telegram shows a copy button on it, so the map
-            # lineup can be grabbed with a single tap.
-            width = max(len(item["name"]) for item in picks)
+            # One inline `<code>` over the whole lineup, not a `<pre>`: a tap
+            # on inline code copies the entity in every client, while a bare
+            # `<pre>` only got a copy button in some of them — on the phone it
+            # was not copyable at all. Built from the RAW names and escaped
+            # once, since `team` and `opponent` above are already escaped.
+            owners = {"team": payload.get("team_name") or team_name,
+                      "opponent": payload.get("opponent") or "TBD",
+                      "decider": "Decider"}
             rows = "\n".join(
-                f"{item['name']:<{width}}  {PICK_LABELS.get(item['pick'], '')}"
+                f"{item['name']} ({owners[item['pick']]})"
+                if item.get("pick") in owners else item["name"]
                 for item in picks)
-            lines.append(f"<pre>{_esc(rows)}</pre>")
+            lines.append(f"<code>{_esc(rows)}</code>")
         lines.append(_link(url, "Match page"))
         return "\n".join(lines)
 
@@ -532,12 +538,6 @@ def render_banner(event: Event, *, team_name: str,
         lines.append(block)
     return "\n".join(lines)
 
-
-PICK_LABELS = {
-    "team": "our pick",
-    "opponent": "their pick",
-    "decider": "decider",
-}
 
 ROUND_STATE_LABELS = {
     "warmup": "warmup",
