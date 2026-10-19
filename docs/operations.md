@@ -9,7 +9,7 @@
 | Event | State |
 |---|---|
 | E1 new match, E2 reschedule, E3 cancellation | done, from the team page |
-| E4 match started | done, from the match page; waits for the first round while the feed reports a warmup |
+| E4 match started | done, from the match page; waits for the first round while the feed reports a warmup. Carries the broadcast links, refreshed at the moment it is released |
 | E7 match finished | done, from the live feed by the map count; the page confirms |
 | E11 map point | done, from the live feed; a separate one for every overtime; carries the broadcast links; goes INTO the live card when the reader has one |
 | E12 half time | done, from the live feed, `/settings half` (default `HALF_ALERTS`), **off by default**; goes into the live card, no broadcast links |
@@ -23,7 +23,7 @@
 | A multikill by a player of our team | done, `/settings multikill` (default `MULTIKILL_THRESHOLD`); reported when the round is decided FOR THAT PLAYER — the moment he dies, or the end of the round |
 | E15 a clutch by a player of our team | done, `/settings clutch` (default `CLUTCH_THRESHOLD`); the bar counts OPPONENTS, and a round that is also a multikill says both in one message |
 | E14 the daily digest | done, at times set with `/digest`, in the subscriber's own zone; matches STARTING within a rolling 24 h, so neither the running match nor a finished one, and nothing at all on a day with none |
-| Broadcast links under a multikill | done, a quoted block on E9, `/settings streams` (default `STREAM_LINKS`); read off the match page we already poll, Twitch and Kick only |
+| Broadcast links where you decide to watch | done, a quoted block on E4, E9, E11, E13 and E15, `/settings streams` (default `STREAM_LINKS`); read off the match page we already poll, Twitch and Kick only |
 | E17 / E18 the bingo card after a map and after the match | done, `/settings bingo` (default `BINGO`), **on by default**; nine fixed squares counted over the whole match, built by whichever of the two machines reaches the end first |
 | The match transcript | done, `MATCH_LOG` (on by default), kept `MATCH_LOG_DAYS` days; every entry of the feed's log, fetched with `/log` as a file or with `python -m hltv_notify.matchlog_cli` from the server. Not per person: nothing is sent |
 | E16 a bingo moment | done, `/settings bingo_live` (default `BINGO_LIVE`), **off by default**; needs `bingo` on as well |
@@ -109,7 +109,7 @@ The values live in `.env`; the defaults are a balanced profile:
 | `COMEBACK_ROUNDS` | 9 | the swing that counts as a comeback; 0 removes the line. A **default**: `/settings comeback` overrides it per person |
 | `CLUTCH_ALERTS` | true | alert on a round won as the last player alive. A **default**: `/settings clutch` |
 | `CLUTCH_THRESHOLD` | 3 | how many opponents counts as one; 0 off. A **default**: `/settings clutch` |
-| `STREAM_LINKS` | true | broadcast links under a multikill. A **default**: `/settings streams` |
+| `STREAM_LINKS` | true | the block of broadcast links (E4, E9, E11, E13, E15). A **default**: `/settings streams` |
 | `STREAM_LINKS_MAX` | 3 | how many to list; 0 is **all**. A **default**: `/settings streams_count` |
 | `STREAM_LANGUAGES` | `en,ru` | languages worth a tap. A **default**: `/settings streams_langs` |
 | `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that stand for one language; an unlisted flag is its own. A **colon** opens a language and the comma-separated flags after it belong to it, so `en:GB,US ru:BY` and `en: GB, US, ru:BY` are the same. Anything after a space with **no colon of its own** is dropped with a WARNING rather than guessed at, and an empty table is warned about too — see below |
@@ -170,7 +170,7 @@ way; the log says which happened.
 | `half` | a message when the sides swap | `HALF_ALERTS` (default `PHASE_ALERTS`) |
 | `overtime` | a message at the start of every overtime | `OVERTIME_ALERTS` (default `PHASE_ALERTS`) |
 | `card` | the live score card during a map | `LIVE_MESSAGE` |
-| `streams` | the block of broadcast links under E9 | `STREAM_LINKS` |
+| `streams` | the block of broadcast links — E4, E9, E11, E13, E15 | `STREAM_LINKS` |
 | `streams_count` | how many to list; `0` is **all**, not "none" | `STREAM_LINKS_MAX` |
 | `streams_langs` | languages worth a tap; `any` (or `off`) for no preference | `STREAM_LANGUAGES` |
 | `bingo` | count the bingo card and send it after every map and match | `BINGO` |

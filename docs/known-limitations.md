@@ -395,9 +395,14 @@ turns the preference off entirely.
 ## A match whose page has not been read yet has no links
 
 The live feed can come up before the match page has been parsed once — after a
-restart mid-match, for instance. The multikill then arrives without the block
+restart mid-match, for instance. The message then arrives without the block
 rather than waiting for it. The next poll fills the list in, and every later
-multikill on that match has it.
+message about that match has it.
+
+The start message (E4) is the one that cannot hit this from the page side: it
+is written by the same observation that stores the list. It can still go out
+bare when the page carries no castable broadcast at all — YouTube only, or a
+section served mid-edit.
 
 ## The digest can be an hour late, and then not arrive at all
 
