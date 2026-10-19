@@ -338,6 +338,15 @@ class MatchMachine:
                 "event_name": observation.event_name or (row["event_name"] if row else ""),
                 "best_of": observation.best_of,
                 "picks": observation.picks(team_id),
+                # The broadcasts, for the same reason a map point carries
+                # them: the message is read at the moment the reader decides
+                # whether to watch, and the thing to tap belongs in it. The
+                # whole list, unpicked — which of them a reader sees is
+                # decided at render time from their own settings. Taken from
+                # the store and not from `observation.streams`, because this
+                # payload may be put aside for the whole warmup and the live
+                # machine refreshes it from the same place on release.
+                "streams": self.storage.match_streams(observation.match_id),
                 "url": row["url"] if row else "",
             },
         )

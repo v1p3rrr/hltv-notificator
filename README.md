@@ -158,6 +158,13 @@ extra requests — and it is refreshed on every poll, because a caster on a
 hundred viewers when the match began can be behind three others on a thousand
 an hour later.
 
+**The same block rides on three other messages**, chosen by the same rules and
+by your own settings: the start of the match (E4), a map point (E11) and a new
+overtime (E13). Those are the moments when the question is "where do I watch
+this", and the start of the match is the first of them — the message that
+decides whether you sit down for it at all. Half time does not carry them:
+nobody needs a link to watch a break.
+
 ### A clutch, and why it shares the message
 
 A clutch is a round won as the last player of the team alive, and the bar for
@@ -262,6 +269,9 @@ BLAST Premier World Final 2026 · BO3
 Nuke (Vitality)
 Dust2 (Spirit)
 Inferno (Decider)
+┃ 🟣 🇷🇺 GLuck
+┃ 🟢 🌍 DutchBoyCasts
+┃ 🟢 🇬🇧 Anders
 Match page
 ```
 
@@ -543,7 +553,7 @@ in `.env`:
 /settings half on             a message when the sides swap
 /settings overtime on         a message at the start of every overtime
 /settings card off            no live score card, just the milestones
-/settings streams_count 4     four broadcast links under a multikill, not three
+/settings streams_count 4     four broadcast links in the block, not three
 /settings streams_langs en,ru which languages are worth a tap
 /settings multikill default   back to whatever the service is configured with
 ```
@@ -659,7 +669,7 @@ are most likely to touch:
 | `HALF_ALERTS` | = `PHASE_ALERTS` | alert at half time — the **default** for `/settings half` |
 | `OVERTIME_ALERTS` | = `PHASE_ALERTS` | alert at each new overtime — the **default** for `/settings overtime` |
 | `COMEBACK_ROUNDS` | `9` | swing that counts as a comeback; `0` removes the line — the **default** for `/settings comeback` |
-| `STREAM_LINKS` | `true` | broadcast links under a multikill — the **default** for `/settings streams` |
+| `STREAM_LINKS` | `true` | the block of broadcast links — on the match start, a map point, an overtime and a highlight — the **default** for `/settings streams` |
 | `STREAM_LINKS_MAX` | `3` | how many to list; `0` means **all** — the **default** for `/settings streams_count` |
 | `STREAM_LANGUAGES` | `en,ru` | languages worth a tap — the **default** for `/settings streams_langs` |
 | `STREAM_LANGUAGE_ALIASES` | `en:GB,US,WORLD,AU,CA,NZ,IE` | flags that mean one language; an unlisted flag is its own. A colon opens a language and the flags after it belong to it: `en:GB,US ru:BY` and `en: GB, US, ru:BY` are the same. A group that lost its colon is dropped with a warning, not guessed at |

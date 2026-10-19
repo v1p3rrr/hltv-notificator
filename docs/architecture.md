@@ -705,11 +705,27 @@ the tracker is constructed when the map starts. And one person asking for 3k
 makes the service track 3k rounds for everybody — that is arithmetic on frames
 already being read, not messages, and nobody else receives them.
 
-## Broadcast links under a multikill
+## Broadcast links where the reader decides to watch
 
 A 4k is worth clipping, and the clip has to be made while the moment is still
 on the stream — so E9 carries the broadcasts rather than making the reader go
 looking through the match page.
+
+**Four more types carry them, for the same reason one step earlier.** A map
+point (E11) and a new overtime (E13) are the moments to be watching; a clutch
+(E15) shares E9's message; and the **match start** (E4) is the first of them
+all — it is the message that decides whether the reader sits down for the
+match at all, and sending it without a link means answering "it has begun"
+and leaving "where" to a hunt through the match page. Half time does not
+carry them: nobody needs a link to watch a break.
+
+E4 is the one type whose payload can be written long before it is sent. The
+page puts the message aside while the feed reports a warmup, and that warmup
+runs up to twenty minutes — which is precisely when the viewers arrive and the
+order of the list changes. So `_released_start_event` re-reads the store
+rather than sending the order the page saw; an empty read keeps what the page
+had, since `set_match_streams` already refuses to record an empty parse and
+nothing here should be able to wipe a list either.
 
 **The source is free.** Streams are on the match page, which is already fetched
 every 60-300 s while a match runs, so `match_page.parse` returns them alongside

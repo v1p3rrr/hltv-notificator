@@ -575,7 +575,16 @@ class LiveMachine:
             type="E4",
             idempotency_key=f"E4:{match_id}:started",
             match_id=match_id,
-            payload=payload,
+            # Everything the page wrote, except the broadcasts: the warmup it
+            # waited out can run twenty minutes, which is exactly when the
+            # viewers arrive and the order of the list changes. A stale order
+            # would send the reader to the third most watched cast at the
+            # moment they are deciding where to watch. An empty read leaves
+            # what the page had — `set_match_streams` already refuses to
+            # record an empty parse, so nothing here can wipe a list either.
+            payload={**payload,
+                     "streams": (self.storage.match_streams(match_id)
+                                 or payload.get("streams") or [])},
         )
 
     def _event_e11(self, match_id: int, frame: LiveFrame, map_number: int,

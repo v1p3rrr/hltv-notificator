@@ -344,6 +344,36 @@ def test_the_multikill_message_carries_the_block_above_the_match_link():
     assert text.index("<blockquote>") < text.index("Watch the match")
 
 
+def test_the_start_message_carries_the_block_above_the_match_link():
+    """Same placement and same picking as a map point: the start message is
+    read at the moment the reader decides whether to watch at all."""
+    event = Event(type="E4", idempotency_key="E4:1:started", match_id=1, payload={
+        "team_name": "FORZE", "team_id": 1, "opponent": "Vitality",
+        "opponent_id": 2, "event_name": "BLAST", "best_of": 3,
+        "picks": [{"name": "Mirage", "pick": "team"}],
+        "url": "https://www.hltv.org/matches/1/x",
+        "streams": [one("RU", 51, name="GLuck"), one("GB", 40, name="Anders"),
+                    one("GB", 30, name="Spunj"), one("GB", 20, name="launders")]})
+    text = fmt.render(event, team_name="FORZE", tz_name="UTC", stream_prefs=prefs())
+    assert text.index("<blockquote>") < text.index("Match page")
+    # Three of them, picked exactly as anywhere else — the reader's count and
+    # the reader's languages, most watched first.
+    assert [name for name in ("GLuck", "Anders", "Spunj", "launders")
+            if f">{name}</a>" in text] == ["GLuck", "Anders", "Spunj"]
+    # And the lineup is still there, above the block.
+    assert text.index("Mirage") < text.index("<blockquote>")
+
+
+def test_a_start_message_without_the_block_is_unchanged():
+    event = Event(type="E4", idempotency_key="E4:1:started", match_id=1, payload={
+        "team_name": "FORZE", "team_id": 1, "opponent": "Vitality",
+        "event_name": "BLAST", "best_of": 3, "picks": [],
+        "url": "https://www.hltv.org/m"})
+    text = fmt.render(event, team_name="FORZE", tz_name="UTC")
+    assert "blockquote" not in text
+    assert "Match started" in text
+
+
 def test_a_multikill_without_the_block_is_unchanged():
     event = Event(type="E9", idempotency_key="k", match_id=1, payload={
         "team_name": "FORZE", "team_id": 1, "opponent": "Vitality",
@@ -429,6 +459,103 @@ def test_a_multikill_on_a_match_with_no_streams_carries_an_empty_list(storage, c
     assert e9.payload["streams"] == []
     text = fmt.render(e9, team_name="FORZE", tz_name="UTC", stream_prefs=prefs())
     assert "blockquote" not in text
+
+
+def test_the_start_event_carries_the_streams(storage, config):
+    """Written by the page, from the list the same observation has just
+    stored — so the links are as fresh as the poll that found the match live.
+    """
+    from datetime import datetime, timezone
+
+    from hltv_notify.sources.match_page import MapLine, MatchObservation
+    from hltv_notify.state.db import utcnow
+    from hltv_notify.state.match_machine import MatchMachine
+
+    team, foe, match = 12857, 13973, 779
+    storage.upsert_match(match_id=match, opponent_id=foe, opponent_name="Color",
+                         event_name="Test", start_utc=utcnow(),
+                         url="https://www.hltv.org/matches/779/x",
+                         snapshot={}, snapshot_hash="x", team_id=team)
+    observation = MatchObservation(
+        match_id=match, status="live",
+        start_utc=datetime(2026, 9, 1, 15, 0, tzinfo=timezone.utc),
+        event_name="Test", event_id=1, best_of=3,
+        team1_id=foe, team1_name="Color", team2_id=team, team2_name="FORZE Reload",
+        maps=[MapLine(number=1, name="Mirage", score_left=None, score_right=None,
+                      halves=None, has_stats=False)],
+        scorebot_id=match,
+        streams=(match_page.StreamLink(provider="twitch", name="GLuck",
+                                       url="https://www.twitch.tv/gluck",
+                                       flag="RU", viewers=51),))
+
+    events = MatchMachine(storage, config).apply(observation)
+    e4 = next(event for event in events if event.type == "E4")
+    assert [item["name"] for item in e4.payload["streams"]] == ["GLuck"]
+
+
+def test_the_held_start_takes_the_newest_streams_on_release(storage, config):
+    """The warmup it waits out can run twenty minutes, which is exactly when
+    the viewers arrive. The order written at the page's LIVE flag is stale by
+    the time the first round is played."""
+    from hltv_notify.sources.scorebot import LiveFrame
+    from hltv_notify.state.db import utcnow
+    from hltv_notify.state.live_machine import LiveMachine
+
+    team, foe, match = 12857, 13973, 780
+    storage.upsert_match(match_id=match, opponent_id=foe, opponent_name="Color",
+                         event_name="Test", start_utc=utcnow(),
+                         url="https://www.hltv.org/matches/780/x",
+                         snapshot={}, snapshot_hash="x", team_id=team)
+    storage.set_map_lineup(match, ["Mirage"])
+    storage.set_pending_start_event(match, {"team_name": "FORZE Reload",
+                                            "opponent": "Color", "url": "u",
+                                            "streams": [one("RU", 3, name="early")]})
+    storage.set_match_streams(match, [one("GB", 900, name="Anders"),
+                                      one("RU", 51, name="GLuck")])
+
+    def at(state):
+        return LiveFrame(
+            map_name="de_mirage", current_round=1, round_state=state,
+            live=state != "warmup",
+            ct_team_id=team, ct_team_name="us", ct_score=0,
+            t_team_id=foe, t_team_name="them", t_score=0,
+            regulation=12, overtime=3)
+
+    machine = LiveMachine(storage, config)
+    machine.apply(match, at("warmup"))
+    e4 = next(e for e in machine.apply(match, at("started")) if e.type == "E4")
+    assert [item["name"] for item in e4.payload["streams"]] == ["Anders", "GLuck"]
+
+
+def test_a_held_start_keeps_its_own_list_when_the_store_is_empty(storage, config):
+    """An empty store is a match whose page was never read for broadcasts, not
+    a reason to drop the ones the start message was written with."""
+    from hltv_notify.sources.scorebot import LiveFrame
+    from hltv_notify.state.db import utcnow
+    from hltv_notify.state.live_machine import LiveMachine
+
+    team, foe, match = 12857, 13973, 781
+    storage.upsert_match(match_id=match, opponent_id=foe, opponent_name="Color",
+                         event_name="Test", start_utc=utcnow(),
+                         url="https://www.hltv.org/matches/781/x",
+                         snapshot={}, snapshot_hash="x", team_id=team)
+    storage.set_map_lineup(match, ["Mirage"])
+    storage.set_pending_start_event(match, {"team_name": "FORZE Reload",
+                                            "opponent": "Color", "url": "u",
+                                            "streams": [one("RU", 3, name="early")]})
+
+    def at(state):
+        return LiveFrame(
+            map_name="de_mirage", current_round=1, round_state=state,
+            live=state != "warmup",
+            ct_team_id=team, ct_team_name="us", ct_score=0,
+            t_team_id=foe, t_team_name="them", t_score=0,
+            regulation=12, overtime=3)
+
+    machine = LiveMachine(storage, config)
+    machine.apply(match, at("warmup"))
+    e4 = next(e for e in machine.apply(match, at("started")) if e.type == "E4")
+    assert [item["name"] for item in e4.payload["streams"]] == ["early"]
 
 
 # ---------- the number the whole list is ordered by ----------

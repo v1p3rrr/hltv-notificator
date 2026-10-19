@@ -331,6 +331,12 @@ def render(event: Event, *, team_name: str, tz_name: str,
                 if item.get("pick") in owners else item["name"]
                 for item in picks)
             lines.append(f"<code>{_esc(rows)}</code>")
+        # The broadcasts, above the link for the same reason as on a map
+        # point: this is the message that decides whether the reader watches
+        # at all, and the thing to tap should be the thing the eye lands on.
+        block = stream_block(payload.get("streams"), stream_prefs)
+        if block:
+            lines.append(block)
         lines.append(_link(url, "Match page"))
         return "\n".join(lines)
 
