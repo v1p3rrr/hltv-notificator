@@ -25,6 +25,25 @@
 | E14 the daily digest | done, at times set with `/digest`, in the subscriber's own zone; matches STARTING within a rolling 24 h, so neither the running match nor a finished one, and nothing at all on a day with none |
 | Broadcast links where you decide to watch | done, a quoted block on E4, E9, E11, E13 and E15, `/settings streams` (default `STREAM_LINKS`); read off the match page we already poll, Twitch and Kick only |
 
+## Round histories and highlight scores
+
+E6 (map finished) includes a W/L round history with `(T)` / `(CT)` labels and
+`|` at the side switch; each overtime gets an `OT1`, `OT2`, etc. row. E7
+(match finished) includes the history beneath each map. These follow the
+recipient's team, including when both participants are tracked. `?` means a
+round was not observed, `(?)` a side was not observed. No feed means no history.
+Progress is persisted in the existing database; no new setting or extra HLTV
+request is needed.
+
+E6 also names the next required map and its pick owner, or the decider, when
+the match page has supplied the veto. There is no next-map line after the
+series is decided.
+
+E9 (multikill) and E15 (clutch) show a confirmed score change, such as
+`2:4 → 3:4`, when both scores belong to that round. An alert sent before the
+result is known keeps the current score alone and is not held back or sent
+again just to add the result.
+
 ## Starting up
 
 1. `cp .env.example .env` and fill in `TELEGRAM_BOT_TOKEN` (from @BotFather) and

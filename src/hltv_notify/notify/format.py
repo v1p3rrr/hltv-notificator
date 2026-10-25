@@ -53,6 +53,8 @@ SWAPPED_PAIRS = (
     ("team_name", "opponent"),
     ("team_id", "opponent_id"),
     ("score_team", "score_opponent"),
+    ("score_before_team", "score_before_opponent"),
+    ("score_after_team", "score_after_opponent"),
     ("series_team", "series_opponent"),
     # The comeback's start and peak. They turn around with everything else,
     # and whose comeback it was is read back off them at render time — a
@@ -89,10 +91,68 @@ def orient(payload: dict, for_team_id: Optional[int]) -> dict:
         flipped["maps"] = [
             {**item,
              "score_team": item.get("score_opponent"),
-             "score_opponent": item.get("score_team")}
+             "score_opponent": item.get("score_team"),
+             "round_history": _flip_history(item.get("round_history"))}
             for item in payload["maps"]
         ]
+    if payload.get("round_history"):
+        flipped["round_history"] = _flip_history(payload["round_history"])
+    if payload.get("next_map"):
+        item = payload["next_map"]
+        flipped["next_map"] = {**item, "pick": {
+            "team": "opponent", "opponent": "team"}.get(item.get("pick"), item.get("pick"))}
     return flipped
+
+
+def _flip_history(history: Optional[dict]) -> dict:
+    if not history:
+        return {}
+    return {**history,
+            "rounds": history["rounds"].translate(str.maketrans("WL", "LW")),
+            "sides": {key: {"CT": "T", "T": "CT"}.get(side, side)
+                      for key, side in history.get("sides", {}).items()}}
+
+
+def round_history_lines(history: Optional[dict]) -> list:
+    """Quiet W/L rows: regulation, then each overtime, split at side changes."""
+    if not history or not history.get("rounds"):
+        return []
+    rounds = history["rounds"]
+    regulation, overtime = history["regulation"], history["overtime"]
+    sides = history.get("sides", {})
+
+    def half(start, length, phase):
+        part = rounds[start:start + length]
+        return f"({sides.get(str(phase), '?')}) {part}" if part else ""
+
+    first = half(0, regulation, 0)
+    second = half(regulation, regulation, 1)
+    lines = [f"<code>{_esc(' | '.join(part for part in (first, second) if part))}</code>"]
+    start = 2 * regulation
+    number = 1
+    while start < len(rounds):
+        left = half(start, overtime, 2 * number)
+        right = half(start + overtime, overtime, 2 * number + 1)
+        text = f"OT{number} " + " | ".join(part for part in (left, right) if part)
+        lines.append(f"<code>{_esc(text)}</code>")
+        number += 1
+        start += 2 * overtime
+    return lines
+
+
+def _history_legend(histories) -> str:
+    text = "W win · L loss · | side switch"
+    if any("?" in item.get("rounds", "") for item in histories if item):
+        text += " · ? unseen"
+    return f"<i>{text}</i>"
+
+
+def _highlight_score(payload: dict) -> str:
+    before = (payload.get("score_before_team"), payload.get("score_before_opponent"))
+    after = (payload.get("score_after_team"), payload.get("score_after_opponent"))
+    if all(value is not None for value in before + after):
+        return f"score {before[0]}:{before[1]} → {after[0]}:{after[1]}"
+    return f"score {payload.get('score_team')}:{payload.get('score_opponent')}"
 
 
 def _minutes(value) -> str:
@@ -416,6 +476,16 @@ def render(event: Event, *, team_name: str, tz_name: str,
                                  threshold=comeback_threshold)
         if comeback:
             lines.append(comeback)
+        history = payload.get("round_history")
+        history_lines = round_history_lines(history)
+        if history_lines:
+            lines += history_lines + [_history_legend([history])]
+        following = payload.get("next_map")
+        if following:
+            owner = {"team": f"{team} pick", "opponent": f"{opponent} pick",
+                     "decider": "decider"}.get(following.get("pick"), "")
+            suffix = f" ({owner})" if owner else ""
+            lines.append(f"Next: <b>{_esc(following['name'])}</b>{suffix}")
         lines += [event_name, _link(url, "Match page")]
         return "\n".join(lines)
 
@@ -438,6 +508,10 @@ def render(event: Event, *, team_name: str, tz_name: str,
             overtime = " (OT)" if item.get("overtime") else ""
             lines.append(f"   {_esc(item['name'])} — "
                          f"{item['score_team']}:{item['score_opponent']}{overtime}")
+            lines += round_history_lines(item.get("round_history"))
+        histories = [item.get("round_history") for item in payload.get("maps", [])]
+        if any(item and item.get("rounds") for item in histories):
+            lines.append(_history_legend(histories))
         lines.append(_link(url, "Match page"))
         return "\n".join(lines)
 
@@ -465,7 +539,7 @@ def render(event: Event, *, team_name: str, tz_name: str,
         lines = [
             f"{icon} <b>{_esc(payload.get('nick'))} — {headline}</b>",
             f"{_esc(payload.get('map_name'))}, round {payload.get('round')} · "
-            f"score {payload.get('score_team')}:{payload.get('score_opponent')}",
+            + _highlight_score(payload),
             f"{team} — {opponent}",
         ]
         # Above the match link and not below it: the whole point is to be on a

@@ -350,6 +350,42 @@ together would only produce refusals. The service stops watching rounds when
 Errors lean the safe way: after a reconnect mid-round the baselines are taken
 afresh, so a highlight can be **missed but never invented**.
 
+## Persistent round histories and score transitions
+
+`state/round_history.py` owns the map's round history. Regulation can be
+recovered from `ctMatchHistory` / `terroristMatchHistory`, tied to team ids.
+Overtime is recorded from successive scoreboard scores: exactly one additional
+point identifies the winner of exactly one round. A jump over several rounds
+leaves `?` entries, even when the final score constrains their total; it cannot
+say in which order those wins happened. No overtime-only source structure is
+assumed. Unknown history outcome types are dropped by the parser.
+
+The history, latest score, format, and observed side per half live in a
+`round_history:<match>:<map>` meta record. It is written only when something
+changes, survives reconnects and process restarts, and is separate for each
+map. Warmup and incoherent frames do not contribute. A decreasing score resets
+the abandoned map history. The fixed `startingCt` / `startingT` fields identify
+regulation sides; overtime sides are read from real `started` frames, never
+inferred from an assumed overtime side order. `ended` / `freezePeriod` can
+already contain the next half's arrays, so they must not assign side labels.
+
+Both machines attach the stored history to E6 and each map in E7, freezing it
+in the event payload. The renderer flips W/L and CT/T for the recipient just
+as it flips the map score. If the page corrects the score incompatibly with
+the saved winners, that history becomes unknown rather than contradicting
+the correction. With no recorded frames the history is omitted.
+
+The page also stores the canonical team's veto as `map_picks:<match>`. Both
+machines read it for E6's next-map line and suppress that line when
+`series_decided` is true. The pick owner turns around with the payload.
+
+`Highlight` carries optional before/after scores in addition to its existing
+score. A before score must sum to `round - 1`; an after score must sum to
+`round` and differ by one point for one team. A contiguous next round can
+confirm a lost `ended`, but a later round or another map cannot. Player-death
+alerts still leave immediately with the known score only. Event keys are
+unchanged: this adds context to the same moment, not a second notification.
+
 ## When a match starts (E4)
 
 Not when the match page says LIVE. HLTV raises that flag when the teams connect

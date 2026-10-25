@@ -89,6 +89,14 @@ class PlayerLine:
 
 
 @dataclass(frozen=True)
+class RoundOutcome:
+    """A decided regulation round from one team's point of view."""
+
+    ordinal: int
+    won: bool
+
+
+@dataclass(frozen=True)
 class LiveFrame:
     """The scoreboard state at the moment of the frame."""
 
@@ -106,6 +114,18 @@ class LiveFrame:
     overtime: int
     ct_players: Tuple["PlayerLine", ...] = ()
     t_players: Tuple["PlayerLine", ...] = ()
+    starting_ct: Optional[int] = None
+    starting_t: Optional[int] = None
+    ct_history: Tuple["RoundOutcome", ...] = ()
+    t_history: Tuple["RoundOutcome", ...] = ()
+
+    def our_history(self, team_id: int) -> Tuple["RoundOutcome", ...]:
+        """Read the history by team id: the arrays swap sides at halftime."""
+        if self.ct_team_id == team_id:
+            return self.ct_history
+        if self.t_team_id == team_id:
+            return self.t_history
+        return ()
 
     def our_players(self, team_id: int) -> Tuple["PlayerLine", ...]:
         """Our team's roster. Sides swap after the break, so we go by id rather
@@ -208,6 +228,29 @@ def _players(raw) -> Tuple[PlayerLine, ...]:
     return tuple(lines)
 
 
+def _history(raw) -> Tuple[RoundOutcome, ...]:
+    """Parse the observed history format; unfamiliar outcomes remain unknown."""
+    if not isinstance(raw, dict):
+        return ()
+    wins = {"CTs_Win", "Terrorists_Win", "Target_Bombed", "Target_Saved", "Bomb_Defused"}
+    outcomes = {}
+    for half in ("firstHalf", "secondHalf"):
+        items = raw.get(half)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                ordinal = int(item["roundOrdinal"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            result = item.get("type")
+            if ordinal > 0 and isinstance(result, str) and (result == "lost" or result in wins):
+                outcomes[ordinal] = RoundOutcome(ordinal, result != "lost")
+    return tuple(outcomes[key] for key in sorted(outcomes))
+
+
 def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
     """A scoreboard frame into an observation. None means the frame is unusable.
 
@@ -234,6 +277,10 @@ def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
         overtime=int(payload.get("overtimeHalfLength") or 3),
         ct_players=_players(payload.get("CT")),
         t_players=_players(payload.get("TERRORIST")),
+        starting_ct=payload.get("startingCt"),
+        starting_t=payload.get("startingT"),
+        ct_history=_history(payload.get("ctMatchHistory")),
+        t_history=_history(payload.get("terroristMatchHistory")),
     )
 
 
