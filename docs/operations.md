@@ -32,7 +32,8 @@
 
 E6 (map finished) includes a green/red square per round with `(T)` / `(CT)` labels and
 `|` at the side switch; each overtime gets an `OT1`, `OT2`, etc. row. E7
-(match finished) includes the history beneath each map. These follow the
+(match finished) lists the map scores without repeating their histories. These
+histories follow the
 recipient's team, including when both participants are tracked. `?` means a
 round was not observed, `(?)` a side was not observed. No feed means no history.
 There is no win/loss legend beneath the history. Progress is persisted in the

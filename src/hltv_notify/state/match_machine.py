@@ -459,8 +459,6 @@ class MatchMachine:
                 "score_opponent": their_score,
                 "overtime": _overtime(line),
             })
-            maps[-1]["round_history"] = round_history.summary(
-                self.storage, observation.match_id, line.number, our_score, their_score)
         return Event(
             type="E7",
             idempotency_key=key,

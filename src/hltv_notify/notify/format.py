@@ -130,8 +130,7 @@ def orient(payload: dict, for_team_id: Optional[int]) -> dict:
         flipped["maps"] = [
             {**item,
              "score_team": item.get("score_opponent"),
-             "score_opponent": item.get("score_team"),
-             "round_history": _flip_history(item.get("round_history"))}
+             "score_opponent": item.get("score_team")}
             for item in payload["maps"]
         ]
     if payload.get("round_history"):
@@ -537,7 +536,6 @@ def render(event: Event, *, team_name: str, tz_name: str,
             overtime = " (OT)" if item.get("overtime") else ""
             lines.append(f"   {_esc(item['name'])} — "
                          f"{item['score_team']}:{item['score_opponent']}{overtime}")
-            lines += round_history_lines(item.get("round_history"))
         lines.append(_link(url, "Match page"))
         return "\n".join(lines)
 

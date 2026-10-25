@@ -394,8 +394,10 @@ regulation sides; overtime sides are read from real `started` frames, never
 inferred from an assumed overtime side order. `ended` / `freezePeriod` can
 already contain the next half's arrays, so they must not assign side labels.
 
-Both machines attach the stored history to E6 and each map in E7, freezing it
-in the event payload. The renderer flips W/L and CT/T for the recipient just
+Both machines attach the stored history to E6, freezing it in the event
+payload. E7 carries map scores only: repeating the round histories immediately
+after the last map result would duplicate the same detail. The renderer flips
+W/L and CT/T for the recipient just
 as it flips the map score. Stored W/L outcomes are rendered as green/red
 squares, without an explanatory legend in the message. If the page corrects the score incompatibly with
 the saved winners, that history becomes unknown rather than contradicting

@@ -60,16 +60,26 @@ def test_overtimes_come_from_score_increments_and_actual_sides(storage, config):
             round_state="ended"))
     map_end = next(event for event in events if event.type == "E6")
     match_end = next(event for event in events if event.type == "E7")
-    for event in (map_end, match_end):
-        text = message(event)
-        assert "(T) 🟩🟥 | (CT) 🟩🟥" in text
-        assert "OT1 (CT) 🟩 | (T) 🟥" in text
-        assert "OT2 (T) 🟩 | (CT) 🟩" in text
-        assert "W win" not in text and "L loss" not in text
-        assert "side switch" not in text
-    mirrored = message(match_end, FOE_ID)
+    text = message(map_end)
+    assert "(T) 🟩🟥 | (CT) 🟩🟥" in text
+    assert "OT1 (CT) 🟩 | (T) 🟥" in text
+    assert "OT2 (T) 🟩 | (CT) 🟩" in text
+    assert "W win" not in text and "L loss" not in text
+    assert "side switch" not in text
+    mirrored = message(map_end, FOE_ID)
     assert "(CT) 🟥🟩 | (T) 🟥🟩" in mirrored
     assert "OT2 (CT) 🟥 | (T) 🟥" in mirrored
+    assert all("round_history" not in item for item in match_end.payload["maps"])
+    # Even an older event payload carrying histories must render a compact
+    # match summary, with the map result immediately above as the sole history.
+    legacy = replace(match_end, payload={**match_end.payload, "maps": [
+        {**item, "round_history": map_end.payload["round_history"]}
+        for item in match_end.payload["maps"]]})
+    for event in (match_end, legacy):
+        for recipient in (TEAM_ID, FOE_ID):
+            text = message(event, recipient)
+            assert "Match finished" in text and "Mirage" in text
+            assert "🟩" not in text and "🟥" not in text and "<code>" not in text
     assert map_end.payload["next_map"] == {}
 
 
@@ -143,6 +153,10 @@ def test_page_and_feed_share_next_pick_and_history(storage, config):
     fallback = page._event_e6(observation, storage.get_match(MATCH_ID), TEAM_ID, finished_line)
     assert fallback.payload["round_history"] == feed_result.payload["round_history"]
     assert fallback.payload["next_map"] == feed_result.payload["next_map"]
+    final_page = page._event_e7(
+        replace(observation, maps=[finished_line], status="over"),
+        storage.get_match(MATCH_ID), TEAM_ID, 2, 0)
+    assert all("round_history" not in item for item in final_page.payload["maps"])
     # A forfeit can end a BO3 before either team reaches two maps.
     finished = page._event_e6(replace(observation, status="over"),
                               storage.get_match(MATCH_ID), TEAM_ID, finished_line)
