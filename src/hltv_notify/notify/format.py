@@ -153,10 +153,10 @@ def _flip_history(history: Optional[dict]) -> dict:
 
 
 def round_history_lines(history: Optional[dict]) -> list:
-    """Quiet W/L rows: regulation, then each overtime, split at side changes."""
+    """Green/red round rows, with sides and a separate row per overtime."""
     if not history or not history.get("rounds"):
         return []
-    rounds = history["rounds"]
+    rounds = history["rounds"].translate(str.maketrans({"W": "🟩", "L": "🟥"}))
     regulation, overtime = history["regulation"], history["overtime"]
     sides = history.get("sides", {})
 
@@ -177,13 +177,6 @@ def round_history_lines(history: Optional[dict]) -> list:
         number += 1
         start += 2 * overtime
     return lines
-
-
-def _history_legend(histories) -> str:
-    text = "W win · L loss · | side switch"
-    if any("?" in item.get("rounds", "") for item in histories if item):
-        text += " · ? unseen"
-    return f"<i>{text}</i>"
 
 
 def _highlight_score(payload: dict) -> str:
@@ -515,10 +508,7 @@ def render(event: Event, *, team_name: str, tz_name: str,
                                  threshold=comeback_threshold)
         if comeback:
             lines.append(comeback)
-        history = payload.get("round_history")
-        history_lines = round_history_lines(history)
-        if history_lines:
-            lines += history_lines + [_history_legend([history])]
+        lines += round_history_lines(payload.get("round_history"))
         following = payload.get("next_map")
         if following:
             owner = {"team": f"{team} pick", "opponent": f"{opponent} pick",
@@ -548,9 +538,6 @@ def render(event: Event, *, team_name: str, tz_name: str,
             lines.append(f"   {_esc(item['name'])} — "
                          f"{item['score_team']}:{item['score_opponent']}{overtime}")
             lines += round_history_lines(item.get("round_history"))
-        histories = [item.get("round_history") for item in payload.get("maps", [])]
-        if any(item and item.get("rounds") for item in histories):
-            lines.append(_history_legend(histories))
         lines.append(_link(url, "Match page"))
         return "\n".join(lines)
 

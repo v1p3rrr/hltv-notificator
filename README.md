@@ -304,19 +304,20 @@ says the bomb was defused and does not guess who did it.
 
 ### Round histories and the next map
 
-Each map result includes a quiet, monospaced W/L history from the reader's
+Each map result includes a green/red round history from the reader's
 team's perspective. The match result repeats it under each map:
 
 ```text
-(T) WWWWLLLLWWLW | (CT) LLWWWWLLWLWL
-OT1 (CT) WWL | (T) LWW
+(T) 🟩🟩🟥🟥 | (CT) 🟥🟩🟩🟥
+OT1 (CT) 🟩🟩🟥 | (T) 🟥🟩🟩
 ```
 
-`W` means a won round, `L` a lost round, and `|` marks the side switch. Each
-overtime has its own numbered row. The letters and sides turn around for a
+Green squares are won rounds, red squares lost rounds, and `|` marks the side switch. Each
+overtime has its own numbered row. The colors and sides turn around for a
 subscriber following the opponent. A missing round is `?`, never guessed from
 the final score; an unobserved side is `(?)`. Histories survive a restart.
-Without any feed observations there is no history to show.
+Without any feed observations there is no history to show. Messages do not
+include a win/loss legend.
 
 If the series continues, the map result also says, for example,
 `Next: Nuke (Vitality pick)` or `Next: Ancient (decider)`. A map that ends the

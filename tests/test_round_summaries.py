@@ -62,12 +62,14 @@ def test_overtimes_come_from_score_increments_and_actual_sides(storage, config):
     match_end = next(event for event in events if event.type == "E7")
     for event in (map_end, match_end):
         text = message(event)
-        assert "(T) WL | (CT) WL" in text
-        assert "OT1 (CT) W | (T) L" in text
-        assert "OT2 (T) W | (CT) W" in text
+        assert "(T) 🟩🟥 | (CT) 🟩🟥" in text
+        assert "OT1 (CT) 🟩 | (T) 🟥" in text
+        assert "OT2 (T) 🟩 | (CT) 🟩" in text
+        assert "W win" not in text and "L loss" not in text
+        assert "side switch" not in text
     mirrored = message(match_end, FOE_ID)
-    assert "(CT) LW | (T) LW" in mirrored
-    assert "OT2 (CT) L | (T) L" in mirrored
+    assert "(CT) 🟥🟩 | (T) 🟥🟩" in mirrored
+    assert "OT2 (CT) 🟥 | (T) 🟥" in mirrored
     assert map_end.payload["next_map"] == {}
 
 

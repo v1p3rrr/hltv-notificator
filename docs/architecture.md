@@ -396,7 +396,8 @@ already contain the next half's arrays, so they must not assign side labels.
 
 Both machines attach the stored history to E6 and each map in E7, freezing it
 in the event payload. The renderer flips W/L and CT/T for the recipient just
-as it flips the map score. If the page corrects the score incompatibly with
+as it flips the map score. Stored W/L outcomes are rendered as green/red
+squares, without an explanatory legend in the message. If the page corrects the score incompatibly with
 the saved winners, that history becomes unknown rather than contradicting
 the correction. With no recorded frames the history is omitted.
 

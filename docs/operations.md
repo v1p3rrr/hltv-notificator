@@ -30,12 +30,13 @@
 
 ## Round histories and highlight scores
 
-E6 (map finished) includes a W/L round history with `(T)` / `(CT)` labels and
+E6 (map finished) includes a green/red square per round with `(T)` / `(CT)` labels and
 `|` at the side switch; each overtime gets an `OT1`, `OT2`, etc. row. E7
 (match finished) includes the history beneath each map. These follow the
 recipient's team, including when both participants are tracked. `?` means a
 round was not observed, `(?)` a side was not observed. No feed means no history.
-Progress is persisted in the existing database; no new setting or extra HLTV
+There is no win/loss legend beneath the history. Progress is persisted in the
+existing database; no new setting or extra HLTV
 request is needed.
 
 E6 also names the next required map and its pick owner, or the decider, when
