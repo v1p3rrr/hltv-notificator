@@ -71,6 +71,10 @@ class Highlight:
     clutch_against: int = 0
     score_team: Optional[int] = None
     score_opponent: Optional[int] = None
+    score_before_team: Optional[int] = None
+    score_before_opponent: Optional[int] = None
+    score_after_team: Optional[int] = None
+    score_after_opponent: Optional[int] = None
 
 
 class RoundTracker:
@@ -100,6 +104,8 @@ class RoundTracker:
         # The map score as this round was played, so a highlight reported after
         # the round has turned over does not quote the next round's score.
         self._score: Optional[Tuple[int, int]] = None
+        self._score_before: Optional[Tuple[int, int]] = None
+        self._score_after: Optional[Tuple[int, int]] = None
         # Who has already been reported for the round in hand. Per PLAYER and
         # not per round, because a player who dies is reported the moment he
         # does — see `_settled`. Every flush consults it, so nobody is reported
@@ -131,6 +137,10 @@ class RoundTracker:
             # last moment at which it can be. Safe even when rounds were
             # skipped, because it reports what was seen during that round and
             # this frame belongs to another one.
+            if self._key and map_name == self._key[0] and round_number == self._key[1] + 1:
+                # A contiguous next round can confirm the previous result;
+                # a skipped round or another map cannot.
+                self._track_score(score)
             leaving = self._flush(self._seen)
             self._start(key, players, score)
             return leaving
@@ -171,12 +181,28 @@ class RoundTracker:
         self._situation = {}
         self._reported = set()
         self._score = score
+        self._score_before = None
+        self._score_after = None
+        self._track_score(score)
+
+    def _track_score(self, score: Optional[Tuple[int, int]]) -> None:
+        """Remember only scores that can belong to this exact round."""
+        if score is None or self._key is None:
+            return
+        round_number = self._key[1]
+        if sum(score) == round_number - 1:
+            self._score_before = score
+        elif sum(score) == round_number and self._score_before is not None:
+            delta = tuple(end - start for start, end in zip(self._score_before, score))
+            if delta in ((1, 0), (0, 1)):
+                self._score_after = score
 
     def _track(self, players: List[PlayerLine],
                score: Optional[Tuple[int, int]] = None) -> None:
         """Fold this frame into what the current round has produced so far."""
         if score is not None:
             self._score = score
+        self._track_score(score)
         for player in players:
             if player.steam_id not in self._kills:
                 # Somebody who turned up mid-round: a substitution, or a
@@ -242,12 +268,18 @@ class RoundTracker:
                 continue
             self._reported.add(steam_id)
             score = self._score or (None, None)
+            before = self._score_before or (None, None)
+            after = self._score_after or (None, None)
             found.append(Highlight(player=player, kills=kills,
                                    clutch_against=against,
                                    map_name=self._key[0],
                                    round_number=self._key[1],
                                    score_team=score[0],
-                                   score_opponent=score[1]))
+                                   score_opponent=score[1],
+                                   score_before_team=before[0],
+                                   score_before_opponent=before[1],
+                                   score_after_team=after[0],
+                                   score_after_opponent=after[1]))
         return found
 
     def _clutch_for(self, steam_id: str, player: PlayerLine) -> int:

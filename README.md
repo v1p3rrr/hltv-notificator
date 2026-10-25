@@ -302,6 +302,31 @@ itself.
 a defuse shows up only as the round's outcome, with no player on it. The line
 says the bomb was defused and does not guess who did it.
 
+### Round histories and the next map
+
+Each map result includes a quiet, monospaced W/L history from the reader's
+team's perspective. The match result repeats it under each map:
+
+```text
+(T) WWWWLLLLWWLW | (CT) LLWWWWLLWLWL
+OT1 (CT) WWL | (T) LWW
+```
+
+`W` means a won round, `L` a lost round, and `|` marks the side switch. Each
+overtime has its own numbered row. The letters and sides turn around for a
+subscriber following the opponent. A missing round is `?`, never guessed from
+the final score; an unobserved side is `(?)`. Histories survive a restart.
+Without any feed observations there is no history to show.
+
+If the series continues, the map result also says, for example,
+`Next: Nuke (Vitality pick)` or `Next: Ancient (decider)`. A map that ends the
+series has no next-map line. Unknown maps and picks are not invented.
+
+Multikill and clutch messages keep their round number and show the score
+transition when the result is known: `round 7 · score 2:4 → 3:4`. A player
+reported before the round ends gets only the known score: `round 7 · score
+2:4`. The service does not delay that alert just to wait for a new score.
+
 ### The morning digest
 
 A reminder tells you a match is about to start. This tells you whether the day

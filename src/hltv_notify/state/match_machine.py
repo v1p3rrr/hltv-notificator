@@ -19,6 +19,7 @@ from ..sources import match_page, scorebot
 from ..sources.match_page import MapLine, MatchObservation
 from . import bingo
 from .db import Storage, parse_iso, utcnow
+from . import round_history
 
 log = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ class MatchMachine:
         lineup = [line.name for line in observation.maps]
         if any(name and name.upper() != "TBA" for name in lineup):
             self.storage.set_map_lineup(match_id, lineup)
+        round_history.set_picks(self.storage, match_id, observation.picks(team_id))
         # The broadcasts, so a multikill can carry links to them. Refreshed on
         # every poll and NOT guarded like the lineup above — that guard exists
         # to avoid recording a veto of "TBA", whereas here the newest order is
@@ -385,6 +387,11 @@ class MatchMachine:
                 "score_opponent": their_score,
                 "overtime": _overtime(line),
                 "halves": line.halves,
+                "round_history": round_history.summary(
+                    self.storage, observation.match_id, line.number, our_score, their_score),
+                "next_map": round_history.next_map(
+                    self.storage, observation.match_id, line.number,
+                    series_ours, series_theirs),
                 "series_team": series_ours,
                 "series_opponent": series_theirs,
                 "url": row["url"] if row else "",
@@ -452,6 +459,8 @@ class MatchMachine:
                 "score_opponent": their_score,
                 "overtime": _overtime(line),
             })
+            maps[-1]["round_history"] = round_history.summary(
+                self.storage, observation.match_id, line.number, our_score, their_score)
         return Event(
             type="E7",
             idempotency_key=key,

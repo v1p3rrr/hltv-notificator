@@ -31,6 +31,7 @@ from .bingo import BingoTracker
 from .comeback import ComebackTracker
 from .db import Storage, iso, utcnow
 from .highlights import RoundTracker
+from . import round_history
 
 log = logging.getLogger(__name__)
 
@@ -210,6 +211,7 @@ class LiveMachine:
         # changed" at exactly the moment a map started, and E5 was never born.
         previous_map = state_row["live_map_name"] if state_row else None
         map_number = self._map_number(match_id, map_name, len(recorded))
+        round_history.observe(self.storage, match_id, map_number, frame, team_id)
 
         # The trajectory is followed on every frame, warmup included (0:0 costs
         # nothing), so that at the winning round the whole map is already
@@ -433,6 +435,10 @@ class LiveMachine:
                     "score_team": found.score_team if found.score_team is not None else ours,
                     "score_opponent": (found.score_opponent
                                        if found.score_opponent is not None else theirs),
+                    "score_before_team": found.score_before_team,
+                    "score_before_opponent": found.score_before_opponent,
+                    "score_after_team": found.score_after_team,
+                    "score_after_opponent": found.score_after_opponent,
                     "streams": streams,
                 },
             ))
@@ -1165,7 +1171,10 @@ class LiveMachine:
             return None
         maps = [{"number": row["map_number"], "name": row["map_name"],
                  "score_team": row["score_team"], "score_opponent": row["score_opponent"],
-                 "overtime": bool(row["overtime"])}
+                 "overtime": bool(row["overtime"]),
+                 "round_history": round_history.summary(
+                     self.storage, match_id, row["map_number"],
+                     row["score_team"], row["score_opponent"])}
                 for row in self.storage.map_results(match_id)]
         log.info("match %s: the series is decided %d-%d, reporting the finish "
                  "without waiting for the page", match_id, ours, theirs)
@@ -1214,5 +1223,9 @@ class LiveMachine:
                 "series_team": series[0],
                 "series_opponent": series[1],
                 **comeback,
+                "round_history": round_history.summary(
+                    self.storage, match_id, map_number, ours, theirs),
+                "next_map": round_history.next_map(
+                    self.storage, match_id, map_number, *series),
             },
         )

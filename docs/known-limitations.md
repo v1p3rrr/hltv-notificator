@@ -1,5 +1,27 @@
 # Known limitations
 
+## Round history cannot recover an unseen overtime
+
+Regulation history is recovered from scoreboard snapshots. Overtime winners
+are recorded from one-round score increments; a multi-round gap leaves `?`
+entries because the score alone does not reveal their order. A map never
+observed through the feed has no round-history section. There is no extra
+request to map statistics to backfill it. Saved history survives a restart.
+An unobserved side is `(?)`; overtime sides are never guessed from regulation.
+
+A score reset discards the abandoned history. If the match page later corrects
+a result incompatibly with the recorded winners, the corrected message marks
+those rounds unknown. Already sent result messages are not edited to backfill
+late observations.
+
+## Early highlights do not wait for a final round score
+
+A dead player's multikill can be reported before the round ends. That message
+shows only the known score. A before/after arrow is included only when both
+scores are confirmed for the same round; there is no later duplicate solely
+to add the result. A jump over several rounds cannot confirm a late highlight's
+result, even if its own kill count was observed.
+
 A list of what is deliberately not handled, or handled only in part. Extended
 as the work goes on.
 

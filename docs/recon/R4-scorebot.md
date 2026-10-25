@@ -171,6 +171,16 @@ history is being read).
 The sides swap after the break, so **the score must be tied to a team through
 `ctTeamId`/`tTeamId`, not through the side.**
 
+Rechecked for round-summary rendering on 2026-10-25: the recorded histories
+also contain `Bomb_Defused` as a winning outcome. `roundOrdinal` starts at 1,
+and `startingCt` / `startingT` carry the fixed team ids (for example 12857 and
+13973 in the FORZE recording). The supplied history fills the regulation
+rounds, including after reconnects. Neither recording covers overtime, so no
+overtime history layout or starting-side order is assumed. The service records
+overtime winners from observed one-round score increments and sides from real
+`started` frames; gaps stay unknown. Synthetic overtime tests exercise this
+logic without pretending to be an observed server response.
+
 ### `log` — game events
 
 The payload is a JSON **string** with `{"log":[ {<Type>: {...}}, … ]}`. The

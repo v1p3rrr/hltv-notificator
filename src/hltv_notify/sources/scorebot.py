@@ -301,37 +301,26 @@ def _players(raw) -> Tuple[PlayerLine, ...]:
 
 
 def _history(raw) -> Tuple[RoundOutcome, ...]:
-    """One side's round-by-round result, both halves in one ordered list.
-
-    The feed splits it into `firstHalf` and `secondHalf`; `roundOrdinal`
-    numbers the rounds across the whole map, so the halves are concatenated
-    and sorted rather than kept apart — a run of won rounds does not stop at
-    the break, and neither does the numbering.
-
-    `type` is the outcome from THIS side's point of view, and the only value
-    that means a loss is the literal `lost`; the rest (`CTs_Win`,
-    `Terrorists_Win`, `Target_Bombed`, `Target_Saved`, `Bomb_Defused`) are all
-    wins. A round with no readable ordinal is dropped: a round we cannot place
-    cannot be part of a streak, and placing it by position would renumber
-    every round after it.
-    """
+    """Parse the observed history format; unfamiliar outcomes remain unknown."""
     if not isinstance(raw, dict):
         return ()
-    outcomes = []
+    wins = {"CTs_Win", "Terrorists_Win", "Target_Bombed", "Target_Saved", "Bomb_Defused"}
+    outcomes = {}
     for half in ("firstHalf", "secondHalf"):
-        for item in raw.get(half) or []:
+        items = raw.get(half)
+        if not isinstance(items, list):
+            continue
+        for item in items:
             if not isinstance(item, dict):
                 continue
             try:
                 ordinal = int(item["roundOrdinal"])
             except (KeyError, TypeError, ValueError):
                 continue
-            outcome = str(item.get("type") or "").strip()
-            if not outcome:
-                continue
-            outcomes.append(RoundOutcome(ordinal=ordinal, won=outcome != "lost"))
-    outcomes.sort(key=lambda item: item.ordinal)
-    return tuple(outcomes)
+            result = item.get("type")
+            if ordinal > 0 and isinstance(result, str) and (result == "lost" or result in wins):
+                outcomes[ordinal] = RoundOutcome(ordinal, result != "lost")
+    return tuple(outcomes[key] for key in sorted(outcomes))
 
 
 def parse_scoreboard(payload: dict) -> Optional[LiveFrame]:
