@@ -688,10 +688,7 @@ class LiveMachine:
             return None
         maps = [{"number": row["map_number"], "name": row["map_name"],
                  "score_team": row["score_team"], "score_opponent": row["score_opponent"],
-                 "overtime": bool(row["overtime"]),
-                 "round_history": round_history.summary(
-                     self.storage, match_id, row["map_number"],
-                     row["score_team"], row["score_opponent"])}
+                 "overtime": bool(row["overtime"])}
                 for row in self.storage.map_results(match_id)]
         log.info("match %s: the series is decided %d-%d, reporting the finish "
                  "without waiting for the page", match_id, ours, theirs)

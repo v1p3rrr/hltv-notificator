@@ -216,7 +216,8 @@ two slots it costs more than it gives.
 ### Round histories and the next map
 
 Each map result includes a green/red round history from the reader's
-team's perspective. The match result repeats it under each map:
+team's perspective. The match result lists map scores only, without repeating
+the histories already shown in the individual map results:
 
 ```text
 (T) 🟩🟩🟥🟥 | (CT) 🟥🟩🟩🟥
