@@ -67,7 +67,7 @@ def observe(storage, match_id: int, map_number: int, frame, team_id: int) -> Non
                  if total < 2 * frame.regulation else
                  2 + (total - 2 * frame.regulation) // frame.overtime)
         sides[str(phase)] = "CT" if frame.ct_team_id == team_id else "T"
-    data.update(team_id=team_id, score=score, rounds="".join(rounds),
+    data.update(score=score, rounds="".join(rounds),
                 regulation=frame.regulation, overtime=frame.overtime, sides=sides)
     encoded = json.dumps(data, sort_keys=True)
     if encoded != previous:
@@ -92,8 +92,16 @@ def summary(storage, match_id: int, map_number: int,
 
 def set_picks(storage, match_id: int, picks: list) -> None:
     """Keep the latest actual veto; an unfilled page must not erase it."""
-    if any(item.get("name", "").upper() not in ("", "TBA") for item in picks):
-        storage.set_meta(f"map_picks:{match_id}", json.dumps(picks))
+    key = f"map_picks:{match_id}"
+    previous = storage.get_meta(key)
+    known = {item["number"]: item for item in (json.loads(previous) if previous else [])}
+    for item in picks:
+        if item.get("name", "").upper() not in ("", "TBA"):
+            known[item["number"]] = item
+    if known:
+        encoded = json.dumps([known[number] for number in sorted(known)])
+        if encoded != previous:
+            storage.set_meta(key, encoded)
 
 
 def next_map(storage, match_id: int, map_number: int,
@@ -103,6 +111,6 @@ def next_map(storage, match_id: int, map_number: int,
         return {}
     raw = storage.get_meta(f"map_picks:{match_id}")
     for item in json.loads(raw) if raw else []:
-        if item["number"] == map_number + 1 and item["name"].upper() != "TBA":
+        if item["number"] == map_number + 1 and item["name"].upper() not in ("", "TBA"):
             return dict(item)
     return {}

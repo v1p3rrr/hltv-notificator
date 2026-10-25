@@ -141,6 +141,20 @@ def test_page_and_feed_share_next_pick_and_history(storage, config):
     fallback = page._event_e6(observation, storage.get_match(MATCH_ID), TEAM_ID, finished_line)
     assert fallback.payload["round_history"] == feed_result.payload["round_history"]
     assert fallback.payload["next_map"] == feed_result.payload["next_map"]
+    # A forfeit can end a BO3 before either team reaches two maps.
+    finished = page._event_e6(replace(observation, status="over"),
+                              storage.get_match(MATCH_ID), TEAM_ID, finished_line)
+    assert finished.payload["next_map"] == {}
+
+
+def test_partial_veto_does_not_erase_a_known_next_pick(storage):
+    add_match(storage)
+    known = {"number": 2, "name": "Nuke", "pick": "opponent"}
+    round_history.set_picks(storage, MATCH_ID, [known])
+    round_history.set_picks(storage, MATCH_ID, [
+        {"number": 1, "name": "Mirage", "pick": "team"},
+        {"number": 2, "name": "TBA", "pick": "decider"}])
+    assert round_history.next_map(storage, MATCH_ID, 1, 1, 0) == known
 
 
 def test_final_map_has_no_next_pick_and_decider_is_named(storage):
