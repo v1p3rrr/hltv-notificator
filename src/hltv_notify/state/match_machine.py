@@ -391,7 +391,7 @@ class MatchMachine:
                     self.storage, observation.match_id, line.number, our_score, their_score),
                 "next_map": round_history.next_map(
                     self.storage, observation.match_id, line.number,
-                    series_ours, series_theirs),
+                    series_ours, series_theirs) if observation.status != match_page.STATUS_OVER else {},
                 "series_team": series_ours,
                 "series_opponent": series_theirs,
                 "url": row["url"] if row else "",
