@@ -639,6 +639,29 @@ connection, one per match, not frequent polling.
 `403` is handled separately from network failures: it is not an outage but a
 "back off". The pause is measured in minutes while page polling keeps working.
 
+## HTTP page-session TLS compatibility
+
+`HltvHttp` keeps the configured browser impersonation profile and sets
+`CurlOpt.SSL_EC_CURVES` to `X25519:P-256:P-384` on its `AsyncSession`.
+curl_cffi applies session `curl_options` after impersonation, so the profile
+cannot overwrite this explicit group list. Certificate verification remains
+enabled; proxy selection, the allow-list, request ceiling and retries are
+unchanged. The separate feed and Telegram sessions are not modified.
+
+On the home-server route, curl_cffi 0.16.2's current `chrome` profile
+(`chrome150`) timed out while the same profile with this group list fetched
+HLTV successfully. Downgrading to `chrome120` did not solve page access: HLTV
+returned 403. The successful probe isolates a TLS-group compatibility issue,
+not its underlying network mechanism; DPI versus fragmentation/MTU was not
+distinguished. Measurements and the limited validation window are recorded in
+[recon/R3-schedule-source.md](recon/R3-schedule-source.md).
+
+The regression test uses the actual `AsyncSession`, native impersonation and
+native `Curl.setopt`, and intercepts `AsyncCurl.add_handle` before transport.
+It verifies that the group list reaches curl after impersonation, the selected
+proxy is applied, and certificate verification is not disabled. No test
+requests are made to the live source.
+
 ## One door out to Telegram
 
 Four things write to Telegram: the event queue, the live score card, command

@@ -483,6 +483,22 @@ The opposite case — there is a proxy but the requests go around it: most likel
 the address matched `NO_PROXY`. Subnets there are compared as subnets and names
 on a dot boundary, so `hltv.org` covers `www.hltv.org` but not `nothltv.org`.
 
+### Chrome-profile TLS timeouts through a reachable proxy
+
+The page client keeps the configured `HTTP_IMPERSONATE` profile but explicitly
+offers `X25519:P-256:P-384` as its TLS key-exchange groups. This addresses the
+observed curl_cffi 0.16.2 / Chrome 150 timeout on the home-server route without
+disabling certificate validation or changing proxy routing. It is a code
+default, not a new environment variable. The feed and Telegram sessions retain
+their existing configuration.
+
+A working proxy does not rule out this failure: the modern Chrome profile
+timed out on both HLTV and a control host, while the explicit group list
+worked. Merely changing the profile to `chrome120` is not equivalent; that
+profile returned 403 on HLTV. Other causes of curl (28) still need their own
+diagnosis. This change does not alter degraded/recovered notification policy,
+and isolated successful probes do not establish long-term stability.
+
 ### The parser returned zero matches on an HTTP 200
 Most likely a markup redesign. The service treats this as a source failure (E8)
 rather than as "there are no matches". It is fixed by updating the selectors;
