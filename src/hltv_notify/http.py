@@ -13,6 +13,7 @@ import random
 import time
 from typing import Optional
 
+from curl_cffi import CurlOpt
 from curl_cffi.requests import AsyncSession
 
 from .config import HARD_MIN_REQUEST_INTERVAL_SECONDS, Config, url_allowed
@@ -56,7 +57,13 @@ class HltvHttp:
 
     async def _ensure_session(self) -> AsyncSession:
         if self._session is None:
-            self._session = AsyncSession(impersonate=self._config.impersonate)
+            # Keep the browser profile, but avoid hybrid TLS key exchanges that
+            # time out on the observed home-server path. Session curl_options
+            # are applied after impersonation; certificate checks stay enabled.
+            self._session = AsyncSession(
+                impersonate=self._config.impersonate,
+                curl_options={CurlOpt.SSL_EC_CURVES: b"X25519:P-256:P-384"},
+            )
         return self._session
 
     async def close(self) -> None:

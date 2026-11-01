@@ -24,6 +24,32 @@ client's TLS fingerprint. Reproducible with `scripts/fetch_fixtures.py`.
 fingerprint the page is served straight away. Captcha solvers and proxy rotation
 are neither needed nor used.
 
+## Home-route TLS-group compatibility, 2026-11-01
+
+The production page client used curl_cffi 0.16.2, `impersonate="chrome"`
+(resolved by the library to `chrome150`), and the existing HTTP proxy. Proxy
+logs showed HLTV taking the direct outbound route. Of 214 production team-page
+GETs since 2026-10-31T00:00:00Z, 208 timed out and six returned HTTP 200.
+
+Separate probes of the real HLTV team page timed out with the default profile.
+Keeping that profile but constructing `AsyncSession` with
+`curl_options={CurlOpt.SSL_EC_CURVES: b"X25519:P-256:P-384"}` returned HTTP 200
+in 0.35 seconds (1,252,480 bytes). Certificate verification stayed enabled.
+The same override worked on a control host where the baseline timed out.
+`chrome120` reached the control host but returned 403 on HLTV, so a profile
+downgrade is not a verified substitute.
+
+The permanent `HltvHttp` change was also exercised from the development host
+through the same HTTP proxy: the team page was fetched and parsed in 0.61
+seconds, 1,250,808 UTF-8 bytes, with 16 matches and the team name FORZE Reload.
+No upcoming matches were listed at that observation. Tests continue to use
+fixtures or an intercepted transport rather than the live source.
+
+These probes establish a dependency on the offered TLS groups on this route.
+They do not distinguish DPI from fragmentation/MTU or another path issue,
+and they do not establish prolonged stability. Proxy rules, certificate
+verification and the running service were not changed by the probes.
+
 ## The team page — the schedule
 
 `https://www.hltv.org/team/12857/forze-reload` is server-rendered, everything
