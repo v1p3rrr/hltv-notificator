@@ -22,6 +22,11 @@ PAGES = [
     ("match-2397053-live", "https://www.hltv.org/matches/2397053/color-vs-forze-reload-gluck-moscow-cyber-games-2026-closed-qualifier"),
     ("match-2397340-upcoming", "https://www.hltv.org/matches/2397340/ex-rustec-vs-forze-reload-kibertochka-season-2"),
     ("match-2397047-finished", "https://www.hltv.org/matches/2397047/forze-reload-vs-black-phoenix-gluck-moscow-cyber-games-2026-closed-qualifier"),
+    # The veto simulation block (see docs/recon/R6-map-prediction.md). Two
+    # pages on purpose: the wrapping class differs between them, and the
+    # parser's filter has to catch both.
+    ("match-2400063-prediction", "https://www.hltv.org/matches/2400063/johnny-speeds-vs-drama-nodwin-clutch-series-14-closed-qualifier"),
+    ("match-2400291-prediction-done", "https://www.hltv.org/matches/2400291/forze-reload-vs-navi-junior-european-pro-league-series-10"),
 ]
 
 

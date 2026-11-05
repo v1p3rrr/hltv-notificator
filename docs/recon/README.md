@@ -24,6 +24,7 @@ run the service you need none of this — [../../README.md](../../README.md) and
 | [R3](R3-schedule-source.md) | where the schedule comes from: the team page's markup, the `data-unix` attribute, the match page's selectors — and the proof that ordinary HTTP clients get a 403 while `curl_cffi` gets a 200 |
 | [R4](R4-scorebot.md) | the live feed's protocol in full: Engine.IO v3 over polling, the closed websocket, the two silent-failure traps, the frame format |
 | [R5](R5-limits.md) | what `robots.txt` disallows, and the polling rates chosen to stay indistinguishable from a person with a tab open |
+| [R6](R6-map-prediction.md) | the veto simulation block: same `.mapholder` markup as the real maps, how to tell them apart |
 
 ## fixtures/
 

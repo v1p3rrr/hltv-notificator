@@ -137,3 +137,29 @@ def test_series_score_ignores_the_running_map():
     o = load("match-2397091-live-midmap.html", 2397091)
     assert o.series_score(12363) == (1, 0)      # Arcade only won Nuke
     assert o.series_score(11668) == (0, 1)
+
+
+# ----------------------------------------------------------------------
+# Regression: the "Veto simulation" block is not part of the map lineup
+# ----------------------------------------------------------------------
+
+
+def test_simulated_veto_is_not_part_of_the_maps():
+    """Since November 2026 the page carries a simulated veto: three
+    alternative line-ups rendered with the same .mapholder markup as the real
+    maps. An unfiltered select returns 12 holders on this BO3 — the 3 real
+    ones (still TBA) plus 9 simulated ones with percentages in their names —
+    and the bot announces a ten-map match."""
+    o = load("match-2400063-prediction.html", 2400063)
+    assert [m.name for m in o.maps] == ["TBA", "TBA", "TBA"]
+    assert [m.number for m in o.maps] == [1, 2, 3]
+    assert o.picks(TEAM_ID) == []
+
+
+def test_simulated_veto_wrapper_variant():
+    """The wrapping class is not the same on every page: here the simulated
+    holders sit under "simulated-veto-only" / "simulated-veto-alt" with no
+    bare "simulated-veto" ancestor, so an exact-class filter sees nothing."""
+    o = load("match-2400291-prediction-done.html", 2400291)
+    assert [m.name for m in o.maps] == ["TBA", "TBA", "TBA"]
+    assert len(o.maps) == 3
