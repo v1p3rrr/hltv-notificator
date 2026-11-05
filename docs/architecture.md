@@ -202,6 +202,16 @@ map statistics: HLTV creates that record exactly at the moment the map ends.
 For a finished match the signal is backed by the page status, because a forfeit
 may have no statistics at all.
 
+**Trap three, the veto simulation.** Since November 2026 the page carries a
+"Veto simulation" block — three alternative simulated vetoes rendered with the
+**same `.mapholder` markup** as the real maps, percentages included in the
+`.mapname` ("Mirage - 86%"). An unfiltered select returns twelve holders on a
+BO3 and the bot announces a ten-map match. The simulated holders are filtered
+out by their ancestors (`_is_simulated`): the wrapping class differs from page
+to page (`simulated-veto`, `simulated-veto-only`, `simulated-veto-alt`), so the
+test is a prefix match, not an exact class. Measured in
+[recon/R6-map-prediction.md](recon/R6-map-prediction.md).
+
 ### The live feed (scorebot)
 
 `scorebot-lb.hltv.org`, **Engine.IO v3 over polling**. The websocket upgrade

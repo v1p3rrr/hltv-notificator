@@ -23,6 +23,16 @@ Markup (verified against three fixtures — upcoming, live, finished):
         .results-stats             link to the map statistics. It appears
                                    exactly when the map ends
 
+Trap three, the veto simulation. Since November 2026 the page carries a
+"Veto simulation" block: three alternative simulated vetoes, each rendered
+with the SAME .mapholder markup as the real maps (the mapname even gets a
+percentage: "Mirage - 86%"). An unfiltered .mapholder select therefore
+returns 12 holders on a BO3 — the 3 real ones plus 9 simulated ones. The
+simulated holders sit under ancestors whose class starts with
+"simulated-veto" — which token exactly differs from page to page
+("simulated-veto", "simulated-veto-only", "simulated-veto-alt"), so the
+filter is a prefix match on every ancestor, not an exact class lookup.
+
 The map-completion rule (D7). The naive "there is a numeric score" is wrong:
 a running map has a numeric score too. Observed on live match 2397091: while
 Mirage was being played the score read 5:7 and there was no statistics link;
@@ -342,6 +352,21 @@ def _int_or_none(text: str) -> Optional[int]:
     return int(text) if text.lstrip("-").isdigit() and text != "-" else None
 
 
+def _is_simulated(holder) -> bool:
+    """The holder belongs to the "Veto simulation" block, not the real veto.
+
+    The simulation reuses the .mapholder markup, so it cannot be told apart
+    by the holder itself — only by its ancestors. The wrapping class varies
+    from page to page ("simulated-veto", "simulated-veto-only",
+    "simulated-veto-alt"), hence a prefix match rather than an exact class.
+    """
+    return any(
+        cls.startswith("simulated-veto")
+        for parent in holder.parents
+        for cls in (parent.get("class") or [])
+    )
+
+
 def _team(soup, selector: str) -> Tuple[Optional[int], str]:
     box = soup.select_one(selector)
     if box is None:
@@ -393,7 +418,8 @@ def parse(html: str, match_id: int) -> MatchObservation:
     team2_id, team2_name = _team(soup, ".team2-gradient")
 
     maps: List[MapLine] = []
-    for number, holder in enumerate(soup.select(".mapholder"), start=1):
+    holders = [h for h in soup.select(".mapholder") if not _is_simulated(h)]
+    for number, holder in enumerate(holders, start=1):
         name_el = holder.select_one(".mapname")
         # Scoped by side rather than holder.select(".results-team-score"): the
         # halves live separately and must not be mixed into the map score.
