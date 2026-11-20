@@ -134,6 +134,8 @@ class MatchMachine:
         # its own, which is the only case worth skipping.
         self.storage.set_match_streams(
             match_id, [asdict(one) for one in observation.streams])
+        if observation.match_info:
+            self.storage.set_match_info(match_id, observation.match_info)
 
         if target == MatchState.LIVE and previous not in TERMINAL:
             # Not "on the transition to LIVE" any more, but "while it is live
@@ -349,6 +351,7 @@ class MatchMachine:
                 "event_name": observation.event_name or (row["event_name"] if row else ""),
                 "best_of": observation.best_of,
                 "picks": observation.picks(team_id),
+                "match_info": observation.match_info or self.storage.match_info(observation.match_id),
                 # The broadcasts, for the same reason a map point carries
                 # them: the message is read at the moment the reader decides
                 # whether to watch, and the thing to tap belongs in it. The
@@ -477,6 +480,7 @@ class MatchMachine:
                 # the same result.
                 "won": None if ours == theirs else ours > theirs,
                 "maps": maps,
+                "match_info": observation.match_info or self.storage.match_info(observation.match_id),
                 "corrected": bool(corrects),
                 "url": row["url"] if row else "",
             },

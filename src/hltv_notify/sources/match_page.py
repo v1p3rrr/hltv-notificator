@@ -135,6 +135,9 @@ class MatchObservation:
     # Broadcasts, most watched first. Empty is normal: before the veto, and on
     # a match nobody is casting.
     streams: Tuple[StreamLink, ...] = ()
+    # The match description from the "Information" box (.preformatted-text),
+    # e.g. "Best of 3 (Online) · Swiss round 3 (teams with a 1-1 record)".
+    match_info: Optional[str] = None
 
     # ------------------------------------------------------------------
 
@@ -377,6 +380,24 @@ def _team(soup, selector: str) -> Tuple[Optional[int], str]:
     return (int(found.group(1)) if found else None), (name_el.get_text(strip=True) if name_el else "")
 
 
+def _match_info(soup) -> Optional[str]:
+    """The match description from .preformatted-text (format, stage, notes).
+
+    Lines are stripped of leading asterisks/bullets and whitespace, empty lines
+    dropped, and joined with a middle dot (' · ').
+    """
+    fmt_el = soup.select_one(".preformatted-text")
+    if not fmt_el:
+        return None
+    raw = fmt_el.get_text()
+    lines = []
+    for line in raw.splitlines():
+        cleaned = re.sub(r"\s+", " ", line.strip().lstrip("*-•").strip())
+        if cleaned:
+            lines.append(cleaned)
+    return " · ".join(lines) if lines else None
+
+
 def _status(soup) -> str:
     countdown = soup.select_one(".countdown")
     if countdown is None:
@@ -471,4 +492,5 @@ def parse(html: str, match_id: int) -> MatchObservation:
         max_rounds_regulation=regulation,
         max_rounds_overtime=overtime,
         streams=_streams(soup),
+        match_info=_match_info(soup),
     )

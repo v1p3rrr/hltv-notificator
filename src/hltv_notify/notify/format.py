@@ -401,12 +401,15 @@ def render(event: Event, *, team_name: str, tz_name: str,
 
     if event.type == "E4":
         best_of = payload.get("best_of")
-        suffix = f" · BO{best_of}" if best_of else ""
+        match_info = payload.get("match_info")
+        suffix = f" · BO{best_of}" if (best_of and not match_info) else ""
         lines = [
             "🔴 <b>Match started</b>",
             f"{team} — {opponent}",
             f"{event_name}{suffix}",
         ]
+        if match_info:
+            lines.append(f"<i>{_esc(match_info)}</i>")
         picks = payload.get("picks") or []
         if picks:
             # One inline `<code>` over the whole lineup, not a `<pre>`: a tap
@@ -532,6 +535,9 @@ def render(event: Event, *, team_name: str, tz_name: str,
             f"<b>{team} {ours}:{theirs} {opponent}</b>",
             event_name,
         ]
+        match_info = payload.get("match_info")
+        if match_info:
+            lines.append(f"<i>{_esc(match_info)}</i>")
         for item in payload.get("maps", []):
             overtime = " (OT)" if item.get("overtime") else ""
             lines.append(f"   {_esc(item['name'])} — "

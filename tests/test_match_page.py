@@ -163,3 +163,36 @@ def test_simulated_veto_wrapper_variant():
     o = load("match-2400291-prediction-done.html", 2400291)
     assert [m.name for m in o.maps] == ["TBA", "TBA", "TBA"]
     assert len(o.maps) == 3
+
+
+def test_match_info_parsed_from_fixtures(upcoming, live, finished):
+    assert upcoming.match_info == "Best of 3 (LAN) · Upper bracket final"
+    assert live.match_info == (
+        "Best of 3 (Online) · Swiss round 4 (teams with a 2-1 record). Winner advances to the Play-in."
+    )
+    assert finished.match_info == (
+        "Best of 3 (Online) · Swiss round 3 (teams with a 1-1 record) · Sa1nTy substitutes topo on the 1st map."
+    )
+
+
+def test_match_info_cleaning():
+    from bs4 import BeautifulSoup
+    from hltv_notify.sources.match_page import _match_info
+
+    html = """
+    <div class="preformatted-text">
+        Best of 3 (Online)
+
+        * Lower bracket semi-final
+
+        ** Bay substitutes zune.
+    </div>
+    """
+    assert _match_info(BeautifulSoup(html, "lxml")) == (
+        "Best of 3 (Online) · Lower bracket semi-final · Bay substitutes zune."
+    )
+
+    empty_html = "<div class='preformatted-text'>\n  \n* \n</div>"
+    assert _match_info(BeautifulSoup(empty_html, "lxml")) is None
+    assert _match_info(BeautifulSoup("<div>No preformatted</div>", "lxml")) is None
+

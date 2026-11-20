@@ -255,3 +255,170 @@ def test_one_failing_chat_does_not_leave_the_others_running(storage, config):
     # not take the pass down with it.
     assert sorted(telegram.sent) == ["801", "803"]
     assert storage.pending_count() == 1     # only the failed one is left
+
+
+# ---------------------------------------------------------------- update E4 picks
+
+
+class MockTelegram(SlowTelegram):
+    def __init__(self):
+        super().__init__()
+        self.edits = []
+
+    async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+        self.edits.append((chat_id, message_id, text))
+
+
+def test_update_start_message_picks_edits_sent_message(storage, config):
+    from dataclasses import replace
+    from datetime import timezone
+    from hltv_notify.sources.match_page import MapLine, MatchObservation
+
+    match_id = 99
+    storage.add_subscriber(CHAT)
+    storage.add_team(CHAT, TEAM_ID, "forze-reload", "FORZE Reload")
+    storage.upsert_match(
+        match_id=match_id, opponent_id=13973, opponent_name="Color",
+        event_name="Test Event", start_utc=later(60),
+        url=f"https://www.hltv.org/matches/{match_id}/x",
+        snapshot={}, snapshot_hash="h",
+    )
+
+    telegram = MockTelegram()
+    live = Notifier(storage, replace(config, dry_run=False, chat_id=CHAT), telegram)
+
+    # 1. Enqueue E4 without picks (all TBA)
+    e4 = Event(
+        type="E4", idempotency_key=f"E4:{match_id}:started", match_id=match_id,
+        payload={
+            "team_name": "FORZE Reload", "team_id": TEAM_ID,
+            "opponent": "Color", "opponent_id": 13973,
+            "event_name": "Test Event", "best_of": 3,
+            "picks": [], "url": f"https://www.hltv.org/matches/{match_id}/x",
+        },
+    )
+    assert live.enqueue(e4) is True
+
+    # Drain to send it
+    asyncio.run(live._drain())
+    rows = storage.outbox_rows_for_match_event("E4", match_id)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "sent"
+    assert "<code>" not in rows[0]["body"]
+    msg_id = rows[0]["telegram_message_id"]
+    assert msg_id is not None
+
+    # 2. Map picks appear on the match page
+    maps = [
+        MapLine(number=1, name="Mirage", score_left=None, score_right=None, halves=None, picked_by="right"),
+        MapLine(number=2, name="Nuke", score_left=None, score_right=None, halves=None, picked_by="left"),
+        MapLine(number=3, name="Dust2", score_left=None, score_right=None, halves=None, picked_by=None),
+    ]
+    obs = MatchObservation(
+        match_id=match_id, status="live",
+        start_utc=later(60), event_name="Test Event", event_id=1,
+        best_of=3, team1_id=13973, team1_name="Color",
+        team2_id=TEAM_ID, team2_name="FORZE Reload",
+        maps=maps, scorebot_id=match_id,
+    )
+    match_row = storage.get_match(match_id)
+
+    updated = asyncio.run(live.update_start_message_picks(obs, match_row))
+    assert updated is True
+
+    # Verify Telegram edit_message_text was called
+    assert len(telegram.edits) == 1
+    edit_chat, edit_msg_id, edit_text = telegram.edits[0]
+    assert edit_chat == CHAT
+    assert edit_msg_id == msg_id
+    assert "<code>" in edit_text
+    assert "Mirage" in edit_text
+    assert "Nuke" in edit_text
+    assert "Dust2" in edit_text
+
+    # Verify outbox row in DB is also updated
+    updated_rows = storage.outbox_rows_for_match_event("E4", match_id)
+    assert "<code>" in updated_rows[0]["body"]
+
+    # 3. Calling again with the same observation is a no-op (idempotent)
+    assert asyncio.run(live.update_start_message_picks(obs, match_row)) is False
+    assert len(telegram.edits) == 1
+
+
+def test_update_start_message_picks_updates_pending_message(storage, config):
+    from dataclasses import replace
+    from hltv_notify.sources.match_page import MapLine, MatchObservation
+
+    match_id = 100
+    storage.add_subscriber(CHAT)
+    storage.add_team(CHAT, TEAM_ID, "forze-reload", "FORZE Reload")
+    storage.upsert_match(
+        match_id=match_id, opponent_id=13973, opponent_name="Color",
+        event_name="Test Event", start_utc=later(60),
+        url=f"https://www.hltv.org/matches/{match_id}/x",
+        snapshot={}, snapshot_hash="h",
+    )
+
+    telegram = MockTelegram()
+    live = Notifier(storage, replace(config, dry_run=False, chat_id=CHAT), telegram)
+
+    e4 = Event(
+        type="E4", idempotency_key=f"E4:{match_id}:started", match_id=match_id,
+        payload={
+            "team_name": "FORZE Reload", "team_id": TEAM_ID,
+            "opponent": "Color", "opponent_id": 13973,
+            "event_name": "Test Event", "best_of": 3,
+            "picks": [], "url": f"https://www.hltv.org/matches/{match_id}/x",
+        },
+    )
+    assert live.enqueue(e4) is True
+
+    # Notice message is still pending (not drained yet)
+    rows = storage.outbox_rows_for_match_event("E4", match_id)
+    assert rows[0]["status"] == "pending"
+
+    maps = [
+        MapLine(number=1, name="Mirage", score_left=None, score_right=None, halves=None, picked_by="right"),
+    ]
+    obs = MatchObservation(
+        match_id=match_id, status="live",
+        start_utc=later(60), event_name="Test Event", event_id=1,
+        best_of=1, team1_id=13973, team1_name="Color",
+        team2_id=TEAM_ID, team2_name="FORZE Reload",
+        maps=maps, scorebot_id=match_id,
+    )
+    match_row = storage.get_match(match_id)
+
+    updated = asyncio.run(live.update_start_message_picks(obs, match_row))
+    assert updated is True
+    # Not edited via telegram since it's not sent yet
+    assert len(telegram.edits) == 0
+
+    # But outbox body is updated
+    updated_rows = storage.outbox_rows_for_match_event("E4", match_id)
+    assert "Mirage" in updated_rows[0]["body"]
+
+    # When drained, it sends the updated body
+    asyncio.run(live._drain())
+    assert len(telegram.sent) == 1
+    sent_rows = storage.outbox_rows_for_match_event("E4", match_id)
+    assert sent_rows[0]["status"] == "sent"
+
+
+def test_update_start_message_picks_noop_when_not_started(storage, config):
+    from hltv_notify.sources.match_page import MapLine, MatchObservation
+
+    match_id = 101
+    live = Notifier(storage, config, None)
+    maps = [
+        MapLine(number=1, name="Mirage", score_left=None, score_right=None, halves=None, picked_by="right"),
+    ]
+    obs = MatchObservation(
+        match_id=match_id, status="live",
+        start_utc=later(60), event_name="Test Event", event_id=1,
+        best_of=1, team1_id=13973, team1_name="Color",
+        team2_id=TEAM_ID, team2_name="FORZE Reload",
+        maps=maps, scorebot_id=match_id,
+    )
+    assert asyncio.run(live.update_start_message_picks(obs, None)) is False
+

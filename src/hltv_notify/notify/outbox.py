@@ -7,6 +7,7 @@ worker's job is simple: deliver it and stay within Telegram's limits.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Dict, Optional
@@ -15,6 +16,7 @@ from .. import settings
 from .. import streams as stream_lib
 from ..config import Config
 from ..models import Event
+from ..sources.match_page import MatchObservation
 from ..state.db import Storage
 from . import audience
 from . import format as fmt
@@ -155,6 +157,9 @@ class Notifier:
                 created += 1
 
         if created:
+            if event.type == "E4":
+                picks = event.payload.get("picks") or []
+                self.storage.set_meta(f"e4_picks:{event.match_id}", json.dumps(picks))
             log.info("event %s queued for %d recipient(s): %s",
                      event.type, created, event.idempotency_key)
             self._arrived.set()
@@ -162,6 +167,98 @@ class Notifier:
             log.debug("event went to nobody (duplicate or muted): %s",
                       event.idempotency_key)
         return bool(created)
+
+    async def update_start_message_picks(self, observation: MatchObservation, row) -> bool:
+        """Edit the start notification (E4) if map picks have appeared since it was sent."""
+        match_id = observation.match_id
+        if not self.storage.start_event_sent(match_id):
+            return False
+
+        team_id = self.storage.canonical_team(match_id) or self.config.team_id
+        new_picks = observation.picks(team_id)
+        if not new_picks:
+            return False
+
+        stored_raw = self.storage.get_meta(f"e4_picks:{match_id}")
+        if stored_raw is not None:
+            try:
+                stored_picks = json.loads(stored_raw)
+            except Exception:
+                stored_picks = []
+            if stored_picks == new_picks or len(stored_picks) > len(new_picks):
+                return False
+
+        outbox_rows = self.storage.outbox_rows_for_match_event("E4", match_id)
+        if not outbox_rows:
+            self.storage.set_meta(f"e4_picks:{match_id}", json.dumps(new_picks))
+            return False
+
+        # If meta was not set yet, check if outbox rows already had picks rendered
+        if stored_raw is None and any("<code>" in (r.get("body") or "") for r in outbox_rows):
+            self.storage.set_meta(f"e4_picks:{match_id}", json.dumps(new_picks))
+            return False
+
+        opponent_id, opponent_name = observation.opponent(team_id)
+        event = Event(
+            type="E4",
+            idempotency_key=f"E4:{match_id}:started",
+            match_id=match_id,
+            payload={
+                "team_name": self.storage.team_name(team_id, self.config.team_name),
+                "team_id": team_id,
+                "opponent": opponent_name or (row["opponent_name"] if row else ""),
+                "opponent_id": opponent_id,
+                "event_name": observation.event_name or (row["event_name"] if row else ""),
+                "best_of": observation.best_of or self.storage.best_of(match_id),
+                "picks": new_picks,
+                "match_info": observation.match_info or self.storage.match_info(match_id),
+                "streams": self.storage.match_streams(match_id),
+                "url": row["url"] if row else "",
+            },
+        )
+
+        teams_audience = audience.match_audience(self.storage, self.config, match_id)
+        by_chat = dict(teams_audience)
+
+        updated = 0
+        for ob_row in outbox_rows:
+            chat_id = ob_row["chat_id"] or self.config.main_chat_id
+            their_teams = by_chat.get(chat_id, [])
+            for_team_id = their_teams[0] if their_teams else team_id
+
+            stream_prefs = (self._stream_prefs(chat_id)
+                            if event.payload.get("streams") else None)
+            new_body = fmt.render(
+                event,
+                team_name=self.config.team_name,
+                tz_name=self.storage.subscriber_timezone(chat_id, self.config.timezone),
+                for_team_id=for_team_id,
+                comeback_threshold=self._threshold(chat_id, "comeback"),
+                stream_prefs=stream_prefs,
+            )
+
+            if new_body == ob_row["body"]:
+                continue
+
+            self.storage.update_outbox_body(ob_row["id"], new_body)
+            updated += 1
+
+            if ob_row["status"] == "sent" and ob_row["telegram_message_id"]:
+                if self._sending():
+                    try:
+                        await self.telegram.edit_message_text(
+                            chat_id, ob_row["telegram_message_id"], new_body
+                        )
+                        log.info("updated start message with maps for match %s in %s (msg %s)",
+                                 match_id, chat_id, ob_row["telegram_message_id"])
+                    except TelegramError as exc:
+                        log.warning("could not edit start message in %s: %s", chat_id, exc)
+                elif self.config.dry_run:
+                    log.info("[DRY_RUN] updated start message picks for match %s in %s:\n%s",
+                             match_id, chat_id, new_body)
+
+        self.storage.set_meta(f"e4_picks:{match_id}", json.dumps(new_picks))
+        return bool(updated)
 
     def _threshold(self, chat_id: str, name: str) -> int:
         return self.storage.setting(
