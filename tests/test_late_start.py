@@ -86,8 +86,8 @@ def test_the_window_reads_the_pending_time(storage):
 # ---------------------------------------------------------------- the cadence
 
 
-def poller(storage, config, supervisor=None, recheck=None, html=""):
-    return MatchPoller(storage, config, FakeHttp(html), FakeNotifier(),
+def poller(storage, config, supervisor=None, recheck=None, html="", notifier=None):
+    return MatchPoller(storage, config, FakeHttp(html), notifier or FakeNotifier(),
                        supervisor, recheck_schedule=recheck)
 
 
@@ -241,3 +241,23 @@ def test_the_recheck_is_the_schedules_out_of_turn_poll(storage, config):
     assert not schedule._force.is_set()
     poll(one)
     assert schedule._force.is_set()
+
+
+def test_match_poller_invokes_update_start_message_picks(storage, config):
+    """MatchPoller delegates start message pick updates to Notifier."""
+    add_match(storage, LIVE_ID, datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc))
+
+    class TrackingNotifier(FakeNotifier):
+        def __init__(self):
+            super().__init__()
+            self.updated = []
+
+        async def update_start_message_picks(self, obs, row):
+            self.updated.append((obs.match_id, row["match_id"]))
+            return True
+
+    notifier = TrackingNotifier()
+    one = poller(storage, config, notifier=notifier, html=page("match-2397053-live.html"))
+    poll(one, LIVE_ID)
+    assert notifier.updated == [(LIVE_ID, LIVE_ID)]
+

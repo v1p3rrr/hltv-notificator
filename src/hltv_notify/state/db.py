@@ -1240,6 +1240,18 @@ class Storage:
             (iso(utcnow()), telegram_message_id, outbox_id),
         )
 
+    def update_outbox_body(self, outbox_id: int, body: str) -> None:
+        self.conn.execute(
+            "UPDATE outbox SET body = ? WHERE id = ?",
+            (body, outbox_id),
+        )
+
+    def outbox_rows_for_match_event(self, event_type: str, match_id: int) -> list:
+        return list(self.conn.execute(
+            "SELECT * FROM outbox WHERE event_type = ? AND match_id = ?",
+            (event_type, match_id),
+        ))
+
     def mark_retry(self, outbox_id: int, attempts: int, delay_seconds: float) -> None:
         self.conn.execute(
             "UPDATE outbox SET attempts = ?, next_attempt_utc = ? WHERE id = ?",
@@ -1464,6 +1476,15 @@ class Storage:
         except (ValueError, TypeError):
             return []
         return [one for one in found if isinstance(one, dict)]
+
+    def set_match_info(self, match_id: int, info: Optional[str]) -> None:
+        """The match description from the Information box (e.g. BO3 format, stage)."""
+        if not info:
+            return
+        self.set_meta(f"match_info:{match_id}", info)
+
+    def match_info(self, match_id: int) -> Optional[str]:
+        return self.get_meta(f"match_info:{match_id}")
 
     # ---------- meta ----------
 

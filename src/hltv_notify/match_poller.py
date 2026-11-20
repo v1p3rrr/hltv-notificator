@@ -174,6 +174,11 @@ class MatchPoller:
         events = self.machine.apply(observation, feed_connected=feed_connected)
         for event in events:
             self.notifier.enqueue(event)
+        updater = getattr(self.notifier, "update_start_message_picks", None)
+        if updater is not None:
+            res = updater(observation, row)
+            if asyncio.iscoroutine(res):
+                await res
         if events:
             log.info("match %s: events %s", match_id, [e.type for e in events])
         else:

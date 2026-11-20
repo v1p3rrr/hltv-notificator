@@ -461,3 +461,69 @@ def test_drawn_series_is_neither_a_win_nor_a_loss():
     theirs = fmt.render(event, team_name="MOUZ", tz_name="UTC", for_team_id=2)
     assert "🤝" in ours and "🤝" in theirs
     assert "🏆" not in theirs and "💀" not in ours
+
+
+def test_match_info_propagates_to_e4_and_e7(storage, config):
+    add_match(storage)
+    m = MatchMachine(storage, config)
+    obs = MatchObservation(
+        match_id=MATCH_ID, status="live",
+        start_utc=datetime(2026, 9, 1, 15, 0, tzinfo=timezone.utc),
+        event_name="Test Event", event_id=1, best_of=3,
+        team1_id=13973, team1_name="Color",
+        team2_id=TEAM_ID, team2_name="FORZE Reload",
+        maps=maps(None, None, None), scorebot_id=MATCH_ID,
+        match_info="Best of 3 (Online) · Lower bracket semi-final",
+    )
+    events = m.apply(obs)
+    assert len(events) == 1
+    e4 = events[0]
+    assert e4.type == "E4"
+    assert e4.payload["match_info"] == "Best of 3 (Online) · Lower bracket semi-final"
+    assert storage.match_info(MATCH_ID) == "Best of 3 (Online) · Lower bracket semi-final"
+
+    # Finish the match and verify E7 carries match_info
+    obs_finish = MatchObservation(
+        match_id=MATCH_ID, status="over",
+        start_utc=datetime(2026, 9, 1, 15, 0, tzinfo=timezone.utc),
+        event_name="Test Event", event_id=1, best_of=3,
+        team1_id=13973, team1_name="Color",
+        team2_id=TEAM_ID, team2_name="FORZE Reload",
+        maps=maps((10, 13, None), (9, 13, None), None),
+        scorebot_id=None,
+    )
+    finish_events = m.apply(obs_finish)
+    e7 = [e for e in finish_events if e.type == "E7"][0]
+    assert e7.payload["match_info"] == "Best of 3 (Online) · Lower bracket semi-final"
+
+
+def test_render_e4_and_e7_with_match_info():
+    from hltv_notify.notify import format as fmt
+
+    e4_payload = {
+        "team_name": "FORZE Reload", "opponent": "Color",
+        "event_name": "CCT Europe Series 7", "best_of": 3,
+        "match_info": "Best of 3 (Online) · Lower bracket semi-final",
+        "picks": [{"number": 1, "name": "Mirage", "pick": "team"}],
+        "url": "https://hltv.org/matches/123/x",
+    }
+    e4 = Event(type="E4", idempotency_key="E4:123:started", match_id=123, payload=e4_payload)
+    rendered_e4 = fmt.render(e4, team_name="FORZE Reload", tz_name="UTC")
+    assert "<i>Best of 3 (Online) · Lower bracket semi-final</i>" in rendered_e4
+    # Ensure BO3 is not duplicated in title when match_info has it
+    assert "CCT Europe Series 7 · BO3" not in rendered_e4
+    assert "CCT Europe Series 7" in rendered_e4
+
+    e7_payload = {
+        "series_team": 2, "series_opponent": 1, "won": True,
+        "team_name": "FORZE Reload", "opponent": "Color",
+        "event_name": "CCT Europe Series 7",
+        "match_info": "Best of 3 (Online) · Lower bracket semi-final",
+        "maps": [{"name": "Mirage", "score_team": 13, "score_opponent": 10, "overtime": False}],
+        "url": "https://hltv.org/matches/123/x",
+    }
+    e7 = Event(type="E7", idempotency_key="E7:123:finished:2-1", match_id=123, payload=e7_payload)
+    rendered_e7 = fmt.render(e7, team_name="FORZE Reload", tz_name="UTC")
+    assert "<i>Best of 3 (Online) · Lower bracket semi-final</i>" in rendered_e7
+    assert "CCT Europe Series 7" in rendered_e7
+

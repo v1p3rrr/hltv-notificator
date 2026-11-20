@@ -702,6 +702,7 @@ class LiveMachine:
                 "series_opponent": theirs,
                 "won": None if ours == theirs else ours > theirs,
                 "maps": maps,
+                "match_info": self.storage.match_info(match_id),
                 "corrected": False,
             },
         )

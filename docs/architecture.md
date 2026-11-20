@@ -430,6 +430,17 @@ start message has left the queue (30 seconds at the outside — a stuck queue
 must not cost the live score). The queue now wakes on a new message instead of
 sleeping out its five seconds, which is what makes that wait about a second.
 
+**Late map veto updates.** If the match starts before the veto is posted on
+HLTV, E4 goes out without the maps. As soon as the lineup appears on subsequent
+polls, the poller detects the newly available picks and `Notifier.update_start_message_picks`
+edits the start message in Telegram (`editMessageText`) to add the maps into the
+existing message without sending a duplicate notification.
+
+**Match description in E4 and E7.** Both E4 (старт матча) and E7 (конец матча)
+carry the description from the match's Information box (`.preformatted-text`),
+stripped of bullet asterisks and joined with middle dots (`·`), giving format,
+tournament stage, and roster notes.
+
 ## The half and the overtimes (E12)
 
 Off by default, `PHASE_ALERTS`. Two moments where the map turns over: the sides
